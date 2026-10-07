@@ -1,18 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Match · BotBowl Bench{% endblock %}
 {% block content %}
-<div class="card">
-  <div class="muted" id="crumb" style="margin-bottom:8px;font-size:.85rem"></div>
-  <div class="scoreboard">
-    <div class="team away"><div class="name" id="away-name">…</div><div class="muted">Away · red</div></div>
-    <div><div class="big" id="score">– </div><div class="meta" id="meta"></div></div>
-    <div class="team home"><div class="name" id="home-name">…</div><div class="muted">Home · blue</div></div>
-  </div>
+<div class="match-bar">
+  <div id="crumb" class="secondary"></div>
+  <div id="links" class="match-links"></div>
 </div>
-<div class="live-layout section">
-  <div>
-    <iframe class="board-frame" id="board" title="Game board"></iframe>
-    <div class="card player" id="player" hidden>
+<div class="live-layout">
+  <div class="card stadium-card" id="stadium-card">
+    <div id="stadium"><div class="stadium-empty">Loading…</div></div>
+    <div class="player" id="player" hidden>
       <div class="player-row">
         <button type="button" class="pbtn" id="p-prevturn" title="Previous turn (Shift+←)" aria-label="Previous turn">⏮</button>
         <button type="button" class="pbtn" id="p-back" title="Step back (←)" aria-label="Step back">◀</button>
@@ -20,7 +16,7 @@
         <button type="button" class="pbtn" id="p-fwd" title="Step forward (→)" aria-label="Step forward">▶|</button>
         <button type="button" class="pbtn" id="p-nextturn" title="Next turn (Shift+→)" aria-label="Next turn">⏭</button>
         <select id="p-speed" aria-label="Playback speed">
-          <option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option>
+          <option value="0.5">0.5×</option><option value="1">1×</option><option value="2" selected>2×</option>
           <option value="4">4×</option><option value="8">8×</option>
         </select>
         <span class="player-pos" id="p-pos"></span>
@@ -32,9 +28,8 @@
       </div>
       <div class="muted player-final" id="p-final"></div>
     </div>
-    <div class="muted" id="board-note" style="font-size:.82rem;margin-top:6px"></div>
   </div>
-  <div class="card feed">
+  <div class="card feed" id="feed-card">
     <div class="feed-tabs" role="tablist">
       <button data-tab="chat" class="active">Chat</button>
       <button data-tab="plans">Plans</button>
@@ -46,6 +41,7 @@
     <div class="feed-body" id="feed" aria-live="polite"></div>
   </div>
 </div>
+<div class="muted" id="board-note" style="font-size:.8rem;margin-top:6px"></div>
 <div class="card section" id="stats-card" style="display:none">
   <h2>Match stats</h2>
   <div class="table-wrap"><table class="compare" id="stats"></table></div>
@@ -53,25 +49,44 @@
 </div>
 {% endblock %}
 {% block scripts %}
+<script src="/bench-static/board.js"></script>
 <script>
 const { h, api, fmt } = BB;
 const MATCH_ID = {{ match_id|tojson }};
 let match = null, events = [], lastId = 0, tab = "chat", boardMode = null;
+const FRAME_SPEED_DEFAULT = 2;
 
 const names = () => ({ home: match ? match.home_name : "Home", away: match ? match.away_name : "Away" });
+
+// one stadium component draws the board for both live games and replays
+const stadium = BBBoard.create(document.getElementById("stadium"), {
+  names: () => ({
+    home: h("a", { href: `/models/${match.home_model}` }, match.home_name),
+    away: h("a", { href: `/models/${match.away_model}` }, match.away_name),
+  }),
+  badge: () => boardMode === "live" ? h("span", { class: "badge live" }, "● LIVE")
+    : boardMode === "replay" ? h("span", { class: "badge" }, "REPLAY") : null,
+});
 
 function setBoard(mode) {
   if (mode === boardMode) return;
   boardMode = mode;
-  const f = document.getElementById("board");
   const note = document.getElementById("board-note");
-  if (mode === "live") { f.src = `/board#/watch/${MATCH_ID}`; note.textContent = "Live board — updates as the models act."; }
-  else if (mode === "replay") { f.src = `/board#/frame/${MATCH_ID}`; note.textContent = "Keys: Space play/pause · ← → step · Shift+← → jump a turn. Markers: ▲ touchdown, ticks = turns."; initReplay(); }
-  else { f.removeAttribute("src"); note.textContent = "The board appears when the match kicks off."; }
+  if (mode === "live") {
+    stadium.live(MATCH_ID);
+    note.textContent = "Live — the board updates as the models act. Hover a player for details.";
+  } else if (mode === "replay") {
+    stadium.stop();
+    note.textContent = "Keys: Space play/pause · ← → step · Shift+← → jump a turn. On the scrubber, ▲ marks touchdowns and ticks mark turns.";
+    initReplay();
+  } else {
+    document.getElementById("stadium").innerHTML = '<div class="stadium-empty">The board appears when the match kicks off.</div>';
+    note.textContent = "";
+  }
 }
 
 // ---- replay player ---------------------------------------------------------------------------------
-const R = { active: false, points: [], idx: 0, playing: false, timer: null, speed: 1, turns: [], tds: [],
+const R = { active: false, points: [], idx: 0, playing: false, timer: null, speed: FRAME_SPEED_DEFAULT, turns: [], tds: [],
             sync: true, hide: false, ready: false };
 const FRAME_MS = 650;   // at 1x
 try { R.hide = localStorage.getItem("bb-hide-result") === "1"; } catch (e) {}
@@ -127,8 +142,7 @@ function cutoffTs() {
 }
 
 function postFrame() {
-  const f = document.getElementById("board");
-  if (f.contentWindow) f.contentWindow.postMessage({ bbFrame: R.idx, total: R.points.length }, location.origin);
+  stadium.frame(MATCH_ID, R.idx, R.points.length);
 }
 
 function seek(i, quiet) {
@@ -143,8 +157,7 @@ function seek(i, quiet) {
 function renderReplayState() {
   const p = R.points[R.idx], last = R.points.length - 1;
   document.getElementById("p-pos").textContent = `${turnLabel(p)} · ${R.idx + 1}/${last + 1}`;
-  document.getElementById("score").textContent = `${p.as} – ${p.hs}`;
-  document.getElementById("meta").textContent = R.idx === last ? finalText() : `Replay · ${turnLabel(p)}`;
+  renderCrumb();
   const fin = document.getElementById("p-final");
   fin.textContent = R.hide && R.idx < last ? "Result hidden until the end of the replay." : `Final: ${finalScore()} · ${finalText()}`;
   const showStats = !(R.hide && R.idx < last);
@@ -198,9 +211,6 @@ document.getElementById("p-hide").onchange = (e) => {
   renderReplayState();
 };
 document.getElementById("p-sync").onchange = (e) => { R.sync = e.target.checked; renderFeed(true); };
-window.addEventListener("message", (ev) => {
-  if (ev.origin === location.origin && ev.data && ev.data.bbReady && R.active) postFrame();
-});
 // Space must not also "click" a focused button/checkbox (that would undo the play/pause toggle)
 document.addEventListener("keyup", (e) => {
   const el = focused();
@@ -226,20 +236,23 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "ArrowRight") { e.preventDefault(); play(false); e.shiftKey ? jumpTurn(1) : seek(R.idx + 1); }
 });
 
-function renderHeader() {
-  document.getElementById("home-name").innerHTML = ""; document.getElementById("home-name").append(h("a", { href: `/models/${match.home_model}` }, match.home_name));
-  document.getElementById("away-name").innerHTML = ""; document.getElementById("away-name").append(h("a", { href: `/models/${match.away_model}` }, match.away_name));
-  const sc = match.home_score != null ? `${match.away_score} – ${match.home_score}` : "vs";
-  if (!R.active) document.getElementById("score").textContent = sc;
-  let meta = match.status;
-  if (match.status === "running") meta = match.half ? `● LIVE · Half ${match.half} · Turn ${match.turn}` : "● LIVE · kick-off";
-  else if (match.status === "completed") meta = match.winner === "draw" ? "Full time · draw" : `Full time · ${match.winner === "home" ? match.home_name : match.away_name} wins`;
-  else if (match.status === "queued") meta = "Scheduled";
-  if (!R.active) document.getElementById("meta").textContent = meta;
+function renderCrumb() {
   const crumb = document.getElementById("crumb"); crumb.innerHTML = "";
   if (match.tournament) crumb.append(h("a", { href: `/tournaments/${match.tournament.id}` }, match.tournament.name));
+  crumb.append(` · ${match.away_name} (away) vs ${match.home_name} (home)`);
+  const spoiler = R.active && R.hide && R.idx < R.points.length - 1;
+  if (match.status === "completed" && !spoiler) crumb.append(" · ", h("b", {}, finalText().replace("Full time · ", "")));
+  else if (match.status === "running") crumb.append(" · live now");
+  else if (match.status === "queued") crumb.append(" · scheduled");
   if (match.duration) crumb.append(` · ${fmt.dur(match.duration)}`);
   if (match.error) crumb.append(h("span", { style: { color: "var(--critical)" } }, ` · error: ${match.error}`));
+  const links = document.getElementById("links"); links.innerHTML = "";
+  if (match.has_transcript) links.append(h("a", { href: `/api/matches/${MATCH_ID}/transcript` }, "Transcript"));
+  links.append(h("a", { href: "/matches" }, "All matches"));
+}
+
+function renderHeader() {
+  renderCrumb();
   setBoard(match.status === "running" ? "live" : (match.status === "completed" || match.status === "error") && match.frames ? "replay" : "none");
 }
 
@@ -351,6 +364,14 @@ document.querySelectorAll(".feed-tabs button").forEach((b) => b.onclick = () => 
   document.querySelectorAll(".feed-tabs button").forEach((x) => x.classList.toggle("active", x === b));
   tab = b.dataset.tab; renderFeed(true);
 });
+const wide = window.matchMedia("(min-width: 1001px)");
+const fitFeed = () => {
+  const card = document.getElementById("stadium-card"), feed = document.getElementById("feed-card");
+  feed.style.height = wide.matches ? card.offsetHeight + "px" : "";
+};
+new ResizeObserver(fitFeed).observe(document.getElementById("stadium-card"));
+wide.addEventListener("change", fitFeed);
+
 let timer = null;
 poll().then((more) => {
   renderFeed(true);

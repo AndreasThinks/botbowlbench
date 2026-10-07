@@ -263,7 +263,10 @@ class GameSession:
             if len(reports) > 60:
                 data["state"]["reports"] = reports[-60:]
             now = time.time()
-            data["bench"] = {"match_id": self.match_id, "finished": self.finished, "ts": round(now, 3)}
+            from bench.render import events_since
+            reports = self.game.state.reports
+            log = events_since(self.game, max(0, len(reports) - 40), limit=1000)[-6:]
+            data["bench"] = {"match_id": self.match_id, "finished": self.finished, "ts": round(now, 3), "log": log}
             js = json.dumps(data)
             point = timeline_point(data, now)
         except Exception:
