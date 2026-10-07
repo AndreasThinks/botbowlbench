@@ -143,7 +143,7 @@ tr.disabled td { opacity: .55; }
 .ev.home .who { color: var(--home); } .ev.away .who { color: var(--away); }
 .ev .kind { font-size: .72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; margin-left: 6px; }
 .ev.thought .body { font-style: italic; color: var(--text-secondary); white-space: pre-wrap; }
-.ev.tool .call { font-family: var(--mono); font-size: .82rem; }
+.ev.tool .call { font-weight: 500; }
 .ev.tool.bad .call { color: var(--critical); }
 .ev.tool details { margin-top: 2px; }
 .ev.tool summary { cursor: pointer; color: var(--text-muted); font-size: .78rem; }
@@ -152,6 +152,23 @@ tr.disabled td { opacity: .55; }
 .ev.reflection { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; margin: 6px 0; border-bottom: 0; }
 .ev.system, .ev.error { color: var(--text-secondary); }
 .ev.error { color: var(--critical); }
+.log-group { margin-top: 8px; }
+.log-turn { position: sticky; top: -8px; background: var(--surface-1); margin: 0 -12px 2px; padding: 6px 12px 4px;
+  font-size: .74rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted);
+  border-bottom: 1px solid var(--border); z-index: 1; }
+.log-turn.home { color: var(--home); } .log-turn.away { color: var(--away); }
+.log-line { padding: 3px 6px; margin: 0 -6px; border-radius: 4px; overflow-wrap: anywhere; }
+.log-line.seek { cursor: pointer; }
+.log-line.seek:hover { background: var(--surface-2); }
+.log-line.now { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--text-muted); }
+.log-line .pid { font-weight: 700; }
+.log-line .pid.home { color: var(--home); } .log-line .pid.away { color: var(--away); }
+.log-line.k-td { font-weight: 700; color: var(--good); box-shadow: inset 3px 0 0 var(--good); }
+.log-line.k-turnover { font-weight: 700; color: var(--critical); }
+.log-line.k-injury { color: var(--critical); }
+.log-line.k-fail { color: var(--critical); opacity: .85; }
+.log-line.k-down { color: var(--text-secondary); font-style: italic; }
+.ev.tool.info { opacity: .7; }
 .bubble { max-width: 85%; padding: 8px 12px; border-radius: 14px; margin: 6px 0; overflow-wrap: anywhere; }
 .bubble .who { font-size: .72rem; font-weight: 700; display: block; margin-bottom: 2px; }
 .bubble.home { background: var(--home-soft); border-bottom-left-radius: 4px; }
@@ -290,8 +307,12 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 .st-dg { display: inline-flex; align-items: center; gap: 2px; }
 .st-dg img { width: 22px; height: 22px; image-rendering: pixelated; }
 .st-dg-label { margin-right: 3px; text-transform: uppercase; letter-spacing: .04em; font-size: .68rem; }
-.st-ticker { list-style: none; margin: 0; padding: 6px 16px 12px; font-size: .8rem; color: var(--text-muted); }
-.st-ticker li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* fixed height so the board doesn't jump as lines change; lines wrap, the oldest get clipped */
+.st-ticker { list-style: none; margin: 0 0 8px; padding: 6px 16px 0; font-size: .8rem; line-height: 1.35;
+  color: var(--text-muted); height: calc(4 * 1.35em + 6px); overflow: hidden; }
+.st-ticker li { overflow-wrap: anywhere; }
+.st-ticker.clickable { cursor: pointer; }
+.st-ticker.clickable:hover li.latest { text-decoration: underline; }
 .st-ticker li.latest { color: var(--text-primary); font-weight: 600; }
 .stadium .player { margin: 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; box-shadow: none; }
 .stadium-empty { padding: 48px 16px; text-align: center; color: var(--text-muted); }

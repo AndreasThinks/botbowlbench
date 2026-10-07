@@ -323,6 +323,20 @@ def test_replays_and_match_archive(bench_env):
     assert [(p["hs"], p["as"], p["ht"], p["at"]) for p in tl2["points"]] == \
            [(p["hs"], p["as"], p["ht"], p["at"]) for p in tl["points"]]
 
+    # game log: every outcome line is stored once, filed under a turn and keyed to a recorded frame
+    plays = [e for e in db.get_events(mid, limit=100000) if e["kind"] == "play"]
+    assert plays
+    frames = [e["payload"]["frame"] for e in plays]
+    assert frames == sorted(frames) and 0 <= frames[0] and frames[-1] < tl["frames"]
+    lines = [l for e in plays for l in e["payload"]["lines"]]
+    assert all(l["t"] and "<" not in l["t"] for l in lines)
+    assert "Game started." in [l["t"] for l in lines]
+    assert all(e["side"] in ("home", "away") and e["payload"]["ht"] + e["payload"]["at"] > 0
+               for e in plays if any(l["k"] == "turnover" for l in e["payload"]["lines"]))
+    m = json.loads(c.get(f"/api/matches/{mid}").data)
+    tds = sum(1 for l in lines if l["k"] == "td")
+    assert tds == m["home_score"] + m["away_score"]
+
     # archive: newest first, pagination, filters
     page1 = json.loads(c.get("/api/matches?limit=2").data)
     assert len(page1["matches"]) == 2 and page1["next_before"]

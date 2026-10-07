@@ -31,9 +31,10 @@
   </div>
   <div class="card feed" id="feed-card">
     <div class="feed-tabs" role="tablist">
-      <button data-tab="chat" class="active">Chat</button>
+      <button data-tab="log" class="active">Game log</button>
+      <button data-tab="chat">Chat</button>
       <button data-tab="plans">Plans</button>
-      <button data-tab="all">Play-by-play</button>
+      <button data-tab="all">Model reasoning</button>
       <button data-tab="home">Home only</button>
       <button data-tab="away">Away only</button>
       <label class="player-opt" id="sync-wrap" hidden title="Only show what had happened at this point of the replay"><input type="checkbox" id="p-sync" checked> Sync with replay</label>
@@ -53,7 +54,7 @@
 <script>
 const { h, api, fmt } = BB;
 const MATCH_ID = {{ match_id|tojson }};
-let match = null, events = [], lastId = 0, tab = "chat", boardMode = null;
+let match = null, events = [], lastId = 0, tab = "log", boardMode = null;
 const FRAME_SPEED_DEFAULT = 2;
 
 const names = () => ({ home: match ? match.home_name : "Home", away: match ? match.away_name : "Away" });
@@ -66,6 +67,7 @@ const stadium = BBBoard.create(document.getElementById("stadium"), {
   }),
   badge: () => boardMode === "live" ? h("span", { class: "badge live" }, "● LIVE")
     : boardMode === "replay" ? h("span", { class: "badge" }, "REPLAY") : null,
+  onLog: () => showTab("log"),
 });
 
 function setBoard(mode) {
@@ -125,6 +127,7 @@ function initReplay() {
     document.getElementById("p-hide").checked = R.hide;
     const m = /f=(\d+)/.exec(location.hash);
     seek(m ? Math.min(last, parseInt(m[1])) : 0, true);
+    renderFeed(true);   // log lines rendered before the timeline loaded become clickable
   });
 }
 
@@ -151,6 +154,7 @@ function seek(i, quiet) {
   postFrame();
   renderReplayState();
   renderFeed(false);
+  markCurrent();
   if (!quiet && !R.playing) history.replaceState(null, "", `#f=${R.idx}`);
 }
 
@@ -258,15 +262,71 @@ function renderHeader() {
 
 function argStr(a) { return Object.entries(a || {}).filter(([, v]) => v != null).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", "); }
 
+// tool calls in words ("H3 blocks A5"); the raw call stays one click away
+function toolText(name, a) {
+  a = a || {};
+  const p = a.player_id || "?", at = (x, y) => (x != null && y != null ? ` to (${x}, ${y})` : "");
+  const via = (x, y) => (x != null && y != null ? ` via (${x}, ${y})` : "");
+  switch (name) {
+    case "move": return `${p} moves${at(a.x, a.y)}`;
+    case "block": return `${p} blocks ${a.target_id}`;
+    case "blitz": return `${p} blitzes ${a.target_id}${via(a.via_x, a.via_y)}`;
+    case "pass_ball": return `${p} passes${at(a.target_x, a.target_y)}`;
+    case "handoff": return `${p} hands off to ${a.target_id}`;
+    case "foul": return `${p} fouls ${a.target_id}`;
+    case "end_turn": return "Ends the turn";
+    case "reflect": return "Writes a plan";
+    case "send_message": return "Sends a message";
+    case "get_state": return "Looks at the board";
+    case "get_legal_actions": return "Checks the legal actions";
+    case "get_player": return `Looks up ${a.player_id}`;
+    case "take_action": {
+      const what = String(a.action_type || "action").toLowerCase().replace(/_/g, " ");
+      const where = a.x != null && a.y != null ? ` ${what === "move" ? "to" : "at"} (${a.x}, ${a.y})` : "";
+      return a.player_id ? `${a.player_id}: ${what}${where}` : what[0].toUpperCase() + what.slice(1) + where;
+    }
+    default: return `${name}(${argStr(a)})`;
+  }
+}
+
+// game log text: team placeholders become names, player ids get their team colour
+function logText(t) {
+  const n = names();
+  const parts = t.replace(/Home\(H\)/g, n.home).replace(/Away\(A\)/g, n.away).split(/\b([HA]\d{1,2})\b/);
+  return parts.map((x, i) => (i % 2 ? h("span", { class: `pid ${x[0] === "H" ? "home" : "away"}` }, x) : x));
+}
+
+// the game log is a list of turn groups (header + lines), so each sticky header stays within its turn
+let logGroup = null;
+function playNodes(e) {
+  const p = e.payload || {};
+  const turn = e.side === "home" ? p.ht : p.at, side = e.side && turn ? e.side : null;   // turn 0: pre-game / kick-off
+  const key = side ? `${p.half}-${side}-${turn}` : `${p.half}-kickoff`;
+  let fresh = null;
+  if (!logGroup || logGroup.dataset.turn !== key || logGroup !== document.getElementById("feed").lastElementChild) {
+    fresh = logGroup = h("div", { class: "log-group", "data-turn": key },
+      h("div", { class: `log-turn ${side || ""}` }, turnLabel({ side, half: p.half || 1, ht: p.ht, at: p.at })));
+  }
+  const seekable = R.active && p.frame != null;
+  (p.lines || []).forEach((l) => logGroup.append(h("div", {
+    class: `log-line ${l.k ? "k-" + l.k : ""} ${seekable ? "seek" : ""}`, "data-frame": p.frame, "data-turn": key,
+    title: seekable ? "Show this moment on the board" : null,
+    onclick: seekable ? () => { play(false); seek(p.frame); } : null,
+  }, ...logText(l.t))));
+  return fresh;
+}
+
 function evNode(e) {
   const p = e.payload || {}, who = e.side ? names()[e.side] : "";
   const head = (kind) => h("div", {}, h("span", { class: "who" }, who), h("span", { class: "kind" }, kind));
   switch (e.kind) {
+    case "play": return playNodes(e);
     case "message": return h("div", { class: `bubble ${e.side}` }, h("span", { class: "who" }, who), p.text);
     case "thought": return h("div", { class: `ev thought ${e.side}` }, head("thinking"), h("div", { class: "body" }, p.text));
-    case "tool": return h("div", { class: `ev tool ${e.side} ${p.ok ? "" : "bad"}` }, head(p.ok ? "tool" : "invalid"),
-        h("div", { class: "call" }, `${p.name}(${argStr(p.args)})`),
-        p.result ? h("details", {}, h("summary", {}, "result"), h("pre", {}, p.result)) : null);
+    case "tool": return h("div", { class: `ev tool ${e.side} ${p.ok ? "" : "bad"} ${INFO_TOOLS.has(p.name) ? "info" : ""}` },
+        head(p.ok ? (INFO_TOOLS.has(p.name) ? "look" : "action") : "invalid"),
+        h("div", { class: "call" }, toolText(p.name, p.args)),
+        h("details", {}, h("summary", {}, "details"), h("pre", {}, `${p.name}(${argStr(p.args)})` + (p.result ? "\n\n" + p.result : ""))));
     case "episode": return h("div", { class: `ev episode ${e.side}` }, `${who} · ${p.our_turn ? "turn " + p.key.split("-").slice(1).join("-") : p.proc}`);
     case "reflection": return h("div", { class: `ev reflection ${e.side}` }, head(`plan · turn ${p.turn}${p.trigger === "reflect" ? " (after turnover)" : ""}`),
         h("div", {}, h("b", {}, "Plan: "), p.plan), h("div", { class: "secondary" }, h("b", {}, "Expects: "), p.prediction));
@@ -274,8 +334,29 @@ function evNode(e) {
     default: return h("div", { class: `ev ${e.kind} ${e.side || ""}` }, e.side ? head(e.kind) : null, p.text || JSON.stringify(p));
   }
 }
+const INFO_TOOLS = new Set(["get_state", "get_legal_actions", "get_player"]);
+
+// replay: highlight what just happened, i.e. the lines of the latest turn up to the frame on the board
+// (sync off: also bring them into view)
+function markCurrent() {
+  if (!R.active || tab !== "log") return;
+  const box = document.getElementById("feed"), nodes = [...box.querySelectorAll(".log-line[data-frame]")];
+  const past = nodes.filter((n) => +n.dataset.frame <= R.idx), turn = past.length ? past[past.length - 1].dataset.turn : null;
+  let first = null;
+  nodes.forEach((n) => {
+    const on = turn !== null && n.dataset.turn === turn && +n.dataset.frame <= R.idx;
+    n.classList.toggle("now", on);
+    if (on && !first) first = n;
+  });
+  if (first && !R.sync) {
+    const b = box.getBoundingClientRect(), r = first.getBoundingClientRect();
+    if (r.top < b.top + 30 || r.bottom > b.bottom) box.scrollTop += r.top - b.top - 40;
+  }
+}
 
 function visible(e) {
+  if (tab === "log") return e.kind === "play" || e.kind === "error" || (e.kind === "system" && !e.side);
+  if (e.kind === "play") return false;
   if (tab === "chat") return e.kind === "message" || (e.kind === "system" && !e.side);
   if (tab === "plans") return e.kind === "reflection";
   if (tab === "home" || tab === "away") return e.side === tab;
@@ -296,13 +377,17 @@ function renderFeed(reset) {
   const box = document.getElementById("feed");
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
   const lim = feedLimit();
-  if (reset || lim < shown) { box.innerHTML = ""; shown = 0; reset = true; }
+  if (reset || lim < shown) { box.innerHTML = ""; shown = 0; reset = true; logGroup = null; }
   const empty = box.querySelector(".empty");
   if (empty && lim > shown) empty.remove();
   events.slice(shown, lim).filter(visible).forEach((e) => { const n = evNode(e); if (n) box.append(n); });
   shown = lim;
-  if (!box.children.length) box.append(h("div", { class: "empty" }, R.active && R.sync && lim < events.length ? "Nothing yet at this point of the replay." : tab === "chat" ? "No messages yet. Models can trash-talk with the send_message tool." : "Nothing here yet."));
+  if (!box.children.length) box.append(h("div", { class: "empty" }, R.active && R.sync && lim < events.length ? "Nothing yet at this point of the replay." : tab === "chat" ? "No messages yet. Models can trash-talk with the send_message tool."
+    : tab === "log" && match && match.status !== "running" && match.status !== "queued" && !events.some((e) => e.kind === "play")
+      ? "No game log was recorded for this match (it was played before the log existed). Model reasoning has the moves."
+    : "Nothing here yet."));
   if (atBottom || reset || R.playing) box.scrollTop = box.scrollHeight;
+  if (reset) markCurrent();
 }
 
 function renderStats() {
@@ -347,11 +432,21 @@ function renderStats() {
   if (match.has_transcript) ml.append(" · ", h("a", { href: `/api/matches/${MATCH_ID}/transcript` }, "download full transcript (.jsonl.gz)"));
 }
 
+const EVENT_PAGE = 1000;   // the events API returns at most this many per call
+function fetchEvents() {
+  return api(`/api/matches/${MATCH_ID}/events?after=${lastId}`).then((ev) => {
+    if (!ev.length) return;
+    events.push(...ev); lastId = ev[ev.length - 1].id;
+    if (ev.length >= EVENT_PAGE) return fetchEvents();
+  });
+}
+
 function poll() {
-  return Promise.all([api(`/api/matches/${MATCH_ID}`), api(`/api/matches/${MATCH_ID}/events?after=${lastId}`)]).then(([m, ev]) => {
+  const before = events.length;
+  return Promise.all([api(`/api/matches/${MATCH_ID}`), fetchEvents()]).then(([m]) => {
     const wasRunning = match && match.status === "running";
     match = m; renderHeader();
-    if (ev.length) { events.push(...ev); lastId = ev[ev.length - 1].id; renderFeed(false); }
+    if (events.length > before) renderFeed(false);
     if (m.status === "completed" || m.status === "error") {
       renderStats();
       if (wasRunning) setTimeout(() => location.reload(), 1500);
@@ -360,10 +455,12 @@ function poll() {
     return true;
   });
 }
-document.querySelectorAll(".feed-tabs button").forEach((b) => b.onclick = () => {
-  document.querySelectorAll(".feed-tabs button").forEach((x) => x.classList.toggle("active", x === b));
-  tab = b.dataset.tab; renderFeed(true);
-});
+function showTab(name) {
+  document.querySelectorAll(".feed-tabs button").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
+  if (tab !== name) { tab = name; renderFeed(true); }
+  else { const box = document.getElementById("feed"); box.scrollTop = box.scrollHeight; markCurrent(); }
+}
+document.querySelectorAll(".feed-tabs button").forEach((b) => b.onclick = () => showTab(b.dataset.tab));
 const wide = window.matchMedia("(min-width: 1001px)");
 const fitFeed = () => {
   const card = document.getElementById("stadium-card"), feed = document.getElementById("feed-card");

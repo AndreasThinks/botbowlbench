@@ -107,6 +107,11 @@ const BBBoard = (() => {
     const dugouts = h("div", "st-dugouts");
     const ticker = h("ol", "st-ticker");
     ticker.setAttribute("aria-label", "Latest game events");
+    if (opts.onLog) {
+      ticker.classList.add("clickable");
+      ticker.title = "Open the full game log";
+      ticker.addEventListener("click", () => opts.onLog());
+    }
     root.append(head, pitchWrap, dugouts, ticker);
     let lastKey = null;
 
@@ -194,7 +199,8 @@ const BBBoard = (() => {
       const log = (game.bench && game.bench.log) || [];
       ticker.innerHTML = "";
       ticker.hidden = !log.length;
-      [...log].reverse().slice(0, 4).forEach((t, i) => ticker.append(h("li", i ? "" : "latest", t)));
+      const named = (t) => t.replace(/Home\(H\)/g, home.name).replace(/Away\(A\)/g, away.name);
+      [...log].reverse().slice(0, 4).forEach((t, i) => ticker.append(h("li", i ? "" : "latest", named(t))));
     }
 
     // live mode: poll the match's latest state (the server answers 304 when nothing changed)
