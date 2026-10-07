@@ -39,11 +39,16 @@ One JSON object per game:
     "settings": { … models.yaml settings in force … },
     "models": {"home": { … model config … }, "away": { … }},
     "served": {"home": {"openai/gpt-5-mini-2025-08-07@OpenAI": 212}, "away": { … }},
-    "time_capped": false, "harness_errors": [], "inadmissible_reasons": [], "transcript_records": 4211
+    "time_capped": false, "harness_errors": [], "inadmissible_reasons": [], "transcript_records": 4211,
+    "resumes": []
   },
   "has_transcript": true
 }
 ```
+
+`resumes` lists restarts of the server during the game (normally empty). Each entry has `ts`, `checkpoint` (the
+turn the game continued from, e.g. `away:turn-2-5`, or null for a restart from kick-off), `git_sha` of the code that
+continued it, `dropped_records` and `restart_cost` (see the `resume` transcript record).
 
 Comparability: only compare games that share `meta.harness.protocol_version`. `prompt_fingerprint` changes whenever
 the system prompt, rules primer or tool descriptions change. `PROTOCOL_VERSION` (in `bench/version.py`) is bumped by
@@ -67,6 +72,7 @@ The complete research record of one game. Each line has `type`, `ts` (unix secon
 | `message` | `text`, `half`, `turn` |
 | `system` | budget auto-finish and similar notes |
 | `harness_error` | a bug in the bench (`text`, `traceback`) |
+| `resume` | the server restarted mid-game and the game continued from `checkpoint` (see `meta.resumes`). The interrupted team turn is played again from its start, so records written after the checkpoint were dropped (`dropped_records`); `restart_cost` is what their model calls cost per side |
 | `result` | last line: scores, winner, both stats objects, final `meta` |
 
 ### Rebuilding exactly what a model saw
@@ -102,6 +108,7 @@ bench.db                    SQLite: models, tournaments, matches, events
 frames/<match_id>.frames    zlib-compressed board JSON per decision (replays), ~0.6 MB per game
 frames/<id>.timeline.json   per-frame index: ts, half, ht/at (turns), hs/as (score), side to move, over
 transcripts/<id>.jsonl.gz   full transcripts: ~30 KB for a baseline game; LLM games are larger (estimated 0.1-1 MB)
+checkpoints/<id>.ckpt       the game in progress, saved at the start of every team turn (< 1 MB); deleted when it ends
 ```
 
 Back up the volume (or run `python -m bench export`) before deleting it. Nothing else holds the history.

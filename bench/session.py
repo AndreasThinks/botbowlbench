@@ -6,7 +6,9 @@ The botbowl engine is synchronous: it calls ``agent.act(game)`` whenever it need
 MCP tools) submits an action. Tool calls from the driver therefore only ever touch the game while
 the game thread is parked inside ``act`` for that seat, so no locking of the game itself is needed.
 """
+import io
 import json
+import pickle
 import random
 import threading
 import time
@@ -107,6 +109,8 @@ class Seat(Agent):
     def act(self, game):
         key, our_turn = episode_key(game, self.team)
         self.session.on_decision(self)
+        if our_turn:
+            self.session.maybe_checkpoint(self.side, key)
         if self.autopilot or self.autopilot_key == key or self.session.aborted:
             self.counters["forced_actions"] += 1
             return fallback_action(game, self.team)
@@ -198,6 +202,9 @@ class GameSession:
         self.snapshot_seq = 0
         self.started_at = time.time()
         self.ended_at = None
+        self.checkpoint_hook: Optional[Callable[[str], None]] = None   # called at the start of every team turn
+        self.last_checkpoint_key: Optional[str] = None   # "<side>:<episode key>" (both teams have a turn-1-1)
+        self.resumed = False
 
         config = load_config(f"web-{game_mode}.json")
         config.competition_mode = False   # we enforce our own budgets instead of botbowl clocks
@@ -232,7 +239,10 @@ class GameSession:
 
     def _run(self):
         try:
-            self.game.init()
+            if self.resumed:
+                self._continue_game()
+            else:
+                self.game.init()
             if not self.game.state.game_over:
                 raise RuntimeError("Game loop exited before the game was over")
         except Exception as e:  # pragma: no cover - surfaced to the UI/DB
@@ -246,11 +256,74 @@ class GameSession:
                 with seat.cond:
                     seat.cond.notify_all()
 
+    def _continue_game(self):
+        """Continue a restored game. Checkpoints are taken inside ``Seat.act``, i.e. while botbowl's step loop
+        waits for an agent; this re-enters that loop at the same point."""
+        game = self.game
+        game.action = game._safe_act()
+        if game.state.game_over:
+            game._end_game()
+        else:
+            game.step(game.action)
+
     def abort(self):
         self.aborted = True
         for seat in (self.home, self.away):
             with seat.cond:
                 seat.cond.notify_all()
+
+    # ---- checkpoints (resume after a restart) ------------------------------------------------
+    def maybe_checkpoint(self, side: str, episode: str):
+        """Called by the game thread when a team turn starts. Nothing else touches the game then: the drivers
+        only act on a pending decision, and this one isn't published yet."""
+        key = f"{side}:{episode}"
+        if self.checkpoint_hook is None or self.aborted or key == self.last_checkpoint_key:
+            return
+        self.last_checkpoint_key = key
+        try:
+            self.checkpoint_hook(key)
+        except Exception:
+            traceback.print_exc()   # a failed checkpoint only costs resumability, never the game
+
+    def dump_game(self) -> bytes:
+        f = io.BytesIO()
+        _GamePickler(f).dump(self.game)
+        return f.getvalue()
+
+    def state_dict(self) -> dict:
+        with self.lock:
+            shared = pickle.dumps({
+                "messages": self.messages, "reflections": self.reflections, "action_log": self.action_log,
+                "harness_errors": self.harness_errors, "frames": self.frames, "timeline": self.timeline,
+                "time_capped": self.time_capped}, protocol=pickle.HIGHEST_PROTOCOL)
+        seats = {s.side: {"counters": dict(s.counters), "report_cursor": s.report_cursor,
+                          "msg_cursor": s.msg_cursor, "autopilot": s.autopilot} for s in (self.home, self.away)}
+        return {"game": self.dump_game(), "shared": shared, "seats": seats, "key": self.last_checkpoint_key}
+
+    def restore(self, state: dict):
+        """Swap in a checkpointed game (call before drivers/tools are created, then :meth:`start`)."""
+        self.game = _GameUnpickler(io.BytesIO(state["game"]), {"home": self.home, "away": self.away}).load()
+        self.home.team = self.game.state.home_team
+        self.away.team = self.game.state.away_team
+        shared = pickle.loads(state["shared"])
+        self.messages = shared["messages"]
+        self.reflections = shared["reflections"]
+        self.action_log = shared["action_log"]
+        self.harness_errors = shared["harness_errors"]
+        self.time_capped = shared["time_capped"]
+        # the last frame is the turn-start position; it is recorded again when the game re-enters Seat.act
+        self.frames = shared["frames"][:-1]
+        self.timeline = shared["timeline"][:-1]
+        if shared["frames"]:
+            self.latest_json = zlib.decompress(shared["frames"][-1]).decode("utf-8")
+        for side, st in state["seats"].items():
+            seat = self.seat(side)
+            seat.counters = Counter(st["counters"])
+            seat.report_cursor = st["report_cursor"]
+            seat.msg_cursor = st["msg_cursor"]
+            seat.autopilot = st["autopilot"]
+        self.last_checkpoint_key = state["key"]
+        self.resumed = True
 
     # ---- snapshots / spectators --------------------------------------------------------------
     def on_decision(self, seat: Seat):
@@ -359,3 +432,22 @@ class GameSession:
 
     def new_id(self) -> str:
         return str(uuid.uuid4())
+
+
+class _GamePickler(pickle.Pickler):
+    """Pickles a botbowl Game without its seats (they hold threads and locks); they are re-attached on load."""
+
+    def __init__(self, f):
+        super().__init__(f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def persistent_id(self, obj):
+        return f"seat:{obj.side}" if isinstance(obj, Seat) else None
+
+
+class _GameUnpickler(pickle.Unpickler):
+    def __init__(self, f, seats: dict):
+        super().__init__(f)
+        self._seats = seats
+
+    def persistent_load(self, pid):
+        return self._seats[pid.split(":", 1)[1]]

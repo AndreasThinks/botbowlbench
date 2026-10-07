@@ -54,6 +54,7 @@ These are computed from the **action log**. Every move, block, pass, hand-off or
 | `forced_actions`, `budget_exhausted`, `timeouts` | Decisions taken by the default policy, and the reasons |
 | `no_tool_replies`, `llm_errors` | Replies without a tool call, and API errors after retries |
 | `served` | `{"<model>@<provider>": calls}`: what OpenRouter actually routed to |
+| `restart_cost` | Only after a server restart mid-game: USD spent on the part of a turn that was played again. Not included in `cost` or the game budget. |
 
 ## Offline metrics (from the dataset)
 
@@ -82,6 +83,10 @@ A game is `admissible` when it ended naturally under the pinned protocol with co
 | `time_capped` | The game exceeded `max_game_minutes` and the default policy finished it |
 | `<side>_agent_crashed` | The driver loop crashed |
 | `<side>_model_unavailable` | Repeated or fatal API errors handed the team to the default policy |
+| `transcript_incomplete` | After a server restart, the transcript was missing records from before the checkpoint |
+
+A game that was resumed after a server restart stays admissible: it continues from the start of the interrupted
+team turn with the same board, random-number state and history (see `meta.resumes`).
 
 Inadmissible games still count on the leaderboard, because an unavailable model loses like any other. Filter them
 out for research use: `/api/export/matches.jsonl?admissible=1`.

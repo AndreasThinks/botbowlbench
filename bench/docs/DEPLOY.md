@@ -31,8 +31,12 @@ supervised game (`python -m bench play <model> scripted-baseline -v` locally), t
 
 * **Add or retire a model:** edit `models.yaml` and push. Railway redeploys; on start the bench sees the new id and
   queues its gauntlet. With `MODELS_CONFIG` on the volume, edits are picked up within ~20 seconds without a redeploy.
-* **Redeploys interrupt the current game.** It is replayed from scratch on start. Railway stops the old container
-  before starting the new one when a volume is attached, so two schedulers never run at once.
+* **Redeploys pause the current game.** The game is saved at the start of every team turn; on start the new
+  container continues it from the start of the interrupted turn, with the board, dice, score, chat and spend as they
+  were. Only that partial turn is played again, and its spend is reported as `restart_cost`. Games resume across
+  code changes unless `PROTOCOL_VERSION` or the prompts changed, in which case the game restarts from kick-off with
+  the same seed. Railway stops the old container before starting the new one when a volume is attached, so two
+  schedulers never run at once.
 * **Pause:** set `BENCH_PAUSED=1`. The current game finishes; no new one starts.
 * **Costs:** the leaderboard shows cost per game per model. `budget_usd_per_game` caps spend per model per game.
   If the key runs out of credit (HTTP 402), games are re-queued and the status line says so. Top up and they resume.
@@ -71,7 +75,7 @@ docker run -p 8080:8080 -v botbowl-data:/data -e OPENROUTER_API_KEY=sk-or-... bo
 | symptom | cause |
 |---|---|
 | Status "waiting: OPENROUTER_API_KEY is not set" | Set the variable. Baseline-only games still run without it. |
-| Status "OpenRouter problem, retrying later: HTTP 401/402" | Bad key or no credit. The game is re-queued and retried every 5 minutes. |
+| Status "OpenRouter problem, retrying later: HTTP 401/402" | Bad key or no credit. The game is re-queued and retried every 5 minutes, resuming from the turn it stopped in. |
 | A model loses every game with many "Auto-finishing" notes | It doesn't call tools reliably, or its budget/time is too tight. Check its match feed. Slow reasoning models may need a higher `turn_time_limit`. |
 | "Model unavailable - default actions for the rest of the game" | Repeated API errors (e.g. the model doesn't support tool calling, or a 404 model id). The game counts but is marked inadmissible. |
 | Empty history after a redeploy | No volume attached at `/data` |
