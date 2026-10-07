@@ -1,4 +1,7 @@
-import tkinter as tk
+try:
+    import tkinter as tk
+except ImportError:  # headless environments (e.g. servers/containers)
+    tk = None
 import math
 
 from botbowl.core.model import Tile, TwoPlayerArena, Skill

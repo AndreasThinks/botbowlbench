@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="now"></div>
+<div class="grid grid-2 section">
+  <div class="card"><h2>Up next</h2><div id="queued"></div></div>
+  <div class="card"><h2>Recent results <a class="muted" style="font-size:.85rem;font-weight:400;margin-left:auto" href="/matches">All matches →</a></h2><div id="recent"></div></div>
+</div>
+<div class="card section">
+  <h2>Top of the table <a class="muted" style="font-size:.85rem;font-weight:400;margin-left:auto" href="/leaderboard">Full leaderboard →</a></h2>
+  <div class="table-wrap"><table id="top"><thead><tr><th class="rank">#</th><th>Model</th><th class="num">Elo</th><th class="num">W-D-L</th><th class="num">TD +/-</th></tr></thead><tbody></tbody></table></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const { h, api, fmt } = BB;
+let liveId = null;
+
+function renderNow(s) {
+  const box = document.getElementById("now");
+  const m = s.live[0];
+  if (!m) {
+    liveId = null;
+    box.innerHTML = "";
+    const last = s.recent[0];
+    box.append(h("div", { class: "card" },
+      h("h1", {}, "No game in progress"),
+      h("p", { class: "secondary" }, s.detail || ""),
+      last ? h("p", {}, "Last result: ", h("a", { href: `/match/${last.id}` }, `${last.home_name} ${last.home_score ?? ""} – ${last.away_score ?? ""} ${last.away_name}`)) : null));
+    return;
+  }
+  if (liveId === m.id) {
+    document.getElementById("live-score").textContent = `${m.away_score ?? 0} – ${m.home_score ?? 0}`;
+    document.getElementById("live-meta").textContent = m.half ? `Half ${m.half} · Turn ${m.turn}` : "Kick-off";
+    return;
+  }
+  liveId = m.id;
+  box.innerHTML = "";
+  box.append(h("div", { class: "card" },
+    h("div", { style: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" } },
+      h("span", { class: "badge live" }, "● LIVE"), h("span", { class: "muted" }, "Now playing"),
+      h("a", { href: `/match/${m.id}`, class: "btn primary", style: { marginLeft: "auto", textDecoration: "none" } }, "Open match centre →")),
+    h("div", { class: "scoreboard" },
+      h("div", { class: "team away" }, h("div", { class: "name" }, m.away_name), h("div", { class: "muted" }, "Away · red")),
+      h("div", {}, h("div", { class: "big", id: "live-score" }, `${m.away_score ?? 0} – ${m.home_score ?? 0}`), h("div", { class: "meta", id: "live-meta" }, "")),
+      h("div", { class: "team home" }, h("div", { class: "name" }, m.home_name), h("div", { class: "muted" }, "Home · blue"))),
+    h("iframe", { class: "board-frame", style: { marginTop: "16px" }, src: `/board#/watch/${m.id}`, title: "Live board" })));
+}
+
+function refresh() {
+  api("/api/status").then((s) => {
+    renderNow(s);
+    const q = document.getElementById("queued"); q.innerHTML = "";
+    if (!s.queued.length) q.append(h("div", { class: "empty" }, "Nothing queued."));
+    s.queued.forEach((m) => q.append(BB.matchRow(m)));
+    const r = document.getElementById("recent"); r.innerHTML = "";
+    if (!s.recent.length) r.append(h("div", { class: "empty" }, "No games played yet."));
+    s.recent.forEach((m) => r.append(BB.matchRow(m)));
+  });
+}
+api("/api/leaderboard").then((lb) => {
+  const tb = document.querySelector("#top tbody");
+  lb.models.slice(0, 5).forEach((m, i) => tb.append(h("tr", {},
+    h("td", { class: "rank" }, i + 1), h("td", {}, h("a", { href: `/models/${m.id}` }, m.name)),
+    h("td", { class: "num" }, fmt.num(m.elo)), h("td", { class: "num" }, `${m.wins}-${m.draws}-${m.losses}`),
+    h("td", { class: "num" }, `${m.td_for}/${m.td_against}`))));
+});
+refresh();
+setInterval(refresh, 4000);
+</script>
+{% endblock %}

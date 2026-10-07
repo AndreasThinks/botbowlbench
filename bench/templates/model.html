@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Model · BotBowl Bench{% endblock %}
+{% block content %}
+<div id="head"></div>
+<div class="tiles section" id="tiles"></div>
+<div class="grid grid-2 section">
+  <div class="card"><h2>Play style</h2><div class="table-wrap"><table id="style"><tbody></tbody></table></div></div>
+  <div class="card"><h2>Head to head</h2><div class="table-wrap"><table id="h2h"><thead><tr><th>Opponent</th><th class="num">W</th><th class="num">D</th><th class="num">L</th></tr></thead><tbody></tbody></table></div></div>
+</div>
+<div class="card section"><h2>Elo over time</h2><div id="elo"></div></div>
+<div class="card section"><h2>Recent plans &amp; predictions</h2><div id="plans"></div></div>
+<div class="grid grid-2 section">
+  <div class="card"><h2>Recent games <a class="muted" style="font-size:.85rem;font-weight:400;margin-left:auto" href="/matches?model={{ model_id }}">All →</a></h2><div id="recent"></div></div>
+  <div class="card"><h2>Things it said</h2><div id="msgs"></div></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const { h, api, fmt } = BB;
+const MODEL_ID = {{ model_id|tojson }};
+Promise.all([api(`/api/models/${MODEL_ID}`), api("/api/leaderboard")]).then(([d, lb]) => {
+  BB.setModelOrder(lb.models);
+  const m = d.model, s = d.stats || { played: 0, wins: 0, draws: 0, losses: 0, td_for: 0, td_against: 0, style: {}, sums: {} };
+  const rank = lb.models.findIndex((x) => x.id === MODEL_ID) + 1;
+  document.title = `${m.name} · BotBowl Bench`;
+  document.getElementById("head").append(h("div", { class: "card" },
+    h("h1", {}, h("span", { class: "swatch", style: { background: BB.modelColor(m.id), width: "14px", height: "14px" } }), m.name),
+    h("div", { class: "secondary" }, m.provider === "openrouter" ? h("span", { class: "mono" }, m.model) : `${m.provider} baseline (no LLM)`,
+      m.enabled ? "" : " · retired")));
+  const tile = (label, value) => h("div", { class: "tile" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value));
+  document.getElementById("tiles").append(
+    tile("Elo", fmt.num(d.elo.elo)), tile("95% range", d.elo_ci ? `${d.elo_ci.lo}–${d.elo_ci.hi}` : "–"), tile("Rank", rank ? `#${rank}` : "–"), tile("Record", `${s.wins}-${s.draws}-${s.losses}`),
+    tile("TD for / against", `${s.td_for} / ${s.td_against}`), tile("Cost / game", s.played ? fmt.usd(s.avg_cost) : "–"),
+    tile("Tokens / game", s.played ? fmt.tokens(s.avg_tokens) : "–"));
+  const st = s.style || {}, sums = s.sums || {}, n = Math.max(1, s.played);
+  const rows = [
+    ["Aggression (blocks+blitzes+fouls / turn)", fmt.num(st.aggression, 2)], ["Risk taking (dodges+GFIs / turn)", fmt.num(st.risk_taking, 2)],
+    ["Passing game (passes+hand-offs / turn)", fmt.num(st.passing_game, 2)], ["Dirty play (fouls / turn)", fmt.num(st.dirty_play, 2)],
+    ["Casualties inflicted / game", fmt.num((sums.casualties_inflicted || 0) / n, 2)], ["Turnovers / game", fmt.num((sums.turnovers || 0) / n, 1)],
+    ["Messages / game", fmt.num((sums.messages_sent || 0) / n, 1)], ["Avg message length", fmt.num(st.avg_message_len) + " chars"],
+    ["Tool calls / game", fmt.num((sums.tool_calls || 0) / n)], ["Invalid tool-call rate", fmt.pct(st.illegal_rate)],
+    ["Auto-finished turns / game", fmt.num((sums.budget_exhausted || 0) / n, 1)],
+    ["Safe-first rate", st.safe_first_rate == null ? "–" : fmt.pct(st.safe_first_rate)],
+    ["Avg success of risky actions", st.avg_risky_success == null ? "–" : fmt.pct(st.avg_risky_success)],
+    ["Long shots (<50%) / game", fmt.num((sums.long_shots || 0) / n, 1)],
+    ["Players idle at turnover", st.unactivated_at_turnover == null ? "–" : fmt.num(st.unactivated_at_turnover, 1)],
+    ["Monitoring rate", fmt.pct(st.monitoring_rate)],
+    ["Turns with a reflection", fmt.pct(st.reflection_coverage)],
+    ["Prompt-cache hit rate", st.cache_hit_rate == null ? "–" : fmt.pct(st.cache_hit_rate)],
+  ];
+  const tb = document.querySelector("#style tbody");
+  rows.forEach(([a, b]) => tb.append(h("tr", {}, h("td", {}, a), h("td", { class: "num" }, s.played ? b : "–"))));
+  const hb = document.querySelector("#h2h tbody");
+  if (!d.head_to_head.length) hb.append(h("tr", {}, h("td", { colspan: 4, class: "empty" }, "No games yet.")));
+  d.head_to_head.forEach((r) => hb.append(h("tr", {}, h("td", {}, h("a", { href: `/models/${r.opponent}` }, r.name)),
+    h("td", { class: "num" }, r.wins), h("td", { class: "num" }, r.draws), h("td", { class: "num" }, r.losses))));
+  BB.lineChart(document.getElementById("elo"), d.elo.history.length ? [{ id: m.id, name: m.name, color: BB.modelColor(m.id),
+    points: [{ x: 0, y: 1000 }, ...d.elo.history.map((p, i) => ({ x: i + 1, y: p.elo }))] }] : [], { xLabel: "game #", label: `Elo of ${m.name}` });
+  const rec = document.getElementById("recent");
+  if (!d.recent.length) rec.append(h("div", { class: "empty" }, "No games yet."));
+  d.recent.forEach((x) => rec.append(BB.matchRow(x)));
+  const pl = document.getElementById("plans");
+  if (!d.reflections.length) pl.append(h("div", { class: "empty" }, "No reflections recorded yet."));
+  d.reflections.forEach((r) => pl.append(h("div", { class: "ev reflection" },
+    h("a", { class: "muted", href: `/match/${r.match_id}`, style: { fontSize: ".78rem" } }, `vs ${r.opponent} · half ${r.half}, turn ${r.turn}`),
+    h("div", {}, h("b", {}, "Plan: "), r.plan), h("div", { class: "secondary" }, h("b", {}, "Prediction: "), r.prediction))));
+  const ms = document.getElementById("msgs");
+  if (!d.messages.length) ms.append(h("div", { class: "empty" }, "This model hasn't sent any messages yet."));
+  d.messages.forEach((x) => ms.append(h("div", { class: "bubble home", style: { maxWidth: "100%" } },
+    h("a", { class: "who", href: `/match/${x.match_id}` }, `to ${x.opponent}`), x.text)));
+});
+</script>
+{% endblock %}

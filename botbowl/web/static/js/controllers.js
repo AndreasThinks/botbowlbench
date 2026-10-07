@@ -161,6 +161,71 @@ appControllers.controller('GamePlayCtrl', ['$scope', '$routeParams', '$location'
         $scope.team_id = $routeParams.team_id;
         $scope.spectating = window.location.href.indexOf('/spectate/') >= 0;
         $scope.replaying = window.location.href.indexOf('/replay/') >= 0;
+        // botbowlbench: '#/watch/<match_id>' follows a live benchmark match by polling the bench API
+        $scope.watching = window.location.href.indexOf('/watch/') >= 0;
+        // '#/frame/<match_id>' shows recorded frames of a match; the parent page picks the frame via postMessage
+        $scope.framed = window.location.href.indexOf('/frame/') >= 0;
+        $scope.embedded = $scope.watching || $scope.framed || window.location.search.indexOf('embed=1') >= 0;
+        $scope.WATCH_POLL_MS = 700;
+        if ($scope.watching || $scope.framed){
+            $scope.spectating = true;
+        }
+
+        $scope.applyGame = function applyGame(data){
+            $scope.game = data;
+            $scope.disableOppActions();
+            $scope.playersById = Object.assign({}, $scope.game.state.home_team.players_by_id, $scope.game.state.away_team.players_by_id);
+            $scope.setLocalState();
+            $scope.setAvailablePositions();
+            $scope.loading = false;
+            $scope.refreshing = false;
+        };
+
+        if ($scope.framed){
+            $scope.frameCache = {};
+            $scope.frameWanted = null;
+            $scope.fetchFrame = function fetchFrame(i){
+                if (!$scope.frameCache[i]){
+                    $scope.frameCache[i] = $.getJSON(options.api.base_url + '/api/matches/' + $scope.game_id + '/frames/' + i);
+                }
+                return $scope.frameCache[i];
+            };
+            $scope.showFrame = function showFrame(i, total){
+                $scope.frameWanted = i;
+                $scope.fetchFrame(i).done(function(data){
+                    if ($scope.frameWanted !== i){
+                        return;  // the viewer already moved on
+                    }
+                    $scope.$apply(function(){ $scope.applyGame(data); });
+                });
+                // prefetch ahead, drop frames far away to bound memory
+                for (let k = 1; k <= 4; k++){
+                    if (total === undefined || i + k < total){
+                        $scope.fetchFrame(i + k);
+                    }
+                }
+                for (let key in $scope.frameCache){
+                    if (Math.abs(parseInt(key) - i) > 40){
+                        delete $scope.frameCache[key];
+                    }
+                }
+            };
+            window.addEventListener('message', function(ev){
+                if (ev.origin !== window.location.origin || !ev.data || typeof ev.data.bbFrame !== 'number'){
+                    return;
+                }
+                $scope.showFrame(ev.data.bbFrame, ev.data.total);
+            });
+        }
+        if ($scope.embedded){
+            // scale the fixed-size board to whatever iframe it is embedded in
+            let fitBoard = function(){
+                let z = Math.min(1, window.innerWidth / 920, window.innerHeight / 860);
+                document.body.style.zoom = Math.max(0.35, z);
+            };
+            fitBoard();
+            $(window).off('resize.bench').on('resize.bench', fitBoard);
+        }
         $scope.replaySpeed = 200;
         $scope.replayDoneLoading = false;
         $scope.loadingSteps = false
@@ -1515,6 +1580,33 @@ appControllers.controller('GamePlayCtrl', ['$scope', '$routeParams', '$location'
                     $scope.runPlayLoop();
                 }).error(function (status, data) {
                     $location.path("/#/");
+                });
+
+            } else if ($scope.framed) {
+
+                // ask the embedding page which frame to show
+                if (window.parent !== window){
+                    window.parent.postMessage({bbReady: true}, window.location.origin);
+                } else {
+                    $scope.showFrame(0);
+                }
+
+            } else if ($scope.watching) {
+
+                $.getJSON(options.api.base_url + '/api/matches/' + $scope.game_id + '/state').done(function (data) {
+                    $scope.$apply(function(){
+                        let first = $scope.loading;
+                        $scope.applyGame(data);
+                        if (first) {
+                            $scope.runTimeLoop(20, data.game_id);
+                        }
+                    });
+                }).always(function(){
+                    $scope.refreshing = false;
+                    let over = $scope.game && $scope.game.state && $scope.game.state.game_over;
+                    if (!over && window.location.href.indexOf($scope.game_id) >= 0){
+                        setTimeout($scope.reload, $scope.WATCH_POLL_MS);
+                    }
                 });
 
             } else {

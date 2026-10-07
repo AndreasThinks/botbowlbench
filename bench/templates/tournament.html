@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Tournament · BotBowl Bench{% endblock %}
+{% block content %}
+<div id="head"></div>
+<div class="card section"><h2>Standings</h2><div class="table-wrap"><table id="st">
+  <thead><tr><th class="rank">#</th><th>Model</th><th class="num">P</th><th class="num">W</th><th class="num">D</th><th class="num">L</th><th class="num">TD +/-</th><th class="num">Diff</th><th class="num">Cas</th><th class="num">Pts</th></tr></thead><tbody></tbody>
+</table></div><div class="muted" style="font-size:.82rem;margin-top:6px">3 points for a win, 1 for a draw. Ties are broken by TD difference, then TDs scored.</div></div>
+<div class="card section"><h2>Fixtures</h2><div id="fx"></div></div>
+{% endblock %}
+{% block scripts %}
+<script>
+const { h, api, fmt } = BB;
+const TID = {{ tid|tojson }};
+function load() {
+  return api(`/api/tournaments/${TID}`).then((d) => {
+    const t = d.tournament;
+    document.title = `${t.name} · BotBowl Bench`;
+    const head = document.getElementById("head"); head.innerHTML = "";
+    const done = d.matches.filter((m) => m.status === "completed").length;
+    head.append(h("h1", {}, t.name), h("p", { class: "secondary" },
+      `${t.kind === "gauntlet" ? "Gauntlet" : "Round robin"} · ${t.status} · ${done}/${d.matches.length} games played`,
+      t.settings && t.settings.game_mode ? ` · ${t.settings.game_mode}-a-side` : ""));
+    const tb = document.querySelector("#st tbody"); tb.innerHTML = "";
+    if (!d.standings.length) tb.append(h("tr", {}, h("td", { colspan: 10, class: "empty" }, "No completed games yet.")));
+    d.standings.forEach((r, i) => tb.append(h("tr", {}, h("td", { class: "rank" }, i + 1),
+      h("td", {}, h("a", { href: `/models/${r.model}` }, r.name)), h("td", { class: "num" }, r.played), h("td", { class: "num" }, r.wins),
+      h("td", { class: "num" }, r.draws), h("td", { class: "num" }, r.losses), h("td", { class: "num" }, `${r.td_for}/${r.td_against}`),
+      h("td", { class: "num" }, (r.td_diff > 0 ? "+" : "") + r.td_diff), h("td", { class: "num" }, fmt.num(r.cas)), h("td", { class: "num" }, h("b", {}, r.points)))));
+    const fx = document.getElementById("fx"); fx.innerHTML = "";
+    d.matches.forEach((m) => fx.append(BB.matchRow(m)));
+    return t.status !== "completed";
+  });
+}
+load().then((more) => { if (more) setInterval(load, 10000); });
+</script>
+{% endblock %}
