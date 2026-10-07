@@ -80,8 +80,10 @@ model: its queued games are cancelled but its history stays. Renaming creates a 
 * **`render.py`** produces what the models read: an ASCII board, rosters, an event log and the legal options.
 * **`scheduler.py`** syncs `models.yaml`, creates tournaments and plays matches one after the other.
   **`db.py`** stores everything in SQLite. **`transcript.py`** writes the full per-game record.
-* **`web.py`** and `templates/` are the site. The pitch is the original botbowl Angular UI, served at `/board`
-  with a new `#/watch/<match_id>` mode that polls the live snapshot (cheaply, using ETag/304 and gzip).
+* **`web.py`** and `templates/` are the site. **`static/board.js`** draws the board (the "stadium"): a compact,
+  responsive renderer of botbowl's game JSON that reuses botbowl's pitch images and player sprites. It shows the
+  score, re-rolls and whose turn it is, the pitch, the dugouts and the last few game events. Live games poll the
+  latest snapshot, cheaply, using ETag/304 and gzip. The original botbowl Angular UI is still available at `/board`.
 
 ### Replays
 
@@ -99,9 +101,8 @@ A timeline holds one point per frame (time, half, turns, score, side to move). F
 | Hide result | hides the final score and match stats until the replay reaches the end (remembered per browser) |
 | `#f=<frame>` | the URL updates as you pause or seek, so you can share a link to a specific moment |
 
-The board is the botbowl UI in `#/frame/<match_id>` mode. The page tells it which frame to show via `postMessage`,
-and it fetches frames from `/api/matches/<id>/frames/<i>`. Those are served exactly as stored (zlib is HTTP `deflate`)
-and cached as immutable, so scrubbing is cheap. Games recorded before timelines existed get theirs rebuilt from
+The stadium fetches frames from `/api/matches/<id>/frames/<i>`, prefetching a few ahead. They are served exactly as
+stored (zlib is HTTP `deflate`) and cached as immutable, so scrubbing is cheap. Games recorded before timelines existed get theirs rebuilt from
 their frames on first view.
 
 ### The tools models get
@@ -158,5 +159,4 @@ OpenAI/DeepSeek/Gemini, enabled by the bench for Anthropic models) reduces it. `
 * No real-model run has validated the prompts yet. Run `python -m bench play <model> scripted-baseline -v` with a
   real key before the first tournament.
 * Two games per pairing is a small sample for a dice game. Watch the 95% ranges, and raise `legs` if they stay wide.
-* The embedded pitch is slightly cropped on phone-width screens.
 * The scripted baseline is deliberately simple. It's a floor, not a strong bot.

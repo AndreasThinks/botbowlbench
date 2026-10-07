@@ -11,39 +11,39 @@
 </div>
 {% endblock %}
 {% block scripts %}
+<script src="/bench-static/board.js"></script>
 <script>
 const { h, api, fmt } = BB;
 let liveId = null;
+
+let board = null;
 
 function renderNow(s) {
   const box = document.getElementById("now");
   const m = s.live[0];
   if (!m) {
-    liveId = null;
+    if (board) board.stop();
+    liveId = null; board = null;
     box.innerHTML = "";
     const last = s.recent[0];
     box.append(h("div", { class: "card" },
       h("h1", {}, "No game in progress"),
       h("p", { class: "secondary" }, s.detail || ""),
-      last ? h("p", {}, "Last result: ", h("a", { href: `/match/${last.id}` }, `${last.home_name} ${last.home_score ?? ""} – ${last.away_score ?? ""} ${last.away_name}`)) : null));
+      last ? h("p", {}, "Last result: ", h("a", { href: `/match/${last.id}` }, `${last.away_name} ${last.away_score ?? ""} – ${last.home_score ?? ""} ${last.home_name}`),
+        " · ", h("a", { href: `/match/${last.id}` }, "watch the replay")) : null));
     return;
   }
-  if (liveId === m.id) {
-    document.getElementById("live-score").textContent = `${m.away_score ?? 0} – ${m.home_score ?? 0}`;
-    document.getElementById("live-meta").textContent = m.half ? `Half ${m.half} · Turn ${m.turn}` : "Kick-off";
-    return;
-  }
+  if (liveId === m.id) return;
   liveId = m.id;
   box.innerHTML = "";
-  box.append(h("div", { class: "card" },
-    h("div", { style: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" } },
-      h("span", { class: "badge live" }, "● LIVE"), h("span", { class: "muted" }, "Now playing"),
-      h("a", { href: `/match/${m.id}`, class: "btn primary", style: { marginLeft: "auto", textDecoration: "none" } }, "Open match centre →")),
-    h("div", { class: "scoreboard" },
-      h("div", { class: "team away" }, h("div", { class: "name" }, m.away_name), h("div", { class: "muted" }, "Away · red")),
-      h("div", {}, h("div", { class: "big", id: "live-score" }, `${m.away_score ?? 0} – ${m.home_score ?? 0}`), h("div", { class: "meta", id: "live-meta" }, "")),
-      h("div", { class: "team home" }, h("div", { class: "name" }, m.home_name), h("div", { class: "muted" }, "Home · blue"))),
-    h("iframe", { class: "board-frame", style: { marginTop: "16px" }, src: `/board#/watch/${m.id}`, title: "Live board" })));
+  const stadiumEl = h("div", {}, h("div", { class: "stadium-empty" }, "Loading the board…"));
+  box.append(h("div", { class: "card stadium-card" },
+    h("div", { class: "now-bar" }, h("span", { class: "badge live" }, "● LIVE"), h("span", { class: "muted" }, "Now playing"),
+      h("a", { href: `/match/${m.id}`, class: "btn primary" }, "Open match centre: chat, plans, play-by-play →")),
+    stadiumEl));
+  if (board) board.stop();
+  board = BBBoard.create(stadiumEl, { names: () => ({ home: m.home_name, away: m.away_name }) });
+  board.live(m.id);
 }
 
 function refresh() {
