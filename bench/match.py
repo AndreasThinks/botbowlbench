@@ -7,7 +7,7 @@ from typing import Callable, Optional
 from bench import version
 from bench.transcript import Transcript
 from bench.driver import DriverLimits, SeatDriver
-from bench.llm import OpenRouterLLM, RandomPolicy, ScriptedPolicy
+from bench.llm import BotbowlAgentPolicy, OpenRouterLLM, RandomPolicy, ScriptedPolicy
 from bench.session import GameSession
 from bench.stats import side_stats
 
@@ -18,6 +18,9 @@ def make_llm(model_cfg: dict, seat, api_key: Optional[str]):
         return RandomPolicy(seat, seed=model_cfg.get("seed"), delay=float(model_cfg.get("delay", 0)))
     if provider == "scripted":
         return ScriptedPolicy(seat, seed=model_cfg.get("seed"), delay=float(model_cfg.get("delay", 0)))
+    if provider == "botbowl":
+        return BotbowlAgentPolicy(seat, model_cfg["bot"], module=model_cfg.get("module"), seed=model_cfg.get("seed"),
+                                  delay=float(model_cfg.get("delay", 0)))
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set")
     return OpenRouterLLM(model_cfg["model"], api_key,

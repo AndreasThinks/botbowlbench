@@ -328,3 +328,62 @@ class ScriptedPolicy(RandomPolicy):
                     return ("move", {"player_id": render.pid(p), "x": x, "y": p.position.y})
         return ("end_turn", {"plan": "Advance the ball carrier safely and make favourable blocks.",
                              "prediction": "The opponent will blitz my ball carrier if it can reach it."})
+
+
+class BotbowlAgentPolicy(RandomPolicy):
+    """Plays a native botbowl bot (any ``botbowl.Agent`` in the bot registry) through the same MCP tools.
+
+    Each time the seat is waiting for a decision, the bot's ``act(game)`` picks the action and it is submitted
+    with ``take_action`` (or ``end_turn``), so these games are recorded and scored exactly like LLM games.
+    ``module`` is imported first so the bot registers itself, e.g. ``examples.scripted_bot_example``.
+    """
+
+    PLAN = "Follow the scripted priorities: safe blocks, protect the ball carrier, then advance."
+    PREDICTION = "The opponent will try to reach my ball carrier."
+
+    def __init__(self, seat, bot: str, module: Optional[str] = None, seed: Optional[int] = None,
+                 delay: float = 0.0):
+        super().__init__(seat, message_rate=0.0, seed=seed, delay=delay)
+        import importlib
+        import botbowl
+        if module:
+            importlib.import_module(module)
+        self.agent = botbowl.make_bot(bot)
+        self._started = False
+
+    async def chat(self, messages: List[dict], tools: List[dict]) -> LLMResponse:
+        from botbowl.core.table import ActionType
+        from bench import render
+        from bench.session import fallback_action
+        self._n += 1
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        forced = self._forced_reflection(tools)
+        if forced is not None:
+            return forced
+        if self.seat.session.finished or not self.seat.is_pending():
+            return self._single("get_legal_actions", {})
+        game = self.seat.session.game
+        team = self.seat.team
+        if not self._started:
+            self.agent.new_game(game, team)
+            self._started = True
+        # botbowl bots are seeded through Python's global RNG; keep them reproducible from the match seed
+        state = random.getstate()
+        random.seed(self.rng.random())
+        try:
+            action = self.agent.act(game)
+        except Exception:
+            action = None
+        finally:
+            random.setstate(state)
+        if action is None or not game._is_action_allowed(action):
+            action = fallback_action(game, team)
+        if action.action_type == ActionType.END_TURN:
+            return self._single("end_turn", {"plan": self.PLAN, "prediction": self.PREDICTION})
+        args = {"action_type": action.action_type.name}
+        if action.player is not None:
+            args["player_id"] = render.pid(action.player)
+        if action.position is not None:
+            args["x"], args["y"] = action.position.x, action.position.y
+        return self._single("take_action", args)

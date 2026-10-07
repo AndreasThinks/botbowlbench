@@ -51,6 +51,8 @@ def load_models_file(path: str = None) -> Dict:
         m.setdefault("enabled", True)
         if m["provider"] == "openrouter" and not m.get("model"):
             raise ValueError(f"Model '{m['name']}' needs an OpenRouter 'model' id")
+        if m["provider"] == "botbowl" and not m.get("bot"):
+            raise ValueError(f"Model '{m['name']}' needs a botbowl 'bot' id")
         m["id"] = m.get("id") or slugify(m["name"])
         if m["id"] in seen:
             raise ValueError(f"Duplicate model id '{m['id']}' in {path}")

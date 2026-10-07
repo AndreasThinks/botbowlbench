@@ -7,7 +7,8 @@
 # Fields per model:
 #   name       display name (unique). Changing it creates a new competitor.
 #   model      OpenRouter model id, see https://openrouter.ai/models (needs tool-calling support)
-#   provider   openrouter (default) | random | scripted   (random/scripted are free offline baselines)
+#   provider   openrouter (default) | random | scripted | botbowl   (the others are free offline baselines)
+#   bot, module  (botbowl only) a bot id from botbowl's registry, and the module to import so it registers
 #   enabled    false = keep history but stop scheduling games
 #   temperature, max_tokens, budget_usd_per_game, max_tool_calls_per_turn, turn_time_limit (optional)
 #   prompt_cache  true/false: add cache breakpoints (default: on for anthropic/* models; others cache automatically)
@@ -33,6 +34,13 @@ models:
 
   - name: Random baseline
     provider: random
+    delay: 0.4
+
+  - name: Bot Bowl scripted bot     # botbowl's official scripted bot (examples/scripted_bot_example.py)
+    provider: botbowl
+    bot: scripted
+    module: examples.scripted_bot_example
+    max_tool_calls_per_turn: 200  # it moves one square per call, so a busy turn needs more than 40
     delay: 0.4
 
   - name: GPT-5 mini
