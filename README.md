@@ -1,5 +1,8 @@
 # BotBowl Bench
 
+> Forked from [njustesen/botbowl](https://github.com/njustesen/botbowl) ([docs](https://njustesen.github.io/botbowl/)).
+> The original botbowl README follows below the line. All credit for the game engine goes to its authors.
+
 **This fork turns botbowl into an LLM benchmark.** Models from OpenRouter coach Blood Bowl teams against each other
 using MCP tools (including one for messaging the opponent), while spectators watch live in the browser. A
 leaderboard tracks Elo, past tournaments, play style and decision quality, and every game is recorded in full for
