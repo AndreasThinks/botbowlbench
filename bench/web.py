@@ -12,7 +12,7 @@ from flask import (Flask, Response, abort, jsonify, render_template, request, se
 
 from bench import db, export, ratings
 from bench.transcript import transcript_path
-from bench.scheduler import frame_json, get_bench, load_frames
+from bench.scheduler import frame_json, get_bench, load_frames, load_timeline
 
 BOTBOWL_WEB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "botbowl", "web")
 
@@ -84,6 +84,10 @@ def create_app(start_scheduler: bool = True) -> Flask:
     def about_page():
         return render_template("about.html", page="about")
 
+    @app.route("/matches")
+    def matches_page():
+        return render_template("matches.html", page="matches")
+
     @app.route("/data")
     def data_page():
         return render_template("data.html", page="data")
@@ -126,6 +130,48 @@ def create_app(start_scheduler: bool = True) -> Flask:
                         "settings": {k: bench.settings.get(k) for k in ("game_mode", "team", "legs",
                                                                         "max_tool_calls_per_turn",
                                                                         "turn_time_limit", "budget_usd_per_game")}})
+
+    @app.route("/api/matches")
+    def api_matches():
+        """Archive of finished games, newest first. Filters: model, tournament, result (decisive|draw),
+        admissible=1. Paginate with before=<finished_at of the last row>."""
+        names = models_by_id()
+        where, args = ["status IN ('completed','error')"], []
+        model = request.args.get("model")
+        if model:
+            where.append("(home_model=? OR away_model=?)")
+            args += [model, model]
+        tid = request.args.get("tournament", type=int)
+        if tid:
+            where.append("tournament_id=?")
+            args.append(tid)
+        result = request.args.get("result")
+        if result == "draw":
+            where.append("winner='draw'")
+        elif result == "decisive":
+            where.append("winner IN ('home','away')")
+        if request.args.get("admissible") in ("1", "true"):
+            where.append("admissible=1")
+        before = request.args.get("before", type=float)
+        if before:
+            where.append("finished_at < ?")
+            args.append(before)
+        limit = max(1, min(100, request.args.get("limit", 30, type=int)))
+        rows = db.rows(f"SELECT * FROM matches WHERE {' AND '.join(where)} ORDER BY finished_at DESC LIMIT ?",
+                       tuple(args) + (limit + 1,))
+        more = len(rows) > limit
+        rows = rows[:limit]
+        tours = {t["id"]: t["name"] for t in db.rows("SELECT id, name FROM tournaments")}
+        out = []
+        for m in rows:
+            meta = json.loads(m["meta"]) if m.get("meta") else {}
+            sm = match_summary(m, names)
+            sm.pop("meta", None)
+            sm["tournament_name"] = tours.get(m["tournament_id"])
+            sm["admissible"] = bool(m.get("admissible")) if m.get("admissible") is not None else None
+            sm["time_capped"] = bool(meta.get("time_capped"))
+            out.append(sm)
+        return jsonify({"matches": out, "next_before": rows[-1]["finished_at"] if more and rows else None})
 
     @app.route("/api/matches/<match_id>")
     def api_match(match_id):
@@ -178,7 +224,45 @@ def create_app(start_scheduler: bool = True) -> Flask:
         after = request.args.get("after", 0, type=int)
         return jsonify(db.get_events(match_id, after=after, limit=1000))
 
-    # replays, in the format the botbowl Angular replay viewer expects (#/game/replay/<match_id>/)
+    # ---- replays ----------------------------------------------------------------------------------------
+    @app.route("/api/matches/<match_id>/timeline")
+    def api_match_timeline(match_id):
+        """One point per recorded frame (time, half, turns, score, side to move) for the replay scrubber."""
+        m = db.row("SELECT status, started_at, finished_at FROM matches WHERE id=?", (match_id,))
+        if m is None:
+            abort(404)
+        runner = bench.live.get(match_id)
+        if runner is not None:
+            with runner.session.lock:
+                points = [dict(p) for p in runner.session.timeline]
+        else:
+            points = [dict(p) for p in load_timeline(match_id)]
+        # frames recorded before timestamps existed: spread them evenly over the game's duration
+        if points and any(p["ts"] is None for p in points) and m["started_at"] and m["finished_at"]:
+            span = (m["finished_at"] - m["started_at"]) / max(1, len(points) - 1)
+            for i, p in enumerate(points):
+                if p["ts"] is None:
+                    p["ts"] = round(m["started_at"] + i * span, 3)
+        for i, p in enumerate(points):
+            p["i"] = i
+        return jsonify({"live": runner is not None, "frames": len(points), "points": points})
+
+    @app.route("/api/matches/<match_id>/frames/<int:idx>")
+    def api_match_frame(match_id, idx):
+        """Board state at one decision. Frames are stored zlib-compressed, which is exactly HTTP 'deflate',
+        and never change once written, so they're served as-is and cached forever."""
+        runner = bench.live.get(match_id)
+        frames = runner.session.frames if runner is not None else load_frames(match_id)
+        if not 0 <= idx < len(frames):
+            abort(404)
+        blob = frames[idx]
+        headers = {"Cache-Control": "public, max-age=31536000, immutable", "Vary": "Accept-Encoding"}
+        if "deflate" in request.headers.get("Accept-Encoding", ""):
+            headers["Content-Encoding"] = "deflate"
+            return Response(blob, mimetype="application/json", headers=headers)
+        return Response(frame_json(blob), mimetype="application/json", headers=headers)
+
+    # replays, in the format the original botbowl Angular replay viewer expects (#/game/replay/<match_id>/)
     @app.route("/replays/<match_id>")
     def api_replay(match_id):
         frames = load_frames(match_id)

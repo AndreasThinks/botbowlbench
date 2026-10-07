@@ -48,6 +48,10 @@ app.config(['$locationProvider', '$routeProvider',
             templateUrl: 'static/partials/game.play.html',
             controller: 'GamePlayCtrl'
         }).
+        when('/frame/:id', {
+            templateUrl: 'static/partials/game.play.html',
+            controller: 'GamePlayCtrl'
+        }).
         when('/game/replay/:id/', {
             templateUrl: 'static/partials/game.play.html',
             controller: 'GamePlayCtrl',

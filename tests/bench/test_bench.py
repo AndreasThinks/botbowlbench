@@ -286,3 +286,52 @@ def test_internal_errors_are_not_blamed_on_the_model(monkeypatch):
         assert s.harness_errors and "simulated harness bug" in s.harness_errors[0]
     finally:
         s.abort()
+
+
+def test_replays_and_match_archive(bench_env):
+    import zlib
+    from bench.web import create_app
+    from bench.scheduler import get_bench, timeline_path
+    app = create_app(start_scheduler=False)
+    b = get_bench()
+    played = []
+    for _ in range(3):
+        m = b.next_match()
+        b.play(m)
+        played.append(m["id"])
+    c = app.test_client()
+    mid = played[0]
+
+    tl = json.loads(c.get(f"/api/matches/{mid}/timeline").data)
+    assert tl["live"] is False and tl["frames"] > 10 and len(tl["points"]) == tl["frames"]
+    first, last = tl["points"][0], tl["points"][-1]
+    assert first["i"] == 0 and last["over"] is True and first["ts"] <= last["ts"]
+    assert {"half", "ht", "at", "hs", "as", "side"} <= set(first)
+
+    # frames are served as stored (zlib == HTTP deflate) and cached forever
+    r = c.get(f"/api/matches/{mid}/frames/5", headers={"Accept-Encoding": "gzip, deflate"})
+    assert r.status_code == 200 and r.headers["Content-Encoding"] == "deflate"
+    assert "immutable" in r.headers["Cache-Control"]
+    frame = json.loads(zlib.decompress(r.data))
+    assert frame["state"]["home_team"]["state"]["turn"] == tl["points"][5]["ht"]
+    assert json.loads(c.get(f"/api/matches/{mid}/frames/5").data) == frame   # plain JSON without deflate
+    assert c.get(f"/api/matches/{mid}/frames/{tl['frames']}").status_code == 404
+
+    # games recorded before timelines existed: rebuilt from the frames, timestamps interpolated
+    os.remove(timeline_path(mid))
+    tl2 = json.loads(c.get(f"/api/matches/{mid}/timeline").data)
+    assert [(p["hs"], p["as"], p["ht"], p["at"]) for p in tl2["points"]] == \
+           [(p["hs"], p["as"], p["ht"], p["at"]) for p in tl["points"]]
+
+    # archive: newest first, pagination, filters
+    page1 = json.loads(c.get("/api/matches?limit=2").data)
+    assert len(page1["matches"]) == 2 and page1["next_before"]
+    page2 = json.loads(c.get(f"/api/matches?limit=2&before={page1['next_before']}").data)
+    ids = [m["id"] for m in page1["matches"] + page2["matches"]]
+    assert sorted(ids) == sorted(played) and page2["next_before"] is None
+    model = page1["matches"][0]["home_model"]
+    only = json.loads(c.get(f"/api/matches?model={model}").data)["matches"]
+    assert only and all(model in (m["home_model"], m["away_model"]) for m in only)
+    draws = json.loads(c.get("/api/matches?result=draw").data)["matches"]
+    assert all(m["winner"] == "draw" for m in draws)
+    assert c.get("/matches").status_code == 200

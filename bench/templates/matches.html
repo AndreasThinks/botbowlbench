@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Matches · BotBowl Bench{% endblock %}
+{% block content %}
+<h1>Matches</h1>
+<p class="secondary">Every finished game can be replayed: open one to watch it again on the board, with the chat, plans and play-by-play in sync.</p>
+<div class="card">
+  <div class="filters">
+    <label>Model <select id="f-model"><option value="">All models</option></select></label>
+    <label>Tournament <select id="f-tournament"><option value="">All tournaments</option></select></label>
+    <label>Result <select id="f-result"><option value="">Any</option><option value="decisive">Decisive</option><option value="draw">Draws</option></select></label>
+    <label class="player-opt"><input type="checkbox" id="f-admissible"> Admissible only</label>
+  </div>
+  <div class="table-wrap"><table id="list">
+    <thead><tr><th>Finished</th><th class="num">Away</th><th class="num">Score</th><th>Home</th><th>Tournament</th><th class="num">Length</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+  <div style="margin-top:12px;text-align:center"><button type="button" class="btn" id="more" hidden>Load more</button></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const { h, api, fmt } = BB;
+const sel = (id) => document.getElementById(id);
+let nextBefore = null;
+
+function query(before) {
+  const q = new URLSearchParams();
+  if (sel("f-model").value) q.set("model", sel("f-model").value);
+  if (sel("f-tournament").value) q.set("tournament", sel("f-tournament").value);
+  if (sel("f-result").value) q.set("result", sel("f-result").value);
+  if (sel("f-admissible").checked) q.set("admissible", "1");
+  if (before) q.set("before", before);
+  return q;
+}
+
+function row(m) {
+  const won = (side) => m.winner === side ? { fontWeight: 700 } : {};
+  const date = m.finished_at ? new Date(m.finished_at * 1000) : null;
+  return h("tr", {},
+    h("td", { class: "muted", title: date ? date.toLocaleString() : "" }, date ? date.toLocaleDateString() + " " + date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "–"),
+    h("td", { class: "num", style: won("away") }, h("a", { href: `/models/${m.away_model}` }, m.away_name)),
+    h("td", { class: "num", style: { textAlign: "center", fontWeight: 700 } }, m.status === "completed" ? `${m.away_score} – ${m.home_score}` : h("span", { class: "badge loss" }, "error")),
+    h("td", { style: won("home") }, h("a", { href: `/models/${m.home_model}` }, m.home_name)),
+    h("td", {}, m.tournament_name ? h("a", { href: `/tournaments/${m.tournament_id}` }, m.tournament_name) : "–",
+      m.admissible === false ? h("span", { class: "badge", style: { marginLeft: "6px" }, title: "Not admissible for research use" }, "flagged") : null),
+    h("td", { class: "num muted" }, fmt.dur(m.duration)),
+    h("td", {}, m.frames ? h("a", { class: "btn primary", href: `/match/${m.id}`, style: { textDecoration: "none" } }, "▶ Watch") : h("a", { href: `/match/${m.id}` }, "Details")));
+}
+
+function load(append) {
+  const tb = document.querySelector("#list tbody");
+  return api("/api/matches?" + query(append ? nextBefore : null)).then((d) => {
+    if (!append) tb.innerHTML = "";
+    d.matches.forEach((m) => tb.append(row(m)));
+    if (!tb.children.length) tb.append(h("tr", {}, h("td", { colspan: 7, class: "empty" }, "No finished matches match these filters.")));
+    nextBefore = d.next_before;
+    sel("more").hidden = !nextBefore;
+  });
+}
+
+// filters live in the URL so a filtered list can be shared
+const params = new URLSearchParams(location.search);
+Promise.all([api("/api/leaderboard"), api("/api/tournaments")]).then(([lb, ts]) => {
+  [...lb.models].sort((a, b) => a.name.localeCompare(b.name)).forEach((m) => sel("f-model").append(h("option", { value: m.id }, m.name)));
+  ts.forEach((t) => sel("f-tournament").append(h("option", { value: t.id }, t.name)));
+  sel("f-model").value = params.get("model") || "";
+  sel("f-tournament").value = params.get("tournament") || "";
+  sel("f-result").value = params.get("result") || "";
+  sel("f-admissible").checked = params.get("admissible") === "1";
+  load(false);
+});
+["f-model", "f-tournament", "f-result", "f-admissible"].forEach((id) => sel(id).addEventListener("change", () => {
+  history.replaceState(null, "", "?" + query(null).toString());
+  load(false);
+}));
+sel("more").onclick = () => load(true);
+</script>
+{% endblock %}

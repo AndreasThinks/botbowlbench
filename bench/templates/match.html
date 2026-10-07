@@ -12,6 +12,26 @@
 <div class="live-layout section">
   <div>
     <iframe class="board-frame" id="board" title="Game board"></iframe>
+    <div class="card player" id="player" hidden>
+      <div class="player-row">
+        <button type="button" class="pbtn" id="p-prevturn" title="Previous turn (Shift+←)" aria-label="Previous turn">⏮</button>
+        <button type="button" class="pbtn" id="p-back" title="Step back (←)" aria-label="Step back">◀</button>
+        <button type="button" class="pbtn play" id="p-play" title="Play / pause (Space)" aria-label="Play">▶</button>
+        <button type="button" class="pbtn" id="p-fwd" title="Step forward (→)" aria-label="Step forward">▶|</button>
+        <button type="button" class="pbtn" id="p-nextturn" title="Next turn (Shift+→)" aria-label="Next turn">⏭</button>
+        <select id="p-speed" aria-label="Playback speed">
+          <option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option>
+          <option value="4">4×</option><option value="8">8×</option>
+        </select>
+        <span class="player-pos" id="p-pos"></span>
+        <label class="player-opt"><input type="checkbox" id="p-hide"> Hide result</label>
+      </div>
+      <div class="scrub">
+        <div class="scrub-marks" id="p-marks" aria-hidden="true"></div>
+        <input type="range" id="p-range" min="0" max="0" value="0" aria-label="Replay position">
+      </div>
+      <div class="muted player-final" id="p-final"></div>
+    </div>
     <div class="muted" id="board-note" style="font-size:.82rem;margin-top:6px"></div>
   </div>
   <div class="card feed">
@@ -21,6 +41,7 @@
       <button data-tab="all">Play-by-play</button>
       <button data-tab="home">Home only</button>
       <button data-tab="away">Away only</button>
+      <label class="player-opt" id="sync-wrap" hidden title="Only show what had happened at this point of the replay"><input type="checkbox" id="p-sync" checked> Sync with replay</label>
     </div>
     <div class="feed-body" id="feed" aria-live="polite"></div>
   </div>
@@ -45,20 +66,176 @@ function setBoard(mode) {
   const f = document.getElementById("board");
   const note = document.getElementById("board-note");
   if (mode === "live") { f.src = `/board#/watch/${MATCH_ID}`; note.textContent = "Live board — updates as the models act."; }
-  else if (mode === "replay") { f.src = `/board?embed=1#/game/replay/${MATCH_ID}/`; note.textContent = "Replay — use the controls above the pitch to step through the game."; }
+  else if (mode === "replay") { f.src = `/board#/frame/${MATCH_ID}`; note.textContent = "Keys: Space play/pause · ← → step · Shift+← → jump a turn. Markers: ▲ touchdown, ticks = turns."; initReplay(); }
   else { f.removeAttribute("src"); note.textContent = "The board appears when the match kicks off."; }
 }
+
+// ---- replay player ---------------------------------------------------------------------------------
+const R = { active: false, points: [], idx: 0, playing: false, timer: null, speed: 1, turns: [], tds: [],
+            sync: true, hide: false, ready: false };
+const FRAME_MS = 650;   // at 1x
+try { R.hide = localStorage.getItem("bb-hide-result") === "1"; } catch (e) {}
+
+function turnLabel(p) {
+  if (!p) return "";
+  if (!p.side) return p.over ? "Full time" : `Half ${p.half ?? 1} · kick-off`;
+  const t = p.side === "home" ? p.ht : p.at;
+  return `Half ${p.half} · ${names()[p.side]} turn ${t}`;
+}
+
+function initReplay() {
+  api(`/api/matches/${MATCH_ID}/timeline`).then((tl) => {
+    if (!tl.frames) return;
+    R.active = true; R.points = tl.points;
+    const last = R.points.length - 1;
+    // turn starts and touchdowns, for the scrubber markers and turn jumps
+    let prevKey = null;
+    R.points.forEach((p, i) => {
+      const key = p.side ? `${p.half}-${p.side}-${p.side === "home" ? p.ht : p.at}` : null;
+      if (key && key !== prevKey) R.turns.push(i);
+      if (key) prevKey = key;
+      const q = R.points[i - 1];
+      if (q && (p.hs > q.hs || p.as > q.as)) R.tds.push({ i, side: p.hs > q.hs ? "home" : "away" });
+    });
+    const range = document.getElementById("p-range");
+    range.max = last;
+    const marks = document.getElementById("p-marks");
+    const pct = (i) => (last ? (i / last) * 100 : 0);
+    R.turns.forEach((i) => marks.append(h("span", { class: "tick", style: { left: pct(i) + "%" } })));
+    R.tds.forEach((t) => marks.append(h("button", { type: "button", class: `td ${t.side}`, style: { left: pct(t.i) + "%" },
+      title: `Touchdown: ${names()[t.side]}`, "aria-label": `Jump to ${names()[t.side]} touchdown`,
+      onclick: () => seek(Math.max(0, turnStartOf(t.i))) }, "▲")));
+    document.getElementById("player").hidden = false;
+    document.getElementById("sync-wrap").hidden = false;
+    document.getElementById("p-hide").checked = R.hide;
+    const m = /f=(\d+)/.exec(location.hash);
+    seek(m ? Math.min(last, parseInt(m[1])) : 0, true);
+  });
+}
+
+function turnStartOf(i) {
+  let s = 0;
+  for (const t of R.turns) { if (t <= i) s = t; else break; }
+  return s;
+}
+
+function cutoffTs() {
+  // show what had been logged by this frame (tool results land a few ms after their frame)
+  const p = R.points[R.idx], next = R.points[R.idx + 1];
+  if (!p || !next) return Infinity;
+  return Math.min(p.ts + 0.25, next.ts - 0.001);
+}
+
+function postFrame() {
+  const f = document.getElementById("board");
+  if (f.contentWindow) f.contentWindow.postMessage({ bbFrame: R.idx, total: R.points.length }, location.origin);
+}
+
+function seek(i, quiet) {
+  R.idx = Math.max(0, Math.min(R.points.length - 1, i));
+  document.getElementById("p-range").value = R.idx;
+  postFrame();
+  renderReplayState();
+  renderFeed(false);
+  if (!quiet && !R.playing) history.replaceState(null, "", `#f=${R.idx}`);
+}
+
+function renderReplayState() {
+  const p = R.points[R.idx], last = R.points.length - 1;
+  document.getElementById("p-pos").textContent = `${turnLabel(p)} · ${R.idx + 1}/${last + 1}`;
+  document.getElementById("score").textContent = `${p.as} – ${p.hs}`;
+  document.getElementById("meta").textContent = R.idx === last ? finalText() : `Replay · ${turnLabel(p)}`;
+  const fin = document.getElementById("p-final");
+  fin.textContent = R.hide && R.idx < last ? "Result hidden until the end of the replay." : `Final: ${finalScore()} · ${finalText()}`;
+  const showStats = !(R.hide && R.idx < last);
+  document.getElementById("stats-card").style.display = showStats && match.home_stats ? "" : "none";
+  document.getElementById("p-play").textContent = R.playing ? "❚❚" : "▶";
+  document.getElementById("p-play").setAttribute("aria-label", R.playing ? "Pause" : "Play");
+}
+
+function finalScore() { return `${match.away_name} ${match.away_score} – ${match.home_score} ${match.home_name}`; }
+function finalText() {
+  if (match.status !== "completed") return match.status;
+  return match.winner === "draw" ? "Full time · draw" : `Full time · ${match.winner === "home" ? match.home_name : match.away_name} wins`;
+}
+
+function play(on) {
+  R.playing = on;
+  clearTimeout(R.timer);
+  if (on && R.idx >= R.points.length - 1) seek(0, true);
+  const tick = () => {
+    if (!R.playing) return;
+    if (R.idx >= R.points.length - 1) { play(false); history.replaceState(null, "", `#f=${R.idx}`); return; }
+    seek(R.idx + 1, true);
+    R.timer = setTimeout(tick, FRAME_MS / R.speed);
+  };
+  if (on) R.timer = setTimeout(tick, FRAME_MS / R.speed);
+  else history.replaceState(null, "", `#f=${R.idx}`);
+  renderReplayState();
+}
+
+function jumpTurn(dir) {
+  if (dir < 0) {
+    const cur = turnStartOf(R.idx);
+    const prev = R.turns.filter((t) => t < (R.idx - cur > 1 ? cur + 1 : cur));
+    seek(prev.length ? prev[prev.length - 1] : 0);
+  } else {
+    const next = R.turns.find((t) => t > R.idx);
+    seek(next !== undefined ? next : R.points.length - 1);
+  }
+}
+
+document.getElementById("p-play").onclick = () => play(!R.playing);
+document.getElementById("p-back").onclick = () => { play(false); seek(R.idx - 1); };
+document.getElementById("p-fwd").onclick = () => { play(false); seek(R.idx + 1); };
+document.getElementById("p-prevturn").onclick = () => jumpTurn(-1);
+document.getElementById("p-nextturn").onclick = () => jumpTurn(1);
+document.getElementById("p-speed").onchange = (e) => { R.speed = parseFloat(e.target.value); if (R.playing) play(true); };
+document.getElementById("p-range").oninput = (e) => { seek(parseInt(e.target.value), R.playing); };
+document.getElementById("p-hide").onchange = (e) => {
+  R.hide = e.target.checked;
+  try { localStorage.setItem("bb-hide-result", R.hide ? "1" : "0"); } catch (err) {}
+  renderReplayState();
+};
+document.getElementById("p-sync").onchange = (e) => { R.sync = e.target.checked; renderFeed(true); };
+window.addEventListener("message", (ev) => {
+  if (ev.origin === location.origin && ev.data && ev.data.bbReady && R.active) postFrame();
+});
+// Space must not also "click" a focused button/checkbox (that would undo the play/pause toggle)
+document.addEventListener("keyup", (e) => {
+  const el = focused();
+  if (R.active && e.key === " " && (el.tagName === "BUTTON" || el.type === "checkbox")) e.preventDefault();
+});
+// player controls give focus back to the page, so keyboard shortcuts keep working after a click
+for (const type of ["click", "change"]) {
+  document.addEventListener(type, (e) => {
+    const el = e.target;
+    if (el.closest && el.closest("#player, .feed-tabs") && (el.tagName === "BUTTON" || el.type === "checkbox" ||
+        (type === "change" && el.tagName === "SELECT"))) el.blur();
+  });
+}
+const focused = () => document.activeElement || document.body;
+const isTyping = (el) => el.tagName === "TEXTAREA" || el.tagName === "SELECT" ||
+  (el.tagName === "INPUT" && !["checkbox", "range", "button"].includes(el.type));
+document.addEventListener("keydown", (e) => {
+  const el = focused();
+  if (!R.active || e.altKey || e.ctrlKey || e.metaKey || isTyping(el)) return;
+  if (el.type === "range" && !e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) return;  // native step
+  if (e.key === " ") { e.preventDefault(); play(!R.playing); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); play(false); e.shiftKey ? jumpTurn(-1) : seek(R.idx - 1); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); play(false); e.shiftKey ? jumpTurn(1) : seek(R.idx + 1); }
+});
 
 function renderHeader() {
   document.getElementById("home-name").innerHTML = ""; document.getElementById("home-name").append(h("a", { href: `/models/${match.home_model}` }, match.home_name));
   document.getElementById("away-name").innerHTML = ""; document.getElementById("away-name").append(h("a", { href: `/models/${match.away_model}` }, match.away_name));
   const sc = match.home_score != null ? `${match.away_score} – ${match.home_score}` : "vs";
-  document.getElementById("score").textContent = sc;
+  if (!R.active) document.getElementById("score").textContent = sc;
   let meta = match.status;
   if (match.status === "running") meta = match.half ? `● LIVE · Half ${match.half} · Turn ${match.turn}` : "● LIVE · kick-off";
   else if (match.status === "completed") meta = match.winner === "draw" ? "Full time · draw" : `Full time · ${match.winner === "home" ? match.home_name : match.away_name} wins`;
   else if (match.status === "queued") meta = "Scheduled";
-  document.getElementById("meta").textContent = meta;
+  if (!R.active) document.getElementById("meta").textContent = meta;
   const crumb = document.getElementById("crumb"); crumb.innerHTML = "";
   if (match.tournament) crumb.append(h("a", { href: `/tournaments/${match.tournament.id}` }, match.tournament.name));
   if (match.duration) crumb.append(` · ${fmt.dur(match.duration)}`);
@@ -92,21 +269,33 @@ function visible(e) {
   return true;
 }
 
+let shown = 0;   // events[0:shown] are rendered (filtered by tab)
+
+function feedLimit() {
+  if (!(R.active && R.sync)) return events.length;
+  const cut = cutoffTs();
+  let lo = 0, hi = events.length;   // events are in id (= time) order: binary search the cutoff
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (events[mid].ts <= cut) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+
 function renderFeed(reset) {
   const box = document.getElementById("feed");
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
-  if (reset) box.innerHTML = "";
-  const list = reset ? events : events.filter((e) => e.id > (box.dataset.last || 0));
-  list.filter(visible).forEach((e) => { const n = evNode(e); if (n) box.append(n); });
-  if (events.length) box.dataset.last = events[events.length - 1].id;
-  if (reset && !box.children.length) box.append(h("div", { class: "empty" }, tab === "chat" ? "No messages yet. Models can trash-talk with the send_message tool." : "Nothing here yet."));
-  if (atBottom || reset) box.scrollTop = box.scrollHeight;
+  const lim = feedLimit();
+  if (reset || lim < shown) { box.innerHTML = ""; shown = 0; reset = true; }
+  const empty = box.querySelector(".empty");
+  if (empty && lim > shown) empty.remove();
+  events.slice(shown, lim).filter(visible).forEach((e) => { const n = evNode(e); if (n) box.append(n); });
+  shown = lim;
+  if (!box.children.length) box.append(h("div", { class: "empty" }, R.active && R.sync && lim < events.length ? "Nothing yet at this point of the replay." : tab === "chat" ? "No messages yet. Models can trash-talk with the send_message tool." : "Nothing here yet."));
+  if (atBottom || reset || R.playing) box.scrollTop = box.scrollHeight;
 }
 
 function renderStats() {
   const hs = match.home_stats, as = match.away_stats;
   if (!hs || !as) return;
-  document.getElementById("stats-card").style.display = "";
+  if (!(R.active && R.hide && R.idx < R.points.length - 1)) document.getElementById("stats-card").style.display = "";
   const rows = [
     ["Touchdowns", "touchdowns"], ["Blocks", "blocks"], ["Blitzes", "blitzes"], ["Fouls", "fouls"],
     ["Passes", "passes"], ["Hand-offs", "handoffs"], ["Knock-downs inflicted", "knockdowns_inflicted"],
@@ -150,7 +339,11 @@ function poll() {
     const wasRunning = match && match.status === "running";
     match = m; renderHeader();
     if (ev.length) { events.push(...ev); lastId = ev[ev.length - 1].id; renderFeed(false); }
-    if (m.status === "completed" || m.status === "error") { renderStats(); if (wasRunning) setTimeout(() => location.reload(), 1500); return false; }
+    if (m.status === "completed" || m.status === "error") {
+      renderStats();
+      if (wasRunning) setTimeout(() => location.reload(), 1500);
+      return false;
+    }
     return true;
   });
 }

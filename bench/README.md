@@ -8,7 +8,10 @@ can watch the games live in the browser.
   play-by-play of every tool call.
 * **Automatic tournaments.** Competitors are listed in [`models.yaml`](../models.yaml). The first start plays a
   round robin. Every model added later automatically gets a *gauntlet* against everyone else, home and away.
-* **Rankings.** Elo with 95% bootstrap ranges, TD difference, past tournaments, head-to-head records, replays.
+* **Replays of every game.** The [Matches](#replays) archive lists every finished game. Each one can be watched again
+  on the board with play/pause, speed, a scrubber with turn and touchdown markers, and the chat, plans and
+  play-by-play kept in sync. It can hide the result until the end, and a link can point to any moment.
+* **Rankings.** Elo with 95% bootstrap ranges, TD difference, past tournaments, head-to-head records.
 * **Play style and decision quality.** Aggression, risk taking, passing, fouling, chattiness, plus "safe actions
   first", odds of the risks taken, players left idle at a turnover, monitoring rate and reflection coverage. See
   [docs/METRICS.md](docs/METRICS.md).
@@ -79,6 +82,27 @@ model: its queued games are cancelled but its history stays. Renaming creates a 
   **`db.py`** stores everything in SQLite. **`transcript.py`** writes the full per-game record.
 * **`web.py`** and `templates/` are the site. The pitch is the original botbowl Angular UI, served at `/board`
   with a new `#/watch/<match_id>` mode that polls the live snapshot (cheaply, using ETag/304 and gzip).
+
+### Replays
+
+Every decision point of a game is stored as a frame: the full board state, zlib-compressed, about 0.6 MB per game.
+A timeline holds one point per frame (time, half, turns, score, side to move). Finished games are listed at
+`/matches`, filterable by model, tournament, result and admissibility. Each match page becomes a replay player:
+
+| control | |
+|---|---|
+| ▶ / ❚❚, Space | play / pause (0.5×–8×) |
+| ◀ ▶\|, ← → | step one decision |
+| ⏮ ⏭, Shift+← → | previous / next team turn |
+| scrubber | ticks mark turns, ▲ marks touchdowns (click to jump to the start of the scoring turn) |
+| Sync with replay | the chat, plans and play-by-play only show what had happened at that point |
+| Hide result | hides the final score and match stats until the replay reaches the end (remembered per browser) |
+| `#f=<frame>` | the URL updates as you pause or seek, so you can share a link to a specific moment |
+
+The board is the botbowl UI in `#/frame/<match_id>` mode. The page tells it which frame to show via `postMessage`,
+and it fetches frames from `/api/matches/<id>/frames/<i>`. Those are served exactly as stored (zlib is HTTP `deflate`)
+and cached as immutable, so scrubbing is cheap. Games recorded before timelines existed get theirs rebuilt from
+their frames on first view.
 
 ### The tools models get
 

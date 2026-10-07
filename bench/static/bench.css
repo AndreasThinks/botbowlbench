@@ -158,6 +158,31 @@ tr.disabled td { opacity: .55; }
 .bubble.away { background: var(--away-soft); margin-left: auto; border-bottom-right-radius: 4px; }
 .bubble.away .who { color: var(--away); }
 
+.filters { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-bottom: 12px; font-size: .85rem; color: var(--text-secondary); }
+.filters select { font: inherit; margin-left: 4px; height: 30px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary); max-width: 220px; }
+
+/* replay player */
+.player { margin-top: 10px; padding: 10px 12px; }
+.player-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pbtn { font: inherit; font-size: .9rem; min-width: 36px; height: 32px; border-radius: 8px; border: 1px solid var(--border);
+        background: var(--surface-1); color: var(--text-primary); cursor: pointer; }
+.pbtn:hover { background: var(--surface-2); }
+.pbtn.play { background: var(--text-primary); color: var(--surface-1); border-color: var(--text-primary); min-width: 44px; }
+.player-row select { font: inherit; font-size: .85rem; height: 32px; border-radius: 8px; border: 1px solid var(--border);
+                     background: var(--surface-1); color: var(--text-primary); padding: 0 6px; }
+.player-pos { font-size: .85rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; margin-left: 4px; }
+.player-opt { font-size: .82rem; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.player-row .player-opt { margin-left: auto; }
+.feed-tabs .player-opt { margin-left: auto; }
+.scrub { position: relative; padding-top: 14px; margin-top: 6px; }
+.scrub input[type=range] { width: 100%; margin: 0; accent-color: var(--accent); }
+.scrub-marks { position: absolute; left: 8px; right: 8px; top: 0; height: 26px; pointer-events: none; }
+.scrub-marks .tick { position: absolute; top: 16px; width: 1px; height: 7px; background: var(--text-muted); opacity: .5; }
+.scrub-marks .td { position: absolute; top: -2px; transform: translateX(-50%); pointer-events: auto; border: 0; background: none;
+                   cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px; }
+.scrub-marks .td.home { color: var(--home); } .scrub-marks .td.away { color: var(--away); }
+.player-final { font-size: .8rem; margin-top: 4px; }
+
 /* stat comparison */
 .compare td:first-child { text-align: right; font-variant-numeric: tabular-nums; width: 30%; }
 .compare td:last-child { font-variant-numeric: tabular-nums; width: 30%; }

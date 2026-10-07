@@ -20,6 +20,7 @@ from typing import Dict, List, Optional
 
 from bench import config, db
 from bench.match import MatchRunner
+from bench.session import timeline_point
 
 
 # ---- frame storage (for replays) ------------------------------------------------------------------
@@ -29,13 +30,44 @@ def frames_path(match_id: str) -> str:
     return os.path.join(d, f"{match_id}.frames")
 
 
-def save_frames(match_id: str, frames: List[bytes]):
+def save_frames(match_id: str, frames: List[bytes], timeline: Optional[List[dict]] = None):
     tmp = frames_path(match_id) + ".tmp"
     with open(tmp, "wb") as f:
         for fr in frames:
             f.write(struct.pack("<I", len(fr)))
             f.write(fr)
     os.replace(tmp, frames_path(match_id))
+    if timeline is not None and len(timeline) == len(frames):
+        _write_timeline(match_id, timeline)
+
+
+def timeline_path(match_id: str) -> str:
+    return frames_path(match_id)[:-len(".frames")] + ".timeline.json"
+
+
+def _write_timeline(match_id: str, timeline: List[dict]):
+    tmp = timeline_path(match_id) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(timeline, f, separators=(",", ":"))
+    os.replace(tmp, timeline_path(match_id))
+
+
+def load_timeline(match_id: str) -> List[dict]:
+    """Per-frame index for the replay scrubber. Rebuilt (once) from the frames for games recorded before
+    timelines existed; those frames have no timestamps (ts=None)."""
+    path = timeline_path(match_id)
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    frames = load_frames(match_id)
+    if not frames:
+        return []
+    timeline = []
+    for blob in frames:
+        data = json.loads(frame_json(blob))
+        timeline.append(timeline_point(data, (data.get("bench") or {}).get("ts")))
+    _write_timeline(match_id, timeline)
+    return timeline
 
 
 _frame_cache: Dict[str, List[bytes]] = {}
@@ -292,7 +324,7 @@ class Bench:
                 self._wake.wait(300)
                 self._wake.clear()
                 return result
-            save_frames(match_id, runner.session.frames)
+            save_frames(match_id, runner.session.frames, runner.session.timeline)
             status = "error" if result["error"] else "completed"
             db.execute("UPDATE matches SET status=?, home_score=?, away_score=?, winner=?, home_stats=?, "
                        "away_stats=?, error=?, finished_at=?, duration=?, frames=?, meta=?, admissible=? WHERE id=?",

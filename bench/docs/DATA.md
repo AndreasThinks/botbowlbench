@@ -11,7 +11,9 @@ Everything the bench records, how to get it, and how to read it.
 | Chat messages | `GET /api/export/events.jsonl?kind=message` |
 | Spectator feed (all events) | `GET /api/export/events.jsonl` (tool results truncated to 800 characters) |
 | Full transcript of one game | `GET /api/matches/<id>/transcript` (`.jsonl.gz`) |
-| Board state per decision (replay frames) | `GET /steps/<id>/<from>/<n>` (botbowl game JSON) |
+| Replay timeline (one point per frame) | `GET /api/matches/<id>/timeline` |
+| Board state per decision (replay frame) | `GET /api/matches/<id>/frames/<i>` (botbowl game JSON) |
+| Finished games, paginated and filterable | `GET /api/matches?model=&tournament=&result=decisive\|draw&admissible=1&before=<finished_at>&limit=` |
 | Everything, offline | `python -m bench export ./dataset` (run where the data volume is mounted) |
 
 `python -m bench export` writes `models.jsonl`, `tournaments.jsonl`, `matches.jsonl`, `events.jsonl` and
@@ -98,6 +100,7 @@ Everything lives under `DATA_DIR` (`/data` on Railway):
 ```
 bench.db                    SQLite: models, tournaments, matches, events
 frames/<match_id>.frames    zlib-compressed board JSON per decision (replays), ~0.6 MB per game
+frames/<id>.timeline.json   per-frame index: ts, half, ht/at (turns), hs/as (score), side to move, over
 transcripts/<id>.jsonl.gz   full transcripts: ~30 KB for a baseline game; LLM games are larger (estimated 0.1-1 MB)
 ```
 

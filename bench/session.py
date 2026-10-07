@@ -64,6 +64,20 @@ def fallback_action(game, team) -> Action:
     return Action(choice.action_type, position=position, player=player)
 
 
+def timeline_point(data: dict, ts: Optional[float]) -> dict:
+    """Compact per-frame index entry, computed from botbowl's game JSON (so it also works for old frames)."""
+    st = data["state"]
+    home, away = st["home_team"], st["away_team"]
+    side = None
+    if st.get("current_team_id") == home["team_id"]:
+        side = "home"
+    elif st.get("current_team_id") == away["team_id"]:
+        side = "away"
+    return {"ts": round(ts, 3) if ts else None, "half": st.get("half"), "ht": home["state"]["turn"],
+            "at": away["state"]["turn"], "hs": home["state"]["score"], "as": away["state"]["score"], "side": side,
+            "over": bool(st.get("game_over"))}
+
+
 class Seat(Agent):
     """A botbowl Agent whose decisions are supplied by an external driver thread."""
 
@@ -179,6 +193,7 @@ class GameSession:
         from bench.transcript import NullTranscript
         self.transcript = NullTranscript()
         self.frames: List[bytes] = []
+        self.timeline: List[dict] = []   # one point per frame: time, half, turns, score, side to move
         self.latest_json: Optional[str] = None
         self.snapshot_seq = 0
         self.started_at = time.time()
@@ -247,8 +262,10 @@ class GameSession:
             reports = data["state"]["reports"]
             if len(reports) > 60:
                 data["state"]["reports"] = reports[-60:]
-            data["bench"] = {"match_id": self.match_id, "finished": self.finished}
+            now = time.time()
+            data["bench"] = {"match_id": self.match_id, "finished": self.finished, "ts": round(now, 3)}
             js = json.dumps(data)
+            point = timeline_point(data, now)
         except Exception:
             traceback.print_exc()
             return
@@ -257,6 +274,7 @@ class GameSession:
             self.snapshot_seq += 1
             if self.record_frames:
                 self.frames.append(zlib.compress(js.encode("utf-8"), 6))
+                self.timeline.append(point)
 
     # ---- chat ----------------------------------------------------------------------------------
     def post_message(self, seat: Seat, text: str) -> str:
