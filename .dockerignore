@@ -4,6 +4,9 @@ data
 **/*.so
 build
 docs
+# examples are left out, except the scripted bot the "Bot Bowl scripted bot" competitor plays
 examples
+!examples/__init__.py
+!examples/scripted_bot_example.py
 tests
 *.bb

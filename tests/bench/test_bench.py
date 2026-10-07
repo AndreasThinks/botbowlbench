@@ -31,6 +31,17 @@ def test_random_vs_scripted_match_completes():
     assert result["meta"]["admissible"] and not result["meta"]["harness_errors"]
 
 
+
+def test_botbowl_scripted_bot_plays_through_the_tools():
+    bot = {"name": "Bot Bowl scripted", "provider": "botbowl", "bot": "scripted",
+           "module": "examples.scripted_bot_example", "seed": 3}
+    result = MatchRunner("t1b", bot, RANDOM, {"max_tool_calls_per_turn": 200}).run()
+    assert result["error"] is None
+    hs = result["home_stats"]
+    assert hs["illegal_actions"] == 0 and hs["forced_actions"] == 0
+    assert result["home_score"] > result["away_score"]
+    assert result["meta"]["admissible"]
+
 def _first_turn_session():
     """Play until the home team has a regular turn with players on the pitch; return (session, tools)."""
     s = GameSession("t2", "A", "B", seed=11)

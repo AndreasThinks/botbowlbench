@@ -60,6 +60,17 @@ models:
 The scheduler notices the new id and queues its gauntlet. Setting `enabled: false` (or deleting the entry) retires a
 model: its queued games are cancelled but its history stays. Renaming creates a *new* competitor.
 
+Classic botbowl bots can compete too, as free baselines. `provider: botbowl` plays any bot from botbowl's registry
+through the same MCP tools, so its games are scored like everyone else's:
+
+```yaml
+  - name: Bot Bowl scripted bot
+    provider: botbowl
+    bot: scripted                           # id passed to botbowl.make_bot
+    module: examples.scripted_bot_example   # imported first so the bot registers itself
+    max_tool_calls_per_turn: 200            # these bots move one square per call
+```
+
 ## How a game is played
 
 ```
@@ -159,4 +170,6 @@ OpenAI/DeepSeek/Gemini, enabled by the bench for Anthropic models) reduces it. `
 * No real-model run has validated the prompts yet. Run `python -m bench play <model> scripted-baseline -v` with a
   real key before the first tournament.
 * Two games per pairing is a small sample for a dice game. Watch the 95% ranges, and raise `legs` if they stay wide.
-* The scripted baseline is deliberately simple. It's a floor, not a strong bot.
+* The scripted baseline is deliberately simple. It's a floor, not a strong bot. The *Bot Bowl scripted bot* (botbowl's
+  own scripted bot) is a stronger reference. The Bot Bowl IV and V champion, Drefsante, isn't included: it is a
+  closed-source Java program with no published license.
