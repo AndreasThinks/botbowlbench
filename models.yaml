@@ -42,3 +42,6 @@ models:
 
   - name: DeepSeek V3.2
     model: deepseek/deepseek-v3.2
+
+  - name: Mistral Large 4
+    model: mistralai/mistral-large-4-0
