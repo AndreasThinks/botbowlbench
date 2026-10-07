@@ -196,6 +196,8 @@ class GameSession:
         self.timeline: List[dict] = []   # one point per frame: time, half, turns, score, side to move
         self.latest_json: Optional[str] = None
         self.snapshot_seq = 0
+        self.log_cursor = 0   # game reports already sent to the spectator play log
+        self.log_point = None  # timeline point of the previous snapshot: the turn those reports belong to
         self.started_at = time.time()
         self.ended_at = None
 
@@ -263,21 +265,31 @@ class GameSession:
             if len(reports) > 60:
                 data["state"]["reports"] = reports[-60:]
             now = time.time()
-            from bench.render import events_since
+            from bench.render import events_since, log_lines
             reports = self.game.state.reports
             log = events_since(self.game, max(0, len(reports) - 40), limit=1000)[-6:]
             data["bench"] = {"match_id": self.match_id, "finished": self.finished, "ts": round(now, 3), "log": log}
             js = json.dumps(data)
             point = timeline_point(data, now)
+            lines = log_lines(self.game, self.log_cursor)
+            self.log_cursor = len(reports)
         except Exception:
             traceback.print_exc()
             return
         with self.lock:
             self.latest_json = js
             self.snapshot_seq += 1
+            frame = None
             if self.record_frames:
                 self.frames.append(zlib.compress(js.encode("utf-8"), 6))
                 self.timeline.append(point)
+                frame = len(self.frames) - 1
+        # what happened since the previous frame, filed under the turn it happened in and keyed to the frame
+        # it led to (replays seek there)
+        ctx, self.log_point = self.log_point or point, point
+        if lines:
+            self.log_event(ctx["side"], "play", {"lines": lines, "frame": frame, "half": ctx["half"],
+                                                 "ht": ctx["ht"], "at": ctx["at"], "over": point["over"]})
 
     # ---- chat ----------------------------------------------------------------------------------
     def post_message(self, seat: Seat, text: str) -> str:

@@ -229,6 +229,27 @@ def events_since(game, start_idx: int, limit: int = 40) -> List[str]:
     return out
 
 
+# Spectator log: the same lines, tagged so the UI can highlight what matters.
+_TAGS = {OutcomeType.TOUCHDOWN: "td", OutcomeType.TURNOVER: "turnover", OutcomeType.KNOCKED_OUT: "injury",
+         OutcomeType.CASUALTY: "injury", OutcomeType.CASUALTY_APOTHECARY: "injury",
+         OutcomeType.STUNNED: "down", OutcomeType.KNOCKED_DOWN: "down",
+         OutcomeType.FUMBLE: "fail", OutcomeType.INTERCEPTION: "fail"}
+
+
+def log_lines(game, start_idx: int) -> List[dict]:
+    """Game reports from start_idx on as [{"t": text, "k": tag}]; tag is "" for routine lines."""
+    out = []
+    for r in game.state.reports[start_idx:]:
+        if r.outcome_type in _QUIET or r.outcome_type == OutcomeType.TURN_START:   # the UI draws turn headers
+            continue
+        t = report_text(game, r)
+        if not t:
+            continue
+        tag = _TAGS.get(r.outcome_type) or ("fail" if r.outcome_type.name.startswith("FAILED_") else "")
+        out.append({"t": t, "k": tag})
+    return out
+
+
 # --- Legal actions -------------------------------------------------------------------------
 
 ACTION_HELP = {

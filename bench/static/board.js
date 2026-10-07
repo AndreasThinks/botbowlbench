@@ -111,6 +111,11 @@ const BBBoard = (() => {
     now.setAttribute("aria-live", "polite");
     const ticker = h("ol", "st-ticker");
     ticker.setAttribute("aria-label", "Latest game events");
+    if (opts.onLog) {
+      ticker.classList.add("clickable");
+      ticker.title = "Open the full game log";
+      ticker.addEventListener("click", () => opts.onLog());
+    }
     const card = h("div", "st-card");
     card.hidden = true;
     root.append(head, pitchWrap, now, dugouts, ticker, card);
@@ -326,7 +331,8 @@ const BBBoard = (() => {
       const log = (game.bench && game.bench.log) || [];
       ticker.innerHTML = "";
       ticker.hidden = !log.length;
-      [...log].reverse().slice(0, 4).forEach((t, i) => ticker.append(h("li", i ? "" : "latest", t)));
+      const named = (t) => t.replace(/Home\(H\)/g, home.name).replace(/Away\(A\)/g, away.name);
+      [...log].reverse().slice(0, 4).forEach((t, i) => ticker.append(h("li", i ? "" : "latest", named(t))));
 
       showCard();
     }
