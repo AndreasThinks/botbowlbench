@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Tournaments · BotBowl Bench{% endblock %}
+{% block content %}
+<h1>Tournaments</h1>
+<p class="secondary">A <b>round robin</b> pits every model against every other one. A <b>gauntlet</b> is scheduled automatically whenever a new model joins: the newcomer plays everyone already on the list.</p>
+<div class="card"><div class="table-wrap"><table id="t">
+  <thead><tr><th>Tournament</th><th>Type</th><th>Status</th><th class="num">Progress</th><th>Leader</th><th>Started</th></tr></thead><tbody></tbody>
+</table></div></div>
+{% endblock %}
+{% block scripts %}
+<script>
+const { h, api, fmt } = BB;
+api("/api/tournaments").then((ts) => {
+  const tb = document.querySelector("#t tbody");
+  if (!ts.length) tb.append(h("tr", {}, h("td", { colspan: 6, class: "empty" }, "No tournaments yet. Add at least two models to models.yaml.")));
+  ts.forEach((t) => tb.append(h("tr", {},
+    h("td", {}, h("a", { href: `/tournaments/${t.id}` }, t.name)),
+    h("td", {}, t.kind === "gauntlet" ? "Gauntlet" : "Round robin"),
+    h("td", {}, h("span", { class: "badge " + (t.status === "running" ? "live" : "") }, t.status)),
+    h("td", { class: "num" }, BB.cellbar(t.done, t.total, `${t.done}/${t.total}`)),
+    h("td", {}, t.leader || "–"),
+    h("td", { class: "muted" }, fmt.ago(t.started_at || t.created_at)))));
+});
+</script>
+{% endblock %}

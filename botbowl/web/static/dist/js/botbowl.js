@@ -44,6 +44,10 @@ app.config(['$locationProvider', '$routeProvider',
             controller: 'GamePlayCtrl',
             access: { requiredAuthentication: true }
         }).
+        when('/watch/:id', {
+            templateUrl: 'static/partials/game.play.html',
+            controller: 'GamePlayCtrl'
+        }).
         when('/game/replay/:id/', {
             templateUrl: 'static/partials/game.play.html',
             controller: 'GamePlayCtrl',
@@ -218,6 +222,22 @@ appControllers.controller('GamePlayCtrl', ['$scope', '$routeParams', '$location'
         $scope.team_id = $routeParams.team_id;
         $scope.spectating = window.location.href.indexOf('/spectate/') >= 0;
         $scope.replaying = window.location.href.indexOf('/replay/') >= 0;
+        // botbowlbench: '#/watch/<match_id>' follows a live benchmark match by polling the bench API
+        $scope.watching = window.location.href.indexOf('/watch/') >= 0;
+        $scope.embedded = $scope.watching || window.location.search.indexOf('embed=1') >= 0;
+        $scope.WATCH_POLL_MS = 700;
+        if ($scope.watching){
+            $scope.spectating = true;
+        }
+        if ($scope.embedded){
+            // scale the fixed-size board to whatever iframe it is embedded in
+            let fitBoard = function(){
+                let z = Math.min(1, window.innerWidth / 920, window.innerHeight / 860);
+                document.body.style.zoom = Math.max(0.35, z);
+            };
+            fitBoard();
+            $(window).off('resize.bench').on('resize.bench', fitBoard);
+        }
         $scope.replaySpeed = 200;
         $scope.replayDoneLoading = false;
         $scope.loadingSteps = false
@@ -1572,6 +1592,30 @@ appControllers.controller('GamePlayCtrl', ['$scope', '$routeParams', '$location'
                     $scope.runPlayLoop();
                 }).error(function (status, data) {
                     $location.path("/#/");
+                });
+
+            } else if ($scope.watching) {
+
+                $.getJSON(options.api.base_url + '/api/matches/' + $scope.game_id + '/state').done(function (data) {
+                    $scope.$apply(function(){
+                        let first = $scope.loading;
+                        $scope.game = data;
+                        $scope.disableOppActions();
+                        $scope.playersById = Object.assign({}, $scope.game.state.home_team.players_by_id, $scope.game.state.away_team.players_by_id);
+                        $scope.setLocalState();
+                        $scope.setAvailablePositions();
+                        $scope.loading = false;
+                        $scope.refreshing = false;
+                        if (first) {
+                            $scope.runTimeLoop(20, data.game_id);
+                        }
+                    });
+                }).always(function(){
+                    $scope.refreshing = false;
+                    let over = $scope.game && $scope.game.state && $scope.game.state.game_over;
+                    if (!over && window.location.href.indexOf($scope.game_id) >= 0){
+                        setTimeout($scope.reload, $scope.WATCH_POLL_MS);
+                    }
                 });
 
             } else {

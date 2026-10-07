@@ -44,6 +44,10 @@ app.config(['$locationProvider', '$routeProvider',
             controller: 'GamePlayCtrl',
             access: { requiredAuthentication: true }
         }).
+        when('/watch/:id', {
+            templateUrl: 'static/partials/game.play.html',
+            controller: 'GamePlayCtrl'
+        }).
         when('/game/replay/:id/', {
             templateUrl: 'static/partials/game.play.html',
             controller: 'GamePlayCtrl',

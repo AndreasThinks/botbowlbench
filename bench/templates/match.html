@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}Match · BotBowl Bench{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="muted" id="crumb" style="margin-bottom:8px;font-size:.85rem"></div>
+  <div class="scoreboard">
+    <div class="team away"><div class="name" id="away-name">…</div><div class="muted">Away · red</div></div>
+    <div><div class="big" id="score">– </div><div class="meta" id="meta"></div></div>
+    <div class="team home"><div class="name" id="home-name">…</div><div class="muted">Home · blue</div></div>
+  </div>
+</div>
+<div class="live-layout section">
+  <div>
+    <iframe class="board-frame" id="board" title="Game board"></iframe>
+    <div class="muted" id="board-note" style="font-size:.82rem;margin-top:6px"></div>
+  </div>
+  <div class="card feed">
+    <div class="feed-tabs" role="tablist">
+      <button data-tab="chat" class="active">Chat</button>
+      <button data-tab="all">Play-by-play</button>
+      <button data-tab="home">Home only</button>
+      <button data-tab="away">Away only</button>
+    </div>
+    <div class="feed-body" id="feed" aria-live="polite"></div>
+  </div>
+</div>
+<div class="card section" id="stats-card" style="display:none">
+  <h2>Match stats</h2>
+  <div class="table-wrap"><table class="compare" id="stats"></table></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const { h, api, fmt } = BB;
+const MATCH_ID = {{ match_id|tojson }};
+let match = null, events = [], lastId = 0, tab = "chat", boardMode = null;
+
+const names = () => ({ home: match ? match.home_name : "Home", away: match ? match.away_name : "Away" });
+
+function setBoard(mode) {
+  if (mode === boardMode) return;
+  boardMode = mode;
+  const f = document.getElementById("board");
+  const note = document.getElementById("board-note");
+  if (mode === "live") { f.src = `/board#/watch/${MATCH_ID}`; note.textContent = "Live board — updates as the models act."; }
+  else if (mode === "replay") { f.src = `/board?embed=1#/game/replay/${MATCH_ID}/`; note.textContent = "Replay — use the controls above the pitch to step through the game."; }
+  else { f.removeAttribute("src"); note.textContent = "The board appears when the match kicks off."; }
+}
+
+function renderHeader() {
+  document.getElementById("home-name").innerHTML = ""; document.getElementById("home-name").append(h("a", { href: `/models/${match.home_model}` }, match.home_name));
+  document.getElementById("away-name").innerHTML = ""; document.getElementById("away-name").append(h("a", { href: `/models/${match.away_model}` }, match.away_name));
+  const sc = match.home_score != null ? `${match.away_score} – ${match.home_score}` : "vs";
+  document.getElementById("score").textContent = sc;
+  let meta = match.status;
+  if (match.status === "running") meta = match.half ? `● LIVE · Half ${match.half} · Turn ${match.turn}` : "● LIVE · kick-off";
+  else if (match.status === "completed") meta = match.winner === "draw" ? "Full time · draw" : `Full time · ${match.winner === "home" ? match.home_name : match.away_name} wins`;
+  else if (match.status === "queued") meta = "Scheduled";
+  document.getElementById("meta").textContent = meta;
+  const crumb = document.getElementById("crumb"); crumb.innerHTML = "";
+  if (match.tournament) crumb.append(h("a", { href: `/tournaments/${match.tournament.id}` }, match.tournament.name));
+  if (match.duration) crumb.append(` · ${fmt.dur(match.duration)}`);
+  if (match.error) crumb.append(h("span", { style: { color: "var(--critical)" } }, ` · error: ${match.error}`));
+  setBoard(match.status === "running" ? "live" : (match.status === "completed" || match.status === "error") && match.frames ? "replay" : "none");
+}
+
+function argStr(a) { return Object.entries(a || {}).filter(([, v]) => v != null).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", "); }
+
+function evNode(e) {
+  const p = e.payload || {}, who = e.side ? names()[e.side] : "";
+  const head = (kind) => h("div", {}, h("span", { class: "who" }, who), h("span", { class: "kind" }, kind));
+  switch (e.kind) {
+    case "message": return h("div", { class: `bubble ${e.side}` }, h("span", { class: "who" }, who), p.text);
+    case "thought": return h("div", { class: `ev thought ${e.side}` }, head("thinking"), h("div", { class: "body" }, p.text));
+    case "tool": return h("div", { class: `ev tool ${e.side} ${p.ok ? "" : "bad"}` }, head(p.ok ? "tool" : "invalid"),
+        h("div", { class: "call" }, `${p.name}(${argStr(p.args)})`),
+        p.result ? h("details", {}, h("summary", {}, "result"), h("pre", {}, p.result)) : null);
+    case "episode": return h("div", { class: `ev episode ${e.side}` }, `${who} · ${p.our_turn ? "turn " + p.key.split("-").slice(1).join("-") : p.proc}`);
+    case "illegal": return null;
+    default: return h("div", { class: `ev ${e.kind} ${e.side || ""}` }, e.side ? head(e.kind) : null, p.text || JSON.stringify(p));
+  }
+}
+
+function visible(e) {
+  if (tab === "chat") return e.kind === "message" || (e.kind === "system" && !e.side);
+  if (tab === "home" || tab === "away") return e.side === tab;
+  return true;
+}
+
+function renderFeed(reset) {
+  const box = document.getElementById("feed");
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  if (reset) box.innerHTML = "";
+  const list = reset ? events : events.filter((e) => e.id > (box.dataset.last || 0));
+  list.filter(visible).forEach((e) => { const n = evNode(e); if (n) box.append(n); });
+  if (events.length) box.dataset.last = events[events.length - 1].id;
+  if (reset && !box.children.length) box.append(h("div", { class: "empty" }, tab === "chat" ? "No messages yet. Models can trash-talk with the send_message tool." : "Nothing here yet."));
+  if (atBottom || reset) box.scrollTop = box.scrollHeight;
+}
+
+function renderStats() {
+  const hs = match.home_stats, as = match.away_stats;
+  if (!hs || !as) return;
+  document.getElementById("stats-card").style.display = "";
+  const rows = [
+    ["Touchdowns", "touchdowns"], ["Blocks", "blocks"], ["Blitzes", "blitzes"], ["Fouls", "fouls"],
+    ["Passes", "passes"], ["Hand-offs", "handoffs"], ["Knock-downs inflicted", "knockdowns_inflicted"],
+    ["Casualties inflicted", "casualties_inflicted"], ["Turnovers", "turnovers"], ["Re-rolls used", "rerolls_used"],
+    ["Dodges / GFIs", (s) => (s.dodges || 0) + (s.gfis || 0)], ["Messages sent", "messages_sent"],
+    ["Tool calls", "tool_calls"], ["Invalid tool calls", "invalid_tool_calls"], ["Auto/forced actions", "forced_actions"],
+    ["Tokens", (s) => (s.prompt_tokens || 0) + (s.completion_tokens || 0), fmt.tokens], ["Cost", "cost", fmt.usd],
+    ["Aggression (blocks+blitzes+fouls / turn)", "aggression", (v) => fmt.num(v, 2)],
+    ["Risk taking (dodges+GFIs / turn)", "risk_taking", (v) => fmt.num(v, 2)],
+  ];
+  const t = document.getElementById("stats"); t.innerHTML = "";
+  t.append(h("thead", {}, h("tr", {}, h("th", { class: "num side-a" }, match.away_name), h("th", { style: { textAlign: "center" } }, ""), h("th", { class: "side-h" }, match.home_name))));
+  const tb = h("tbody");
+  rows.forEach(([label, key, f]) => {
+    const get = typeof key === "function" ? key : (s) => s[key] || 0;
+    const a = get(as), b = get(hs), F = f || ((v) => fmt.num(v));
+    tb.append(h("tr", {}, h("td", { class: a > b ? "lead" : "" }, F(a)), h("td", {}, label), h("td", { class: b > a ? "lead" : "" }, F(b))));
+  });
+  t.append(tb);
+}
+
+function poll() {
+  return Promise.all([api(`/api/matches/${MATCH_ID}`), api(`/api/matches/${MATCH_ID}/events?after=${lastId}`)]).then(([m, ev]) => {
+    const wasRunning = match && match.status === "running";
+    match = m; renderHeader();
+    if (ev.length) { events.push(...ev); lastId = ev[ev.length - 1].id; renderFeed(false); }
+    if (m.status === "completed" || m.status === "error") { renderStats(); if (wasRunning) setTimeout(() => location.reload(), 1500); return false; }
+    return true;
+  });
+}
+document.querySelectorAll(".feed-tabs button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll(".feed-tabs button").forEach((x) => x.classList.toggle("active", x === b));
+  tab = b.dataset.tab; renderFeed(true);
+});
+let timer = null;
+poll().then((more) => {
+  renderFeed(true);
+  if (more) timer = setInterval(() => poll().then((go) => { if (!go) clearInterval(timer); }), 1500);
+});
+</script>
+{% endblock %}

@@ -1,4 +1,4 @@
-<nav class="navbar navbar-default nav-bar-trans">
+<nav class="navbar navbar-default nav-bar-trans" ng-hide="embedded">
     <div class="container-fluid">
         <div id="navbar" class="navbar-collapse collapse">
             <ul class="nav navbar-nav">
@@ -165,7 +165,7 @@
             </span>
         </div>
 
-        <div class="square-row" style="z-index: 10000; position: absolute; margin-left: 150px; margin-top: {{ replaying ? '' : '-30px' }}">
+        <div class="square-row" ng-hide="embedded" style="z-index: 10000; position: absolute; margin-left: 150px; margin-top: {{ replaying ? '' : '-30px' }}">
             <div class="row-divider" >
                 <span ng-repeat="action in game.state.available_actions">
                     <button ng-if="showActionAsButton(action)" type="button" class="btn btn-sm btn-act {{ action.team_id == null ? 'btn-default' : (action.team_id == game.state.away_team.team_id ? 'btn-danger' : 'btn-primary')}}" ng-click="pickActionType(action)" ng-disabled="refreshing || action.disabled">
@@ -186,7 +186,7 @@
                 </span>
             </div>
             <div class="row-divider text-center">
-                <div class="text-center clock" ng-if="!game.disqualified_agent && !game.game_over" ng-class="activeTimeLeft() <= 10 ? 'buzzer' : ''" ng-bind="clock"></div>
+                <div class="text-center clock" ng-if="!watching && !game.disqualified_agent && !game.game_over" ng-class="activeTimeLeft() <= 10 ? 'buzzer' : ''" ng-bind="clock"></div>
                 <div class="text-center clock buzzer" ng-if="game.disqualified_agent_id">{{ agentIdTeam(game.disqualified_agent_id) }} was disqualified.</div>
             </div>
 
