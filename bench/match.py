@@ -27,6 +27,20 @@ def make_llm(model_cfg: dict, seat, api_key: Optional[str]):
                          prompt_cache=model_cfg.get("prompt_cache"))
 
 
+CHECKPOINT_VERSION = 1
+
+
+def describe_checkpoint(key: Optional[str], names: dict) -> str:
+    """'away:turn-2-5' -> "from the start of <away name>'s turn 5 (half 2)"; None -> 'from kick-off'."""
+    if not key:
+        return "from kick-off (no checkpoint yet)"
+    side, _, episode = key.partition(":")
+    parts = episode.split("-")
+    if len(parts) == 3 and parts[0] == "turn" and side in names:
+        return f"from the start of {names[side]}'s turn {parts[2].rstrip('bq')} (half {parts[1]})"
+    return f"from checkpoint {key}"
+
+
 def limits_for(model_cfg: dict, settings: dict) -> DriverLimits:
     return DriverLimits(
         max_tool_calls_per_turn=int(model_cfg.get("max_tool_calls_per_turn", settings.get("max_tool_calls_per_turn", 40))),
@@ -43,11 +57,18 @@ def _public_cfg(cfg: dict) -> dict:
 class MatchRunner:
     def __init__(self, match_id: str, home_cfg: dict, away_cfg: dict, settings: dict,
                  api_key: Optional[str] = None, event_sink: Optional[Callable] = None,
-                 seed: Optional[int] = None, transcript: bool = False):
+                 seed: Optional[int] = None, transcript: bool = False,
+                 resume: Optional[dict] = None, restarted: bool = False,
+                 checkpoint_sink: Optional[Callable[[dict], None]] = None):
+        """``resume``: a checkpoint (see :meth:`_checkpoint`) to continue from. ``restarted``: an earlier attempt
+        at this match was interrupted (a fresh start without a checkpoint still keeps the seed and records the
+        restart). ``checkpoint_sink`` receives a checkpoint at the start of every team turn."""
         self.match_id = match_id
         self.home_cfg = home_cfg
         self.away_cfg = away_cfg
         self.settings = settings
+        if resume is not None:
+            seed = resume["seed"]
         self.seed = seed if seed is not None else random.randint(0, 2 ** 31 - 1)
         self.session = GameSession(match_id, home_cfg["name"], away_cfg["name"],
                                    game_mode=str(settings.get("game_mode", "5")),
@@ -57,8 +78,8 @@ class MatchRunner:
                                    max_messages_per_turn=int(settings.get("max_messages_per_turn", 2)),
                                    max_message_len=int(settings.get("max_message_len", 280)),
                                    seed=self.seed)
-        if transcript:
-            self.session.transcript = Transcript(match_id)
+        if resume is not None:
+            self.session.restore(resume["session"])   # before the drivers: their tools hold the game
         self.drivers = {}
         for i, (side, cfg) in enumerate((("home", home_cfg), ("away", away_cfg))):
             seat = self.session.seat(side)
@@ -69,6 +90,58 @@ class MatchRunner:
             self.drivers[side] = SeatDriver(self.session, seat, llm, cfg["name"], limits_for(cfg, settings),
                                             opponent_name=opp["name"])
         self.max_game_seconds = float(settings.get("max_game_minutes", 120)) * 60
+        self.elapsed_before = 0.0      # game time played before a restart
+        self.resumes = []
+        self._resume_note = None
+        self._t0 = None
+        if resume is not None:
+            for side, st in resume["drivers"].items():
+                self.drivers[side].restore(st)
+            self.elapsed_before = resume["elapsed"]
+            self.resumes = list(resume["resumes"])
+        dropped, kept = [], 0
+        if transcript:   # only once everything else is restored: reopening rewrites the partial transcript
+            self.session.transcript, dropped, kept = Transcript.reopen(
+                match_id, keep=resume["transcript_records"] if resume is not None else 0)
+        if resume is not None or restarted or dropped:
+            self._note_restart(resume, dropped, kept, transcript)
+        if checkpoint_sink is not None:
+            self._checkpoint_sink = checkpoint_sink
+            self.session.checkpoint_hook = self._checkpoint
+
+    # ---- restarts --------------------------------------------------------------------------------
+    def _note_restart(self, resume, dropped, kept, transcript):
+        # what the interrupted attempt spent after the checkpoint (its records are dropped, the money is gone);
+        # dropped ``resume`` records carry the spend of earlier restarts that weren't checkpointed either
+        lost = {"home": 0.0, "away": 0.0}
+        for rec in dropped:
+            if rec.get("type") == "llm_call" and rec.get("side") in lost:
+                lost[rec["side"]] += float((rec.get("usage") or {}).get("cost") or 0.0)
+            elif rec.get("type") == "resume":
+                for side, c in (rec.get("restart_cost") or {}).items():
+                    lost[side] = lost.get(side, 0.0) + float(c or 0.0)
+        for side, d in self.drivers.items():
+            d.usage["restart_cost"] = round(d.usage.get("restart_cost", 0.0) + lost[side], 6)
+        expected = resume["transcript_records"] if resume is not None else 0
+        info = {"ts": round(time.time(), 3), "checkpoint": resume["key"] if resume is not None else None,
+                "git_sha": version.git_sha(), "dropped_records": len(dropped),
+                "restart_cost": {k: round(v, 6) for k, v in lost.items()},
+                "transcript_gap": bool(transcript) and kept < expected}
+        self.resumes.append(info)
+        self._resume_note = info
+
+    def _checkpoint(self, key: str):
+        elapsed = self.elapsed_before + (time.time() - self._t0 if self._t0 else 0.0)
+        self._checkpoint_sink({
+            "version": CHECKPOINT_VERSION, "match_id": self.match_id, "seed": self.seed, "key": key,
+            "ts": time.time(), "elapsed": elapsed,
+            "protocol_version": version.PROTOCOL_VERSION, "prompt_fingerprint": version.prompt_fingerprint(),
+            "git_sha": version.git_sha(),
+            "transcript_records": self.session.transcript.flush(),
+            "session": self.session.state_dict(),
+            "drivers": {side: d.state_dict() for side, d in self.drivers.items()},
+            "resumes": self.resumes,
+        })
 
     def meta(self) -> dict:
         return {
@@ -83,9 +156,10 @@ class MatchRunner:
     def _watchdog(self):
         """Caps total game time: past the cap both seats switch to the default policy, which ends turns
         immediately, so the game finishes at the current score (and is flagged as not admissible)."""
-        t0 = time.time()
+        if self.session.time_capped:   # already capped before a restart
+            return
         while not self.session.finished:
-            if time.time() - t0 > self.max_game_seconds:
+            if time.time() - self._t0 + self.elapsed_before > self.max_game_seconds:
                 self.session.time_capped = True
                 self.session.log_event(None, "system", {"text": "Game time limit reached - remaining turns are "
                                                                 "played by the default policy."})
@@ -97,10 +171,17 @@ class MatchRunner:
             time.sleep(2)
 
     def run(self) -> dict:
-        t0 = time.time()
-        self.session.transcript.write("meta", None, **self.meta())
-        self.session.log_event(None, "system", {"text": f"Kick-off: {self.home_cfg['name']} (home) vs "
-                                                        f"{self.away_cfg['name']} (away)"})
+        t0 = self._t0 = time.time()
+        if not self.session.resumed:
+            self.session.transcript.write("meta", None, **self.meta())
+        if self._resume_note is not None:
+            self.session.transcript.write("resume", None, **self._resume_note)
+            where = describe_checkpoint(self._resume_note["checkpoint"],
+                                        {"home": self.home_cfg["name"], "away": self.away_cfg["name"]})
+            self.session.log_event(None, "system", {"text": f"The server restarted. Resuming {where}."})
+        if not self.session.resumed:
+            self.session.log_event(None, "system", {"text": f"Kick-off: {self.home_cfg['name']} (home) vs "
+                                                            f"{self.away_cfg['name']} (away)"})
         self.session.start()
         for d in self.drivers.values():
             d.start()
@@ -116,7 +197,7 @@ class MatchRunner:
             "away_score": away_score,
             "error": self.session.error,
             "infra_error": self.session.infra_error,
-            "duration": time.time() - t0,
+            "duration": self.elapsed_before + time.time() - t0,
             "home_stats": side_stats(self.session, "home", self.drivers["home"]),
             "away_stats": side_stats(self.session, "away", self.drivers["away"]),
             "messages": list(self.session.messages),
@@ -138,6 +219,8 @@ class MatchRunner:
             reasons.append("time_capped")
         if self.session.harness_errors:
             reasons.append("harness_error")
+        if any(r.get("transcript_gap") for r in self.resumes):
+            reasons.append("transcript_incomplete")
         for side, d in self.drivers.items():
             if d.crashed:
                 reasons.append(f"{side}_agent_crashed")
@@ -147,6 +230,7 @@ class MatchRunner:
         meta.update({"time_capped": self.session.time_capped, "admissible": not reasons,
                      "harness_errors": self.session.harness_errors[:20],
                      "inadmissible_reasons": reasons,
+                     "resumes": self.resumes,
                      "served": {side: d.usage.get("served", {}) for side, d in self.drivers.items()},
                      "transcript_records": self.session.transcript.records})
         result["meta"] = meta

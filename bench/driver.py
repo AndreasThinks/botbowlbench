@@ -6,6 +6,7 @@ conversation containing the full situation, then lets the model call MCP tools u
 episode is over. Budgets (tool calls, wall time, illegal moves, money) are enforced here; when one
 is exceeded the seat's fallback policy finishes the episode (usually by ending the turn).
 """
+import copy
 import threading
 import time
 import traceback
@@ -68,6 +69,19 @@ class SeatDriver:
         self.consecutive_llm_errors = 0
         self.thread: Optional[threading.Thread] = None
         self.crashed: Optional[str] = None
+
+    # ---- checkpoints -------------------------------------------------------------------------------
+    def state_dict(self) -> dict:
+        return {"usage": copy.deepcopy(self.usage), "unavailable": self.unavailable, "crashed": self.crashed,
+                "consecutive_llm_errors": self.consecutive_llm_errors,
+                "consecutive_illegal": self.tools.consecutive_illegal}
+
+    def restore(self, state: dict):
+        self.usage.update(copy.deepcopy(state["usage"]))
+        self.unavailable = state["unavailable"]
+        self.crashed = state["crashed"]
+        self.consecutive_llm_errors = state["consecutive_llm_errors"]
+        self.tools.consecutive_illegal = state["consecutive_illegal"]
 
     # ---- threading -----------------------------------------------------------------------------
     def start(self):

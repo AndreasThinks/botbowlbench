@@ -10,6 +10,7 @@ after the other in a background thread.
 import itertools
 import json
 import os
+import pickle
 import struct
 import threading
 import time
@@ -18,8 +19,8 @@ import uuid
 import zlib
 from typing import Dict, List, Optional
 
-from bench import config, db
-from bench.match import MatchRunner
+from bench import config, db, version
+from bench.match import CHECKPOINT_VERSION, MatchRunner
 from bench.session import timeline_point
 
 
@@ -96,6 +97,50 @@ def frame_json(blob: bytes) -> str:
     return zlib.decompress(blob).decode("utf-8")
 
 
+# ---- checkpoints (resume a game interrupted by a restart/redeploy) ----------------------------------
+def checkpoint_path(match_id: str) -> str:
+    d = os.path.join(config.data_dir(), "checkpoints")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"{match_id}.ckpt")
+
+
+def save_checkpoint(match_id: str, state: dict):
+    row = db.row("SELECT MAX(id) AS n FROM events WHERE match_id=?", (match_id,))
+    state["last_event_id"] = (row and row["n"]) or 0
+    tmp = checkpoint_path(match_id) + ".tmp"
+    with open(tmp, "wb") as f:
+        pickle.dump(state, f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(tmp, checkpoint_path(match_id))
+
+
+def load_checkpoint(match_id: str) -> Optional[dict]:
+    """The match's checkpoint, or None if there is none or it can't be resumed under the current protocol
+    (a game must be played under one set of rules and prompts; otherwise it restarts from kick-off)."""
+    path = checkpoint_path(match_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "rb") as f:
+            cp = pickle.load(f)
+    except Exception as e:
+        print(f"checkpoint {match_id}: unreadable ({type(e).__name__}: {e}), restarting the game")
+        return None
+    current = (CHECKPOINT_VERSION, version.PROTOCOL_VERSION, version.prompt_fingerprint())
+    saved = (cp.get("version"), cp.get("protocol_version"), cp.get("prompt_fingerprint"))
+    if saved != current:
+        print(f"checkpoint {match_id}: made under {saved}, now {current}; restarting the game")
+        return None
+    return cp
+
+
+def delete_checkpoint(match_id: str):
+    for path in (checkpoint_path(match_id), checkpoint_path(match_id) + ".tmp"):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 class Bench:
     """Process-wide coordinator. Create one with :func:`get_bench`."""
 
@@ -115,10 +160,13 @@ class Bench:
 
     # ---- startup ---------------------------------------------------------------------------------
     def _recover(self):
-        """Matches interrupted by a restart/redeploy are replayed from scratch."""
-        for m in db.rows("SELECT id FROM matches WHERE status='running'"):
-            db.execute("DELETE FROM events WHERE match_id=?", (m["id"],))
-            db.execute("UPDATE matches SET status='queued', started_at=NULL WHERE id=?", (m["id"],))
+        """Matches interrupted by a restart/redeploy go back to the front of the queue; :meth:`play` resumes them
+        from their last checkpoint (the start of the latest team turn)."""
+        db.execute("UPDATE matches SET status='queued' WHERE status='running'")
+        queued = {r["id"] for r in db.rows("SELECT id FROM matches WHERE status='queued'")}
+        for name in os.listdir(os.path.dirname(checkpoint_path("x"))):
+            if name.split(".")[0] not in queued:
+                delete_checkpoint(name.split(".")[0])
 
     def start(self):
         self.thread = threading.Thread(target=self._loop, name="scheduler", daemon=True)
@@ -300,7 +348,9 @@ class Bench:
     def play(self, m: dict) -> dict:
         match_id = m["id"]
         now = time.time()
-        db.execute("UPDATE matches SET status='running', started_at=? WHERE id=?", (now, match_id))
+        restarted = m.get("started_at") is not None   # an earlier attempt was interrupted
+        db.execute("UPDATE matches SET status='running', started_at=COALESCE(started_at, ?) WHERE id=?",
+                   (now, match_id))
         db.execute("UPDATE tournaments SET status='running', started_at=COALESCE(started_at, ?) WHERE id=?",
                    (now, m["tournament_id"]))
         home_cfg, away_cfg = self._model_cfg(m["home_model"]), self._model_cfg(m["away_model"])
@@ -308,22 +358,20 @@ class Bench:
         self.status_detail = f"{home_cfg['name']} vs {away_cfg['name']}"
         runner = None
         try:
-            runner = MatchRunner(match_id, home_cfg, away_cfg, self.settings,
-                                 api_key=os.environ.get("OPENROUTER_API_KEY"),
-                                 event_sink=lambda mid, side, kind, payload: db.add_event(mid, side, kind, payload),
-                                 transcript=True)
+            runner = self._runner(m, home_cfg, away_cfg, restarted)
             db.execute("UPDATE matches SET seed=? WHERE id=?", (runner.seed, match_id))
             self.live[match_id] = runner
             result = runner.run()
             if result.get("infra_error"):
-                # bad API key / no credits: not the models' fault -> put the match back in the queue
-                db.execute("DELETE FROM events WHERE match_id=?", (match_id,))
-                db.execute("UPDATE matches SET status='queued', started_at=NULL WHERE id=?", (match_id,))
+                # bad API key / no credits: not the models' fault -> back in the queue; it resumes from the
+                # last checkpoint (taken before the failure) once the key works again
+                db.execute("UPDATE matches SET status='queued' WHERE id=?", (match_id,))
                 self.status = "waiting"
                 self.status_detail = f"OpenRouter problem, retrying later: {result['infra_error']}"
                 self._wake.wait(300)
                 self._wake.clear()
                 return result
+            delete_checkpoint(match_id)
             save_frames(match_id, runner.session.frames, runner.session.timeline)
             status = "error" if result["error"] else "completed"
             db.execute("UPDATE matches SET status=?, home_score=?, away_score=?, winner=?, home_stats=?, "
@@ -335,6 +383,7 @@ class Bench:
             return result
         except Exception as e:
             traceback.print_exc()
+            delete_checkpoint(match_id)
             db.execute("UPDATE matches SET status='error', error=?, finished_at=? WHERE id=?",
                        (f"{type(e).__name__}: {e}", time.time(), match_id))
             db.add_event(match_id, None, "error", {"text": f"Match failed: {e}"})
@@ -342,6 +391,28 @@ class Bench:
         finally:
             self.live.pop(match_id, None)
             self._finish_tournaments()
+
+    def _runner(self, m: dict, home_cfg: dict, away_cfg: dict, restarted: bool) -> MatchRunner:
+        """A runner for the match: resumed from its checkpoint if it has a usable one, else from kick-off (with
+        the seed of the interrupted attempt, if any)."""
+        match_id = m["id"]
+        kwargs = dict(api_key=os.environ.get("OPENROUTER_API_KEY"),
+                      event_sink=lambda mid, side, kind, payload: db.add_event(mid, side, kind, payload),
+                      transcript=True, restarted=restarted,
+                      checkpoint_sink=lambda state: save_checkpoint(match_id, state))
+        cp = load_checkpoint(match_id)
+        if cp is not None:
+            try:
+                runner = MatchRunner(match_id, home_cfg, away_cfg, self.settings, resume=cp, **kwargs)
+                # the feed keeps what happened up to the checkpoint; the interrupted rest of that turn is replayed
+                db.execute("DELETE FROM events WHERE match_id=? AND id>?", (match_id, cp["last_event_id"]))
+                return runner
+            except Exception:
+                traceback.print_exc()
+                print(f"checkpoint {match_id}: could not be restored, restarting the game")
+        delete_checkpoint(match_id)
+        db.execute("DELETE FROM events WHERE match_id=?", (match_id,))
+        return MatchRunner(match_id, home_cfg, away_cfg, self.settings, seed=m.get("seed"), **kwargs)
 
     # ---- live access for the web layer ------------------------------------------------------------------
     def live_state(self, match_id: str):

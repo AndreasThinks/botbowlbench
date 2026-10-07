@@ -12,7 +12,7 @@ from flask import (Flask, Response, abort, jsonify, render_template, request, se
 
 from bench import db, export, ratings
 from bench.transcript import transcript_path
-from bench.scheduler import frame_json, get_bench, load_frames, load_timeline
+from bench.scheduler import delete_checkpoint, frame_json, get_bench, load_frames, load_timeline
 
 BOTBOWL_WEB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "botbowl", "web")
 
@@ -430,7 +430,8 @@ def create_app(start_scheduler: bool = True) -> Flask:
         if m is None or m["status"] not in ("error", "cancelled"):
             return jsonify({"error": "only errored or cancelled matches can be requeued"}), 400
         db.execute("DELETE FROM events WHERE match_id=?", (match_id,))
-        db.execute("UPDATE matches SET status='queued', started_at=NULL, finished_at=NULL, error=NULL "
+        delete_checkpoint(match_id)   # a fresh game, not a resume
+        db.execute("UPDATE matches SET status='queued', started_at=NULL, finished_at=NULL, error=NULL, seed=NULL "
                    "WHERE id=?", (match_id,))
         db.execute("UPDATE tournaments SET status='queued', finished_at=NULL WHERE id=(SELECT tournament_id FROM "
                    "matches WHERE id=?) AND status='completed'", (match_id,))

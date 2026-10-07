@@ -349,3 +349,129 @@ def test_replays_and_match_archive(bench_env):
     draws = json.loads(c.get("/api/matches?result=draw").data)["matches"]
     assert all(m["winner"] == "draw" for m in draws)
     assert c.get("/matches").status_code == 200
+
+
+def test_resume_from_checkpoint(tmp_path, monkeypatch):
+    """A game interrupted mid-way continues from the start of the last team turn, with its history intact."""
+    import pickle
+    from bench.transcript import read_transcript
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    checkpoints = []
+    first = MatchRunner("t-resume", SCRIPTED, RANDOM, {}, transcript=True,
+                        checkpoint_sink=lambda st: checkpoints.append(pickle.dumps(st)))
+    full = first.run()
+    assert full["error"] is None and len(checkpoints) >= 16   # one per team turn
+    keys = [pickle.loads(c)["key"] for c in checkpoints]
+    assert len(set(keys)) == len(keys) and {k.split(":")[0] for k in keys} == {"home", "away"}
+    cp = pickle.loads(checkpoints[len(checkpoints) // 2])
+    side, _, episode = cp["key"].partition(":")
+    half, turn = int(episode.split("-")[1]), int(episode.split("-")[2])
+
+    # pretend the process died right after that checkpoint: the transcript has more records than it kept
+    os.replace(tmp_path / "transcripts" / "t-resume.jsonl.gz", tmp_path / "transcripts" / "t-resume.jsonl.gz.partial")
+    resumed = MatchRunner("t-resume", SCRIPTED, RANDOM, {}, transcript=True, resume=cp, restarted=True)
+    g = resumed.session.game
+    assert (g.state.half, g.current_turn().team.state.turn) == (half, turn)
+    assert g.current_turn().team == (g.state.home_team if side == "home" else g.state.away_team)
+    assert resumed.seed == first.seed
+    assert len(resumed.session.frames) == len(pickle.loads(cp["session"]["shared"])["frames"]) - 1
+    result = resumed.run()
+    assert result["error"] is None and g.state.game_over
+    hs = result["home_stats"]
+    assert hs["turns"] >= 8 and hs["actions_logged"] > 0
+    assert hs["tool_calls"] > cp["drivers"]["home"]["usage"]["tool_calls"]   # usage carried over
+    resumes = result["meta"]["resumes"]
+    assert len(resumes) == 1 and resumes[0]["checkpoint"] == cp["key"] and not resumes[0]["transcript_gap"]
+    assert result["meta"]["admissible"]
+    recs = list(read_transcript("t-resume"))
+    types = [r["type"] for r in recs]
+    assert types[0] == "meta" and types.count("meta") == 1 and types.count("resume") == 1
+    assert types.index("resume") == cp["transcript_records"] and types[-1] == "result"
+
+
+def test_scheduler_resumes_interrupted_match(bench_env, monkeypatch):
+    import bench.scheduler as sch
+    b = sch.Bench()
+    b.sync_models(force=True)
+    m = b.next_match()
+    saved = []
+    real_save = sch.save_checkpoint
+
+    def save_then_die(match_id, state):
+        real_save(match_id, state)
+        saved.append(state["key"])
+        if len(saved) == 4:   # the "process dies" right after the 4th checkpoint
+            runner = b.live[match_id]
+            runner.session.infra_error = "simulated outage"
+            runner.session.abort()
+
+    monkeypatch.setattr(sch, "save_checkpoint", save_then_die)
+    assert b.play(m).get("infra_error")
+    monkeypatch.setattr(sch, "save_checkpoint", real_save)
+    row = db.row("SELECT * FROM matches WHERE id=?", (m["id"],))
+    assert row["status"] == "queued" and row["started_at"] and os.path.exists(sch.checkpoint_path(m["id"]))
+    cp = sch.load_checkpoint(m["id"])
+    assert cp["key"] == saved[3] and cp["seed"] == row["seed"]
+    kept_events = db.get_events(m["id"], limit=100000)
+    assert kept_events
+
+    # a redeploy: the match is still marked running when the new process starts
+    db.execute("UPDATE matches SET status='running' WHERE id=?", (m["id"],))
+    monkeypatch.setattr(sch, "_bench", None)
+    b2 = sch.Bench()
+    assert db.row("SELECT status FROM matches WHERE id=?", (m["id"],))["status"] == "queued"
+    assert b2.next_match()["id"] == m["id"]
+    res = b2.play(b2.next_match())
+    assert res["error"] is None
+    done = db.decode_match(db.row("SELECT * FROM matches WHERE id=?", (m["id"],)))
+    assert done["status"] == "completed" and done["seed"] == row["seed"]
+    assert [r["checkpoint"] for r in done["meta"]["resumes"]] == [saved[3]]
+    assert not os.path.exists(sch.checkpoint_path(m["id"]))
+    events = db.get_events(m["id"], limit=100000)
+    ids = {e["id"] for e in events}
+    assert all(e["id"] in ids for e in kept_events if e["id"] <= cp["last_event_id"])   # history up to the checkpoint
+    assert any("Resuming from the start of" in e["payload"].get("text", "") for e in events)
+    assert sum("Kick-off" in e["payload"].get("text", "") for e in events) == 1
+
+
+def test_transcript_reopen_survives_a_kill(tmp_path, monkeypatch):
+    """What was flushed before the process died is recovered, without the gzip trailer and with a cut-off tail."""
+    import shutil
+    from bench.transcript import Transcript
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    t = Transcript("t-kill")
+    t.write("meta", None)
+    t.write("llm_call", "home", usage={"cost": 0.25})   # flushed on write
+    on_disk = (tmp_path / "on_disk.gz")
+    shutil.copy(t._tmp, on_disk)                          # all a kill would leave behind
+    t.write("tool", "home", result="x" * 50000)
+    t._f.close()
+    shutil.copy(on_disk, t._tmp)
+    t2, dropped, kept = Transcript.reopen("t-kill", keep=1)
+    assert kept == 1 and [r["type"] for r in dropped] == ["llm_call"] and dropped[0]["usage"]["cost"] == 0.25
+    t2.close()
+    with open(t._tmp, "wb") as f:                         # a file cut mid-write keeps its complete lines
+        f.write(on_disk.read_bytes()[:-3])
+    _, dropped, kept = Transcript.reopen("t-kill", keep=5)
+    assert kept <= 2
+
+
+def test_resume_accounts_for_spend_of_the_replayed_turn(fake_openrouter, tmp_path, monkeypatch):
+    import pickle
+    from bench.transcript import read_transcript
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model"}
+    checkpoints = []
+    MatchRunner("t-spend", cfg, RANDOM, {}, api_key="k", transcript=True,
+                checkpoint_sink=lambda st: checkpoints.append(pickle.dumps(st))).run()
+    cp = pickle.loads(checkpoints[len(checkpoints) // 2])
+    calls_before = [r for r in read_transcript("t-spend") if r["type"] == "llm_call" and r["side"] == "home"]
+    kept_calls = cp["drivers"]["home"]["usage"]["llm_calls"]
+    lost_calls = len(calls_before) - kept_calls   # everything after the checkpoint is replayed
+    os.replace(tmp_path / "transcripts" / "t-spend.jsonl.gz", tmp_path / "transcripts" / "t-spend.jsonl.gz.partial")
+    result = MatchRunner("t-spend", cfg, RANDOM, {}, api_key="k", transcript=True, resume=cp).run()
+    hs = result["home_stats"]
+    assert lost_calls > 0 and abs(hs["restart_cost"] - 0.0001 * lost_calls) < 1e-9
+    assert result["meta"]["resumes"][0]["restart_cost"]["home"] == hs["restart_cost"]
+    assert abs(hs["cost"] - 0.0001 * hs["llm_calls"]) < 1e-9   # the game's own cost excludes the lost spend
+    assert hs["llm_calls"] > kept_calls
