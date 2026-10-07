@@ -21,7 +21,8 @@ settings:
   turn_time_limit: 300          # seconds per team turn (raise per model for slow reasoning models)
   max_game_minutes: 120         # wall-clock cap per game, so one slow model can't block the queue
   max_messages_per_turn: 2
-  budget_usd_per_game: 0.25     # starter cap per model, per game (one final request may overshoot).
+  budget_usd_per_game: 1.00     # safety cap per model, per game (one final request may overshoot). Hitting it
+                                # hands the rest of the game to the fallback policy, so keep it well above normal spend.
   legs: 2                       # play each pairing home and away
   pause_between_matches: 5
 
