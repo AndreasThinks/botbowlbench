@@ -17,6 +17,7 @@
   <div class="card feed">
     <div class="feed-tabs" role="tablist">
       <button data-tab="chat" class="active">Chat</button>
+      <button data-tab="plans">Plans</button>
       <button data-tab="all">Play-by-play</button>
       <button data-tab="home">Home only</button>
       <button data-tab="away">Away only</button>
@@ -27,6 +28,7 @@
 <div class="card section" id="stats-card" style="display:none">
   <h2>Match stats</h2>
   <div class="table-wrap"><table class="compare" id="stats"></table></div>
+  <div class="muted" id="meta-line" style="font-size:.8rem;margin-top:10px"></div>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -76,6 +78,8 @@ function evNode(e) {
         h("div", { class: "call" }, `${p.name}(${argStr(p.args)})`),
         p.result ? h("details", {}, h("summary", {}, "result"), h("pre", {}, p.result)) : null);
     case "episode": return h("div", { class: `ev episode ${e.side}` }, `${who} · ${p.our_turn ? "turn " + p.key.split("-").slice(1).join("-") : p.proc}`);
+    case "reflection": return h("div", { class: `ev reflection ${e.side}` }, head(`plan · turn ${p.turn}${p.trigger === "reflect" ? " (after turnover)" : ""}`),
+        h("div", {}, h("b", {}, "Plan: "), p.plan), h("div", { class: "secondary" }, h("b", {}, "Expects: "), p.prediction));
     case "illegal": return null;
     default: return h("div", { class: `ev ${e.kind} ${e.side || ""}` }, e.side ? head(e.kind) : null, p.text || JSON.stringify(p));
   }
@@ -83,6 +87,7 @@ function evNode(e) {
 
 function visible(e) {
   if (tab === "chat") return e.kind === "message" || (e.kind === "system" && !e.side);
+  if (tab === "plans") return e.kind === "reflection";
   if (tab === "home" || tab === "away") return e.side === tab;
   return true;
 }
@@ -108,7 +113,12 @@ function renderStats() {
     ["Casualties inflicted", "casualties_inflicted"], ["Turnovers", "turnovers"], ["Re-rolls used", "rerolls_used"],
     ["Dodges / GFIs", (s) => (s.dodges || 0) + (s.gfis || 0)], ["Messages sent", "messages_sent"],
     ["Tool calls", "tool_calls"], ["Invalid tool calls", "invalid_tool_calls"], ["Auto/forced actions", "forced_actions"],
-    ["Tokens", (s) => (s.prompt_tokens || 0) + (s.completion_tokens || 0), fmt.tokens], ["Cost", "cost", fmt.usd],
+    ["Tokens", (s) => (s.prompt_tokens || 0) + (s.completion_tokens || 0), fmt.tokens],
+    ["Cached input tokens", "cached_tokens", fmt.tokens], ["Cost", "cost", fmt.usd],
+    ["Safe-first rate", "safe_first_rate", (v) => (v == null ? "–" : fmt.pct(v))],
+    ["Avg success of risky actions", "avg_risky_success", (v) => (v == null ? "–" : fmt.pct(v))],
+    ["Players idle at turnover", "unactivated_at_turnover", (v) => (v == null ? "–" : fmt.num(v, 1))],
+    ["Monitoring rate", "monitoring_rate", fmt.pct], ["Reflections written", "reflections"],
     ["Aggression (blocks+blitzes+fouls / turn)", "aggression", (v) => fmt.num(v, 2)],
     ["Risk taking (dodges+GFIs / turn)", "risk_taking", (v) => fmt.num(v, 2)],
   ];
@@ -116,11 +126,23 @@ function renderStats() {
   t.append(h("thead", {}, h("tr", {}, h("th", { class: "num side-a" }, match.away_name), h("th", { style: { textAlign: "center" } }, ""), h("th", { class: "side-h" }, match.home_name))));
   const tb = h("tbody");
   rows.forEach(([label, key, f]) => {
-    const get = typeof key === "function" ? key : (s) => s[key] || 0;
+    const get = typeof key === "function" ? key : (s) => (s[key] === null ? null : s[key] || 0);
     const a = get(as), b = get(hs), F = f || ((v) => fmt.num(v));
     tb.append(h("tr", {}, h("td", { class: a > b ? "lead" : "" }, F(a)), h("td", {}, label), h("td", { class: b > a ? "lead" : "" }, F(b))));
   });
   t.append(tb);
+  const meta = match.meta || {};
+  const ml = document.getElementById("meta-line"); ml.innerHTML = "";
+  const parts = [];
+  if (meta.seed != null) parts.push(`seed ${meta.seed}`);
+  if (meta.harness) parts.push(`harness ${meta.harness.git_sha} · protocol ${meta.harness.protocol_version} · prompts ${meta.harness.prompt_fingerprint}`);
+  for (const side of ["away", "home"]) {
+    const served = Object.keys((meta.served || {})[side] || {});
+    if (served.length) parts.push(`${match[side + "_name"]} served by ${served.join(", ")}`);
+  }
+  ml.append(parts.join(" · "));
+  if (meta.admissible === false) ml.append(h("span", { class: "badge", style: { marginLeft: "6px" } }, "not admissible: " + (meta.inadmissible_reasons || []).join(", ")));
+  if (match.has_transcript) ml.append(" · ", h("a", { href: `/api/matches/${MATCH_ID}/transcript` }, "download full transcript (.jsonl.gz)"));
 }
 
 function poll() {

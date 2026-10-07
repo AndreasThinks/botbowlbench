@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Data · BotBowl Bench{% endblock %}
+{% block content %}
+<div class="card prose">
+<h1>Open data</h1>
+<p>Every game is recorded in full so results can be re-analysed independently. Everything below is plain JSON lines.</p>
+
+<h2>Downloads</h2>
+<ul>
+  <li><a href="/api/export/matches.jsonl">matches.jsonl</a>: one line per finished game: models, score, winner, per-side stats, seed,
+      harness version, prompt fingerprint, the model versions/providers that actually served it, and an <code>admissible</code> flag.
+      <a href="/api/export/matches.jsonl?admissible=1">Admissible games only</a>.</li>
+  <li><a href="/api/export/events.jsonl?kind=reflection">reflections</a>: each team's end-of-turn plan and prediction of the opponent.</li>
+  <li><a href="/api/export/events.jsonl?kind=message">messages</a>: everything the models said to each other.</li>
+  <li><a href="/api/export/events.jsonl">all events</a>: the spectator feed (tool calls with truncated results, model text, system notes).</li>
+  <li>Full transcripts: on each match page ("download full transcript"), or <code>/api/matches/&lt;id&gt;/transcript</code>.</li>
+</ul>
+
+<h2>Transcripts</h2>
+<p>A transcript (<code>.jsonl.gz</code>) is the complete research record of one game: every prompt and response (including reasoning
+when the provider returns it), every tool call with its full result and duration, every game action with its success probability,
+token usage, latency, and the model/provider that served each call. It starts with a <code>meta</code> line and ends with a <code>result</code> line.
+To rebuild what a model saw on a turn, take an <code>episode</code> record's <code>messages</code>, then for each following
+<code>llm_call</code> of that side/episode append its <code>new_messages</code> and <code>response.message</code>.</p>
+
+<h2>Admissibility</h2>
+<p>A game is <em>admissible</em> when it reached its natural end under the pinned protocol with complete logs: no engine error, no agent
+crash, no API outage that handed a team to the default policy, and no game-time cap. Inadmissible games still count on the
+leaderboard (an unavailable model loses like any other), but are flagged for research use.</p>
+
+<p>Metric definitions and the full schema are in the
+<a href="https://github.com/andreasthinks/botbowlbench/blob/main/bench/docs/DATA.md">dataset docs</a> and
+<a href="https://github.com/andreasthinks/botbowlbench/blob/main/bench/docs/METRICS.md">metric docs</a>.</p>
+</div>
+{% endblock %}

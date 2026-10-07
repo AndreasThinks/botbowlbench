@@ -148,6 +148,7 @@ tr.disabled td { opacity: .55; }
 .ev.tool summary { cursor: pointer; color: var(--text-muted); font-size: .78rem; }
 .ev.tool pre { white-space: pre-wrap; font-family: var(--mono); font-size: .76rem; background: var(--surface-2); padding: 8px; border-radius: 6px; margin: 4px 0 0; max-height: 260px; overflow: auto; }
 .ev.episode { color: var(--text-muted); font-size: .76rem; text-transform: uppercase; letter-spacing: .05em; padding-top: 12px; }
+.ev.reflection { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; margin: 6px 0; border-bottom: 0; }
 .ev.system, .ev.error { color: var(--text-secondary); }
 .ev.error { color: var(--critical); }
 .bubble { max-width: 85%; padding: 8px 12px; border-radius: 14px; margin: 6px 0; overflow-wrap: anywhere; }

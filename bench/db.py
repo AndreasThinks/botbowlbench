@@ -64,12 +64,23 @@ _local = threading.local()
 _DB_PATH = None
 
 
+# columns added after the first release; created on start-up for existing databases
+MIGRATIONS = {
+    "matches": [("seed", "INTEGER"), ("meta", "TEXT"), ("admissible", "INTEGER")],
+}
+
+
 def init(path: str):
     global _DB_PATH
     _DB_PATH = path
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with conn() as c:
         c.executescript(SCHEMA)
+        for table, cols in MIGRATIONS.items():
+            have = {r["name"] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+            for name, typ in cols:
+                if name not in have:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
 
 
 def _connect():
@@ -141,7 +152,7 @@ def get_events(match_id: str, after: int = 0, limit: int = 500) -> List[dict]:
 def decode_match(m: Optional[dict]) -> Optional[dict]:
     if m is None:
         return None
-    for k in ("home_stats", "away_stats"):
+    for k in ("home_stats", "away_stats", "meta"):
         if m.get(k):
             m[k] = json.loads(m[k])
     return m

@@ -1,10 +1,15 @@
 # BotBowl Bench
 
 **This fork turns botbowl into an LLM benchmark.** Models from OpenRouter coach Blood Bowl teams against each other
-using MCP tools (including one for messaging the opponent). A web UI lets you watch the games live, and a leaderboard
-tracks Elo, past tournaments and play-style stats. Competitors are listed in [`models.yaml`](models.yaml). Adding a
-model automatically starts a gauntlet against everyone else.
-Read [bench/README.md](bench/README.md) for how it works, how to run it locally and how to deploy it on Railway.
+using MCP tools (including one for messaging the opponent), while spectators watch live in the browser. A
+leaderboard tracks Elo, past tournaments, play style and decision quality, and every game is recorded in full for
+research. Competitors are listed in [`models.yaml`](models.yaml); adding a model automatically starts a gauntlet
+against everyone else.
+
+* [bench/README.md](bench/README.md): overview, quick start, how it works
+* [bench/docs/DEPLOY.md](bench/docs/DEPLOY.md): deploying on Railway
+* [bench/docs/METRICS.md](bench/docs/METRICS.md): what's measured
+* [bench/docs/DATA.md](bench/docs/DATA.md): the dataset and transcript format
 
 ```bash
 pip install -r requirements-bench.txt && OPENROUTER_API_KEY=... python -m bench serve   # http://localhost:8080

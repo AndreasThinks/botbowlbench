@@ -59,6 +59,67 @@ def outcome_counts(game):
     return counts
 
 
+# the failure that most recently preceded a TURNOVER report, i.e. its cause
+_TURNOVER_CAUSES = {
+    OutcomeType.FAILED_DODGE: "failed_dodge", OutcomeType.FAILED_GFI: "failed_gfi",
+    OutcomeType.FAILED_PICKUP: "failed_pickup", OutcomeType.FUMBLE: "fumble",
+    OutcomeType.INACCURATE_PASS: "failed_pass", OutcomeType.FAILED_CATCH: "failed_catch",
+    OutcomeType.INTERCEPTION: "interception", OutcomeType.KNOCKED_DOWN: "knocked_down",
+    OutcomeType.PLAYER_EJECTED: "ejected", OutcomeType.FAILED_LEAP: "failed_leap",
+    OutcomeType.FAILED_STAND_UP: "failed_stand_up",
+}
+
+
+def turnover_causes(game, team) -> dict:
+    causes = {}
+    reports = game.state.reports
+    for i, r in enumerate(reports):
+        if r.outcome_type != OutcomeType.TURNOVER or r.team != team:
+            continue
+        cause = "other"
+        for prev in reversed(reports[max(0, i - 12):i]):
+            if prev.outcome_type not in _TURNOVER_CAUSES:
+                continue
+            if prev.outcome_type == OutcomeType.KNOCKED_DOWN and prev.player is not None and prev.player.team != team:
+                continue  # the opponent being knocked down doesn't cause *our* turnover
+            cause = _TURNOVER_CAUSES[prev.outcome_type]
+            break
+        causes[cause] = causes.get(cause, 0) + 1
+    return causes
+
+
+def decision_quality(actions: list) -> dict:
+    """Blood Bowl's core skill is 'safe actions first, risky ones last'. Measures it from the action log."""
+    rolled = [a for a in actions if "success_est" in a]
+    risky = [a for a in rolled if a["success_est"] < 0.99]
+    out = {"actions_logged": len(rolled), "risky_actions": len(risky),
+           "avg_risky_success": round(sum(a["success_est"] for a in risky) / len(risky), 3) if risky else None,
+           "long_shots": sum(1 for a in risky if a["success_est"] < 0.5)}
+    # ordering: within a team turn, how often is an action at least as safe as every later one?
+    ordered = pairs = 0
+    by_turn = {}
+    for a in rolled:
+        by_turn.setdefault((a["half"], a["turn"]), []).append(a["success_est"])
+    for seq in by_turn.values():
+        for i in range(len(seq)):
+            for j in range(i + 1, len(seq)):
+                pairs += 1
+                ordered += seq[i] >= seq[j]
+    out["safe_first_rate"] = round(ordered / pairs, 3) if pairs else None
+    # how many players were left unactivated when a turnover ended the turn
+    starts = {}
+    for a in actions:
+        if "unused_before" in a:
+            starts[(a["half"], a["turn"], a["activation"])] = a["unused_before"]
+    wasted = [starts.get((a["half"], a["turn"], a["activation"]), 1) - 1 for a in actions if a.get("turnover")]
+    out["turnovers_logged"] = len(wasted)
+    out["unactivated_at_turnover"] = round(sum(wasted) / len(wasted), 2) if wasted else None
+    blocks = [a for a in rolled if a["action"] == "BLOCK" and a.get("block_dice") is not None]
+    out["blocks_against_odds"] = sum(1 for a in blocks if a["block_dice"] < 0)
+    out["blocks_logged"] = len(blocks)
+    return out
+
+
 def side_stats(session, side: str, driver) -> dict:
     game = session.game
     seat = session.seat(side)
@@ -77,6 +138,17 @@ def side_stats(session, side: str, driver) -> dict:
     s["crashed"] = driver.crashed
     tool_use = {k[5:]: v for k, v in seat.counters.items() if k.startswith("tool:")}
     s["tool_usage"] = tool_use
+    s["reflections"] = seat.counters.get("reflections", 0)
+    s["reflections_after_turnover"] = seat.counters.get("reflections_after_turnover", 0)
+    s["reflection_coverage"] = round(min(1.0, s["reflections"] / turns), 3)
+    s["turnover_causes"] = turnover_causes(game, team)
+    s.update(decision_quality(session.action_log.get(side, [])))
+    # monitoring rate (cf. CivBench's PMR): share of non-infrastructure calls spent looking rather than acting
+    info = sum(tool_use.get(t, 0) for t in ("get_state", "get_legal_actions", "get_player"))
+    acting = sum(tool_use.get(t, 0) for t in ("move", "block", "blitz", "pass_ball", "handoff", "foul", "take_action"))
+    s["monitoring_rate"] = round(info / (info + acting), 3) if info + acting else 0.0
+    s["cache_hit_rate"] = round(s.get("cached_tokens", 0) / s["prompt_tokens"], 3) if s.get("prompt_tokens") else None
+    s["model_unavailable"] = bool(getattr(driver, "unavailable", False))
     # derived style metrics (per team turn)
     aggressive = s.get("blocks", 0) + s.get("blitzes", 0) + s.get("fouls", 0)
     risky = s.get("dodges", 0) + s.get("failed_dodges", 0) + s.get("gfis", 0) + s.get("failed_gfis", 0)

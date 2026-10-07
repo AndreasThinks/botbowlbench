@@ -5,6 +5,7 @@ Command line entry point.
     python -m bench round-robin           # queue a full round robin of all enabled models
     python -m bench play <home> <away>    # play one match in the terminal (no DB), e.g. to test a model
     python -m bench models                # list configured models
+    python -m bench export ./dataset      # dump matches, events and transcripts for offline analysis
 """
 import argparse
 import json
@@ -29,6 +30,13 @@ def cmd_round_robin(args):
     print("Queued tournament", b.create_round_robin(name=args.name))
 
 
+def cmd_export(args):
+    from bench import config, db
+    from bench.export import export_all
+    db.init(os.path.join(config.data_dir(), "bench.db"))
+    print(json.dumps(export_all(args.out, transcripts=not args.no_transcripts), indent=2))
+
+
 def cmd_models(args):
     from bench import config
     cfg = config.load_models_file()
@@ -37,7 +45,7 @@ def cmd_models(args):
 
 
 def cmd_play(args):
-    from bench import config, render
+    from bench import config
     from bench.match import MatchRunner
     cfg = config.load_models_file()
     models = {m["id"]: m for m in cfg["models"]}
@@ -69,12 +77,15 @@ def main(argv=None):
     r = sub.add_parser("round-robin")
     r.add_argument("--name")
     sub.add_parser("models")
+    ex = sub.add_parser("export", help="dump the dataset (matches, events, transcripts) as JSON lines")
+    ex.add_argument("out")
+    ex.add_argument("--no-transcripts", action="store_true")
     pl = sub.add_parser("play")
     pl.add_argument("home")
     pl.add_argument("away")
     pl.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
-    {"serve": cmd_serve, "round-robin": cmd_round_robin, "models": cmd_models, "play": cmd_play,
+    {"serve": cmd_serve, "round-robin": cmd_round_robin, "models": cmd_models, "play": cmd_play, "export": cmd_export,
      None: cmd_serve}[args.cmd](args if args.cmd else p.parse_args(["serve"]))
 
 

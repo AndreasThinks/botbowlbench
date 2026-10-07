@@ -8,6 +8,7 @@
   <div class="card"><h2>Head to head</h2><div class="table-wrap"><table id="h2h"><thead><tr><th>Opponent</th><th class="num">W</th><th class="num">D</th><th class="num">L</th></tr></thead><tbody></tbody></table></div></div>
 </div>
 <div class="card section"><h2>Elo over time</h2><div id="elo"></div></div>
+<div class="card section"><h2>Recent plans &amp; predictions</h2><div id="plans"></div></div>
 <div class="grid grid-2 section">
   <div class="card"><h2>Recent games</h2><div id="recent"></div></div>
   <div class="card"><h2>Things it said</h2><div id="msgs"></div></div>
@@ -28,7 +29,7 @@ Promise.all([api(`/api/models/${MODEL_ID}`), api("/api/leaderboard")]).then(([d,
       m.enabled ? "" : " · retired")));
   const tile = (label, value) => h("div", { class: "tile" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value));
   document.getElementById("tiles").append(
-    tile("Elo", fmt.num(d.elo.elo)), tile("Rank", rank ? `#${rank}` : "–"), tile("Record", `${s.wins}-${s.draws}-${s.losses}`),
+    tile("Elo", fmt.num(d.elo.elo)), tile("95% range", d.elo_ci ? `${d.elo_ci.lo}–${d.elo_ci.hi}` : "–"), tile("Rank", rank ? `#${rank}` : "–"), tile("Record", `${s.wins}-${s.draws}-${s.losses}`),
     tile("TD for / against", `${s.td_for} / ${s.td_against}`), tile("Cost / game", s.played ? fmt.usd(s.avg_cost) : "–"),
     tile("Tokens / game", s.played ? fmt.tokens(s.avg_tokens) : "–"));
   const st = s.style || {}, sums = s.sums || {}, n = Math.max(1, s.played);
@@ -39,6 +40,13 @@ Promise.all([api(`/api/models/${MODEL_ID}`), api("/api/leaderboard")]).then(([d,
     ["Messages / game", fmt.num((sums.messages_sent || 0) / n, 1)], ["Avg message length", fmt.num(st.avg_message_len) + " chars"],
     ["Tool calls / game", fmt.num((sums.tool_calls || 0) / n)], ["Invalid tool-call rate", fmt.pct(st.illegal_rate)],
     ["Auto-finished turns / game", fmt.num((sums.budget_exhausted || 0) / n, 1)],
+    ["Safe-first rate", st.safe_first_rate == null ? "–" : fmt.pct(st.safe_first_rate)],
+    ["Avg success of risky actions", st.avg_risky_success == null ? "–" : fmt.pct(st.avg_risky_success)],
+    ["Long shots (<50%) / game", fmt.num((sums.long_shots || 0) / n, 1)],
+    ["Players idle at turnover", st.unactivated_at_turnover == null ? "–" : fmt.num(st.unactivated_at_turnover, 1)],
+    ["Monitoring rate", fmt.pct(st.monitoring_rate)],
+    ["Turns with a reflection", fmt.pct(st.reflection_coverage)],
+    ["Prompt-cache hit rate", st.cache_hit_rate == null ? "–" : fmt.pct(st.cache_hit_rate)],
   ];
   const tb = document.querySelector("#style tbody");
   rows.forEach(([a, b]) => tb.append(h("tr", {}, h("td", {}, a), h("td", { class: "num" }, s.played ? b : "–"))));
@@ -51,6 +59,11 @@ Promise.all([api(`/api/models/${MODEL_ID}`), api("/api/leaderboard")]).then(([d,
   const rec = document.getElementById("recent");
   if (!d.recent.length) rec.append(h("div", { class: "empty" }, "No games yet."));
   d.recent.forEach((x) => rec.append(BB.matchRow(x)));
+  const pl = document.getElementById("plans");
+  if (!d.reflections.length) pl.append(h("div", { class: "empty" }, "No reflections recorded yet."));
+  d.reflections.forEach((r) => pl.append(h("div", { class: "ev reflection" },
+    h("a", { class: "muted", href: `/match/${r.match_id}`, style: { fontSize: ".78rem" } }, `vs ${r.opponent} · half ${r.half}, turn ${r.turn}`),
+    h("div", {}, h("b", {}, "Plan: "), r.plan), h("div", { class: "secondary" }, h("b", {}, "Prediction: "), r.prediction))));
   const ms = document.getElementById("msgs");
   if (!d.messages.length) ms.append(h("div", { class: "empty" }, "This model hasn't sent any messages yet."));
   d.messages.forEach((x) => ms.append(h("div", { class: "bubble home", style: { maxWidth: "100%" } },

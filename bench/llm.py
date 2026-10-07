@@ -36,6 +36,12 @@ class LLMResponse:
     completion_tokens: int = 0
     cost: float = 0.0
     latency: float = 0.0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    served_model: str = ""        # the model OpenRouter actually routed to (may differ in version)
+    provider: str = ""            # the upstream provider that served the call
+    generation_id: str = ""
+    finish_reason: str = ""
     raw_message: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -46,11 +52,25 @@ class LLMError(Exception):
         self.infra = infra  # our problem (bad key / no credits), not the model's
 
 
+def with_cache_breakpoints(messages: List[dict]) -> List[dict]:
+    """Mark the system prompt and the episode's opening situation as cacheable (Anthropic-style
+    ``cache_control``). Both are re-sent on every call within a turn, so caching them cuts input cost."""
+    out = list(messages)
+    for i in (0, 1):
+        if i < len(out) and isinstance(out[i].get("content"), str) and out[i]["role"] in ("system", "user"):
+            m = dict(out[i])
+            m["content"] = [{"type": "text", "text": m["content"], "cache_control": {"type": "ephemeral"}}]
+            out[i] = m
+    return out
+
+
 class OpenRouterLLM:
     def __init__(self, model: str, api_key: str, temperature: Optional[float] = None,
                  max_tokens: int = 2048, extra: Optional[dict] = None, timeout: float = 180.0,
-                 max_retries: int = 4):
+                 max_retries: int = 4, prompt_cache: Optional[bool] = None):
         self.model = model
+        # OpenAI, DeepSeek, Gemini... cache prompt prefixes automatically; Anthropic needs explicit breakpoints
+        self.prompt_cache = model.startswith("anthropic/") if prompt_cache is None else prompt_cache
         self.api_key = api_key
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -65,7 +85,7 @@ class OpenRouterLLM:
     async def chat(self, messages: List[dict], tools: List[dict]) -> LLMResponse:
         body = {
             "model": self.model,
-            "messages": messages,
+            "messages": with_cache_breakpoints(messages) if self.prompt_cache else messages,
             "tools": tools,
             "tool_choice": "auto",
             "max_tokens": self.max_tokens,
@@ -132,9 +152,19 @@ class OpenRouterLLM:
         resp.prompt_tokens = int(usage.get("prompt_tokens") or 0)
         resp.completion_tokens = int(usage.get("completion_tokens") or 0)
         resp.cost = float(usage.get("cost") or 0.0)
+        resp.cached_tokens = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+        resp.reasoning_tokens = int((usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0)
+        resp.served_model = data.get("model") or ""
+        resp.provider = data.get("provider") or ""
+        resp.generation_id = data.get("id") or ""
+        resp.finish_reason = choice.get("finish_reason") or ""
         raw_msg = {"role": "assistant", "content": resp.content or ""}
         if msg.get("tool_calls"):
             raw_msg["tool_calls"] = msg["tool_calls"]
+        # Thinking models (Gemini, Claude, Kimi...) need their reasoning passed back unmodified on the next
+        # request of a tool-calling loop, otherwise providers may reject the conversation.
+        if msg.get("reasoning_details"):
+            raw_msg["reasoning_details"] = msg["reasoning_details"]
         resp.raw_message = raw_msg
         return resp
 
@@ -158,12 +188,28 @@ class RandomPolicy:
     async def aclose(self):
         pass
 
+    PLAN = "Keep activating players and look for chances to score."
+    PREDICTION = "The opponent will try to block my players and advance the ball."
+
+    def _single(self, name: str, args: dict) -> LLMResponse:
+        tc = ToolCall(id=f"r{self._n}", name=name, arguments=args)
+        return LLMResponse(tool_calls=[tc], raw_message={"role": "assistant", "content": "", "tool_calls": [
+            {"id": tc.id, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]})
+
+    def _forced_reflection(self, tools) -> Optional[LLMResponse]:
+        if len(tools) == 1 and tools[0]["function"]["name"] == "reflect":
+            return self._single("reflect", {"plan": self.PLAN, "prediction": self.PREDICTION})
+        return None
+
     async def chat(self, messages: List[dict], tools: List[dict]) -> LLMResponse:
         from botbowl.core.table import ActionType
         from bench import render
         self._n += 1
         if self.delay:
             await asyncio.sleep(self.delay)
+        forced = self._forced_reflection(tools)
+        if forced is not None:
+            return forced
         game = self.seat.session.game
         resp = LLMResponse(raw_message={"role": "assistant", "content": ""})
         if self.seat.session.finished or not self.seat.is_pending():
@@ -176,6 +222,8 @@ class RandomPolicy:
             # bias towards ending the turn sometimes so games don't drag
             a = self.rng.choice(choices)
             args = {"action_type": a.action_type.name}
+            if a.action_type == ActionType.END_TURN:
+                return self._single("end_turn", {"plan": self.PLAN, "prediction": self.PREDICTION})
             if a.action_type == ActionType.END_SETUP and not game.is_setup_legal(self.seat.team):
                 for c in choices:
                     if c.action_type.name.startswith("SETUP_FORMATION_"):
@@ -207,6 +255,9 @@ class ScriptedPolicy(RandomPolicy):
         self._n += 1
         if self.delay:
             await asyncio.sleep(self.delay)
+        forced = self._forced_reflection(tools)
+        if forced is not None:
+            return forced
         game = self.seat.session.game
         team = self.seat.team
         call = ("get_legal_actions", {})
@@ -222,6 +273,8 @@ class ScriptedPolicy(RandomPolicy):
                         break
                 else:
                     a = fallback_action(game, team)
+                    if a.action_type == ActionType.END_TURN:
+                        return self._single("end_turn", {"plan": self.PLAN, "prediction": self.PREDICTION})
                     args = {"action_type": a.action_type.name}
                     if a.player is not None:
                         args["player_id"] = render.pid(a.player)
@@ -273,4 +326,5 @@ class ScriptedPolicy(RandomPolicy):
                 x = p.position.x + step
                 if game.get_player_at(game.get_square(x, p.position.y)) is None and 1 <= x <= game.arena.width - 2:
                     return ("move", {"player_id": render.pid(p), "x": x, "y": p.position.y})
-        return ("end_turn", {})
+        return ("end_turn", {"plan": "Advance the ball carrier safely and make favourable blocks.",
+                             "prediction": "The opponent will blitz my ball carrier if it can reach it."})

@@ -2,10 +2,10 @@
 {% block title %}Leaderboard · BotBowl Bench{% endblock %}
 {% block content %}
 <h1>Leaderboard</h1>
-<p class="secondary">Elo ratings across every completed game (start 1000, K=32). Matches are 5-a-side Blood Bowl, Human vs Human mirrors, played home and away.</p>
+<p class="secondary">Elo ratings across every completed game (start 1000, K=32), with a 95% bootstrap range. Blood Bowl is dice-heavy: while the ranges of two models overlap, treat their order as unsettled. TD diff is a less noisy secondary signal than wins.</p>
 <div class="card">
   <div class="table-wrap"><table id="lb">
-    <thead><tr><th class="rank">#</th><th>Model</th><th class="num">Elo</th><th class="num">Played</th><th class="num">W-D-L</th><th class="num">Win %</th><th class="num">TD for/against</th><th class="num">Cas / game</th><th class="num">Cost / game</th><th class="num">Tokens / game</th><th class="num">Sec / call</th></tr></thead>
+    <thead><tr><th class="rank">#</th><th>Model</th><th class="num">Elo</th><th class="num">95% range</th><th class="num">Played</th><th class="num">W-D-L</th><th class="num">Win %</th><th class="num">TD for/against</th><th class="num">TD diff</th><th class="num">Cas / game</th><th class="num">Cost / game</th><th class="num">Tokens / game</th><th class="num">Sec / call</th></tr></thead>
     <tbody></tbody>
   </table></div>
   <div class="muted" id="lb-note" style="font-size:.82rem;margin-top:8px"></div>
@@ -19,6 +19,19 @@
   <p class="secondary" style="margin-top:0">Averages per game. Aggression = blocks + blitzes + fouls per turn. Risk = dodges + GFIs per turn. Passing = passes + hand-offs per turn. Dirty play = fouls per turn. Chattiness = messages per turn. Illegal rate = share of tool calls that were invalid.</p>
   <div class="table-wrap"><table id="style">
     <thead><tr><th>Model</th><th class="num">Aggression</th><th class="num">Risk</th><th class="num">Passing</th><th class="num">Dirty play</th><th class="num">Chattiness</th><th class="num">Avg msg length</th><th class="num">Illegal rate</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+</div>
+<div class="card section">
+  <h2>Decision quality</h2>
+  <p class="secondary" style="margin-top:0">
+    <b>Safe-first</b>: within a turn, how often an action is at least as safe as every later one (Blood Bowl's golden rule: do risky things last).
+    <b>Risky success</b>: average success chance of the actions it took that could fail.
+    <b>Idle at turnover</b>: players left unactivated when a turnover ended the turn.
+    <b>Monitoring</b>: share of tool calls spent looking (state, legal actions, player odds) rather than acting.
+    <b>Reflections</b>: share of turns with a written plan and prediction. <b>Cache hits</b>: share of input tokens served from the prompt cache.</p>
+  <div class="table-wrap"><table id="quality">
+    <thead><tr><th>Model</th><th class="num">Safe-first</th><th class="num">Risky success</th><th class="num">Idle at turnover</th><th class="num">Monitoring</th><th class="num">Reflections</th><th class="num">Invalid calls</th><th class="num">Cache hits</th></tr></thead>
     <tbody></tbody>
   </table></div>
 </div>
@@ -37,10 +50,12 @@ api("/api/leaderboard").then((lb) => {
         m.enabled ? null : h("span", { class: "badge", style: { marginLeft: "6px" } }, "retired"),
         m.provider !== "openrouter" ? h("span", { class: "badge", style: { marginLeft: "6px" } }, "baseline") : null),
       h("td", { class: "num" }, h("b", {}, fmt.num(m.elo))),
+      h("td", { class: "num muted" }, m.elo_ci ? `${m.elo_ci.lo}–${m.elo_ci.hi}` : "–"),
       h("td", { class: "num" }, m.played),
       h("td", { class: "num" }, `${m.wins}-${m.draws}-${m.losses}`),
       h("td", { class: "num" }, m.played ? fmt.pct(m.win_rate) : "–"),
       h("td", { class: "num" }, `${m.td_for} / ${m.td_against}`),
+      h("td", { class: "num" }, m.played ? (m.td_diff > 0 ? "+" : "") + m.td_diff : "–"),
       h("td", { class: "num" }, m.played ? fmt.num(m.cas_per_game, 1) : "–"),
       h("td", { class: "num" }, m.played ? fmt.usd(m.avg_cost) : "–"),
       h("td", { class: "num" }, m.played ? fmt.tokens(tokens) : "–"),
@@ -70,6 +85,22 @@ api("/api/leaderboard").then((lb) => {
       const txt = c === "illegal_rate" ? fmt.pct(v) : c === "avg_message_len" ? fmt.num(v) + " ch" : fmt.num(v, 2);
       return h("td", { class: "num" }, BB.cellbar(v, max[c], txt));
     }))));
+
+  const q = document.querySelector("#quality tbody");
+  if (!played.length) q.append(h("tr", {}, h("td", { colspan: 8, class: "empty" }, "No games yet.")));
+  const pctOr = (v) => (v == null ? "–" : fmt.pct(v));
+  played.forEach((m) => {
+    const st = m.style;
+    q.append(h("tr", {},
+      h("td", {}, h("span", { class: "swatch", style: { background: BB.modelColor(m.id) } }), h("a", { href: `/models/${m.id}` }, m.name)),
+      h("td", { class: "num" }, st.safe_first_rate == null ? "–" : BB.cellbar(st.safe_first_rate, 1, fmt.pct(st.safe_first_rate))),
+      h("td", { class: "num" }, pctOr(st.avg_risky_success)),
+      h("td", { class: "num" }, st.unactivated_at_turnover == null ? "–" : fmt.num(st.unactivated_at_turnover, 1)),
+      h("td", { class: "num" }, pctOr(st.monitoring_rate)),
+      h("td", { class: "num" }, pctOr(st.reflection_coverage)),
+      h("td", { class: "num" }, pctOr(st.illegal_rate)),
+      h("td", { class: "num" }, m.provider === "openrouter" ? pctOr(st.cache_hit_rate) : "–")));
+  });
 });
 </script>
 {% endblock %}

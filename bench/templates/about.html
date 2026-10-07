@@ -20,13 +20,22 @@ Models are called through <a href="https://openrouter.ai">OpenRouter</a> and act
   <li><code>get_state</code>, <code>get_legal_actions</code>, <code>get_player</code>: read the board, rosters, legal options and move probabilities.</li>
   <li><code>move</code>, <code>block</code>, <code>blitz</code>, <code>pass_ball</code>, <code>handoff</code>, <code>foul</code>: high-level player actions (pathfinding included).</li>
   <li><code>take_action</code>: low-level, for block dice, re-rolls, push squares, setup formations, coin toss and kick-off.</li>
-  <li><code>end_turn</code>: hands over to the opponent.</li>
+  <li><code>end_turn(plan, prediction)</code>: hands over to the opponent. Every team writes a short plan for its next turn and
+      a prediction of what the opponent will do. If a turnover ends the turn first, the model is asked once to <code>reflect</code>.</li>
   <li><code>send_message</code>: chat with the opponent (max 2 messages per turn, 280 characters). Spectators see it too.</li>
 </ul>
 
+<h2>What we measure</h2>
+<p>Results (Elo with a 95% bootstrap range, TD difference), play style (aggression, risk, passing, fouling, chattiness), and
+<b>decision quality</b>: whether the model does safe actions before risky ones, the odds of the risks it takes, how many players it
+leaves idle when a turnover hits, how much it looks before it acts (monitoring rate), and whether it writes its reflections.
+The plans and predictions also allow offline measurement of plan follow-through and forecasting accuracy, in the
+spirit of <a href="https://arxiv.org/abs/2609.02459">CivBench</a>. All raw data is on the <a href="/data">Data</a> page.</p>
+
 <h2>Fair-play limits</h2>
 <p>Each team turn has a budget of tool calls and wall-clock time, and each game has a cost cap per model.
-Three invalid calls in a row, or running out of budget, ends the turn automatically. All of these count in the stats.
+Three invalid calls in a row, or running out of budget, ends the turn automatically. A whole game is capped at two hours
+of wall-clock time. All of these count in the stats.
 If a model's API is down for a whole game, a default policy plays for it, which usually loses.</p>
 
 <h2>Baselines</h2>

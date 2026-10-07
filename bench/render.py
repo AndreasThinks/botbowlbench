@@ -10,7 +10,6 @@ from typing import List, Optional
 
 from botbowl.core.model import Square
 from botbowl.core.table import ActionType, OutcomeType, Tile
-from botbowl.core.procedure import Turn
 
 _LOG_TEXTS = None
 

@@ -21,8 +21,14 @@ def test_random_vs_scripted_match_completes():
     assert hs["turns"] >= 8 and as_["turns"] >= 8
     assert hs["tool_calls"] > 0 and as_["tool_calls"] > 0
     assert hs["score"] == result["home_score"]
-    for key in ("aggression", "risk_taking", "passing_game", "chattiness", "illegal_rate"):
+    for key in ("aggression", "risk_taking", "passing_game", "chattiness", "illegal_rate", "monitoring_rate",
+                "safe_first_rate", "turnover_causes", "reflection_coverage"):
         assert key in hs
+    assert hs["actions_logged"] > 0 and hs["reflections"] > 0
+    for st in (hs, as_):
+        assert sum(st["turnover_causes"].values()) == st.get("turnovers", 0)
+        assert st["turnovers_logged"] == st.get("turnovers", 0)   # every turnover attributed to an action
+    assert result["meta"]["admissible"] and not result["meta"]["harness_errors"]
 
 
 def _first_turn_session():
@@ -64,9 +70,12 @@ def test_state_text_and_illegal_inputs():
         assert s.unread_messages(s.away) == ["good luck!", "you'll need it"]
         mine = [p for p in s.game.get_players_on_pitch(s.home.team) if p.state.up]
         assert "Reachable" in tools.get_player(render.pid(mine[0]))
-        # a real action: end the turn -> returns once the opponent's turn is over (or our phase changes)
-        out = tools.end_turn()
+        # ending the turn requires the structured reflection
+        assert tools.end_turn().startswith("ILLEGAL")
+        assert "Use the end_turn tool" in tools.take_action("END_TURN")
+        out = tools.end_turn(plan="Push up the left wing.", prediction="They will blitz H1.")
         assert not out.startswith("ILLEGAL")
+        assert s.reflections and s.reflections[0]["plan"] == "Push up the left wing."
     finally:
         s.abort()
 
@@ -87,6 +96,40 @@ def test_openrouter_driver_against_fake_api(fake_openrouter):
     assert hs["messages_sent"] > 0
     kinds = {e[2] for e in events}
     assert {"episode", "tool", "message", "thought"} <= kinds
+    assert hs["cached_tokens"] == 600 * hs["llm_calls"] and hs["cache_hit_rate"] == 0.6
+    assert hs["served"] == {"fake/model-20260901@FakeCloud": hs["llm_calls"]}
+    assert hs["reflections"] > 0
+    assert result["meta"]["seed"] == runner.seed and result["meta"]["harness"]["prompt_fingerprint"]
+
+
+def test_transcript_reconstructs_conversation(fake_openrouter, tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from bench.transcript import read_transcript
+    cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model"}
+    result = MatchRunner("t5", cfg, RANDOM, {}, api_key="k", transcript=True).run()
+    recs = list(read_transcript("t5"))
+    assert recs[0]["type"] == "meta" and recs[-1]["type"] == "result"
+    types = {r["type"] for r in recs}
+    assert {"episode", "llm_call", "tool", "action", "reflection"} <= types
+    # rebuild each home episode: episode.messages + (new_messages + response.message) per call
+    convo = {}
+    for r in recs:
+        if r["side"] != "home":
+            continue
+        if r["type"] == "episode":
+            convo[r["episode"]] = list(r["messages"])
+        elif r["type"] == "llm_call" and r["episode"] in convo:
+            convo[r["episode"]] += r["new_messages"] + [r["response"]["message"]]
+    for msgs in convo.values():
+        assert msgs[0]["role"] == "system"
+        # every tool result answers a tool call made earlier in the same conversation
+        ids = set()
+        for m in msgs:
+            for tc in m.get("tool_calls") or []:
+                ids.add(tc["id"])
+            if m["role"] == "tool":
+                assert m["tool_call_id"] in ids
+    assert result["meta"]["transcript_records"] == len(recs) - 1  # the result line is written last
 
 
 def test_openrouter_auth_failure_is_infra_error(fake_openrouter):
@@ -161,3 +204,85 @@ def test_web_endpoints(bench_env):
     assert {x["id"] for x in lb["models"]} >= {m["home_model"], m["away_model"]}
     assert c.post("/api/admin/round-robin").status_code == 403
     assert c.get("/match/nope").status_code == 404
+
+
+def test_reasoning_passthrough_and_cache_breakpoints(fake_openrouter):
+    cfg = {"name": "Claude-ish", "provider": "openrouter", "model": "anthropic/fake", "max_tool_calls_per_turn": 6}
+    MatchRunner("t6", cfg, RANDOM, {"max_game_minutes": 5}, api_key="k").run()
+    bodies = fake_openrouter.bodies
+    # anthropic/* models get cache breakpoints on the system prompt and the opening situation
+    first = bodies[0]["messages"]
+    assert first[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert first[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    # reasoning_details returned by the model are sent back on the following calls of the conversation
+    echoed = [m for b in bodies for m in b["messages"] if m.get("role") == "assistant" and m.get("reasoning_details")]
+    assert echoed and echoed[0]["reasoning_details"][0]["data"].startswith("sig-")
+
+
+def test_game_time_cap(monkeypatch):
+    slow = {"name": "Slow", "provider": "random", "delay": 0.05}
+    runner = MatchRunner("t7", slow, RANDOM, {"max_game_minutes": 0.02})
+    result = runner.run()
+    assert runner.session.time_capped
+    assert result["meta"]["admissible"] is False and "time_capped" in result["meta"]["inadmissible_reasons"]
+    assert result["error"] is None and runner.session.game.state.game_over
+
+
+def test_live_state_etag_gzip_and_exports(bench_env):
+    import gzip as gz
+    from bench.web import create_app
+    from bench.scheduler import get_bench
+    app = create_app(start_scheduler=False)
+    b = get_bench()
+    m = b.next_match()
+    b.play(m)
+    c = app.test_client()
+    r = c.get(f"/api/matches/{m['id']}/state", headers={"Accept-Encoding": "gzip"})
+    assert r.status_code == 200 and r.headers["Content-Encoding"] == "gzip"
+    assert json.loads(gz.decompress(r.data))["state"]["game_over"]
+    r2 = c.get(f"/api/matches/{m['id']}/state", headers={"If-None-Match": r.headers["ETag"]})
+    assert r2.status_code == 304 and not r2.data
+    lines = [json.loads(l) for l in c.get("/api/export/matches.jsonl").data.decode().splitlines()]
+    assert len(lines) == 1 and lines[0]["meta"]["seed"] is not None and lines[0]["has_transcript"]
+    assert lines[0]["admissible"] is True
+    refl = c.get("/api/export/events.jsonl?kind=reflection").data.decode().splitlines()
+    assert refl and all(json.loads(l)["kind"] == "reflection" for l in refl)
+    t = c.get(f"/api/matches/{m['id']}/transcript")
+    assert t.status_code == 200 and gz.decompress(t.data).startswith(b'{"type": "meta"')
+    lb = json.loads(c.get("/api/leaderboard").data)
+    assert all("elo_ci" in x and "td_diff" in x for x in lb["models"])
+    assert c.get("/data").status_code == 200
+
+
+def test_db_migration_adds_columns(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "old.db")
+    con = sqlite3.connect(path)
+    con.executescript("CREATE TABLE matches (id TEXT PRIMARY KEY, tournament_id INTEGER, seq INTEGER, "
+                      "home_model TEXT, away_model TEXT, status TEXT, created_at REAL);")
+    con.close()
+    db.init(path)
+    cols = {r["name"] for r in db.rows("PRAGMA table_info(matches)")}
+    assert {"seed", "meta", "admissible"} <= cols
+
+
+def test_internal_errors_are_not_blamed_on_the_model(monkeypatch):
+    import bench.tools as T
+    def boom(self, player_id):
+        raise RuntimeError("simulated harness bug")
+    monkeypatch.setattr(T.SeatTools, "get_player", boom)
+    s, tools, threads = _first_turn_session()
+    try:
+        server = T.build_mcp_server(tools)
+        import anyio
+        from mcp import Client
+
+        async def go():
+            async with Client(server) as c:
+                r = await c.call_tool("get_player", {"player_id": "H1"})
+                return "\n".join(x.text for x in r.content)
+        text = anyio.run(go)
+        assert text.startswith(T.INTERNAL_ERROR)
+        assert s.harness_errors and "simulated harness bug" in s.harness_errors[0]
+    finally:
+        s.abort()

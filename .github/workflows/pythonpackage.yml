@@ -37,4 +37,20 @@ jobs:
     - name: Test with pytest
       run: |
         pip install pytest
-        pytest
+        pytest --ignore=tests/bench
+
+  bench:
+    # BotBowl Bench (LLM benchmark server): needs Python >= 3.10 for the MCP SDK
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements-bench.txt pytest
+        cythonize -i -3 botbowl/core/pathfinding/cython_pathfinding.pyx
+    - name: Test bench
+      run: PYTHONPATH=. pytest tests/bench -q

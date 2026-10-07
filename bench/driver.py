@@ -18,7 +18,10 @@ from mcp import Client
 from bench import render
 from bench.llm import LLMError
 from bench.session import GameSession, Seat
-from bench.tools import RULES_PRIMER, SeatTools, build_mcp_server, is_trivial
+from bench.tools import INTERNAL_ERROR, RULES_PRIMER, SeatTools, build_mcp_server, is_trivial
+
+
+INFO_TOOLS = ("get_state", "get_legal_actions", "get_player")
 
 
 @dataclass
@@ -57,9 +60,11 @@ class SeatDriver:
         self.display_name = display_name
         self.limits = limits
         self.tools = SeatTools(session, seat, max_illegal=limits.max_illegal_streak)
-        self.usage = {"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "latency": 0.0,
-                      "tool_calls": 0, "llm_errors": 0, "no_tool_replies": 0, "budget_exhausted": 0,
-                      "episodes": 0}
+        self.usage = {"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0,
+                      "reasoning_tokens": 0, "cost": 0.0, "latency": 0.0, "tool_calls": 0, "llm_errors": 0,
+                      "no_tool_replies": 0, "budget_exhausted": 0, "episodes": 0, "served": {}}
+        self.unavailable = False
+        self._oa_tools = []
         self.consecutive_llm_errors = 0
         self.thread: Optional[threading.Thread] = None
         self.crashed: Optional[str] = None
@@ -94,6 +99,7 @@ class SeatDriver:
                 oa_tools = [{"type": "function", "function": {
                     "name": t.name, "description": t.description or "",
                     "parameters": t.input_schema}} for t in listed.tools]
+                self._oa_tools = oa_tools
                 while True:
                     d = await anyio.to_thread.run_sync(self.seat.wait_for_decision)
                     if d is None or self.session.finished:
@@ -133,13 +139,47 @@ class SeatDriver:
     def _over_budget(self) -> bool:
         return self.limits.budget_usd is not None and self.usage["cost"] >= self.limits.budget_usd
 
+    def _record_usage(self, resp):
+        u = self.usage
+        u["llm_calls"] += 1
+        u["prompt_tokens"] += resp.prompt_tokens
+        u["completion_tokens"] += resp.completion_tokens
+        u["cached_tokens"] += resp.cached_tokens
+        u["reasoning_tokens"] += resp.reasoning_tokens
+        u["cost"] += resp.cost
+        u["latency"] += resp.latency
+        if resp.served_model or resp.provider:
+            k = f"{resp.served_model or '?'}@{resp.provider or '?'}"
+            u["served"][k] = u["served"].get(k, 0) + 1
+
+    async def _call_llm(self, messages, tools, key, sent):
+        """One model call, fully recorded in the transcript. ``sent`` = messages already logged."""
+        resp = await self.llm.chat(messages, tools)
+        self._record_usage(resp)
+        self.session.transcript.write(
+            "llm_call", self.seat.side, episode=key, new_messages=messages[sent:],
+            response={"content": resp.content, "reasoning": resp.reasoning, "message": resp.raw_message,
+                      "finish_reason": resp.finish_reason},
+            usage={"prompt_tokens": resp.prompt_tokens, "completion_tokens": resp.completion_tokens,
+                   "cached_tokens": resp.cached_tokens, "reasoning_tokens": resp.reasoning_tokens,
+                   "cost": resp.cost},
+            latency=round(resp.latency, 3), served_model=resp.served_model, provider=resp.provider,
+            generation_id=resp.generation_id)
+        return resp
+
     async def play_episode(self, client, oa_tools, d):
         key = d.key
         t0 = time.time()
+        game = self.session.game
+        turn_id = (game.state.half, self.seat.team.state.turn)
         self.usage["episodes"] += 1
         self.session.log_event(self.seat.side, "episode", {"key": key, "our_turn": d.our_turn, "proc": d.proc})
-        messages = [{"role": "system", "content": system_prompt(self.display_name, self.limits, self.seat.side, self.opponent_name)},
+        messages = [{"role": "system", "content": system_prompt(self.display_name, self.limits, self.seat.side,
+                                                                self.opponent_name)},
                     {"role": "user", "content": self._intro(d)}]
+        self.session.transcript.write("episode", self.seat.side, episode=key, our_turn=d.our_turn, proc=d.proc,
+                                      half=turn_id[0], turn=turn_id[1], messages=messages)
+        sent = len(messages)
         calls = 0
         illegal_streak = 0
         while not self._episode_over(key):
@@ -156,18 +196,21 @@ class SeatDriver:
                 self.seat.counters["budget_exhausted"] += 1
                 self.usage["budget_exhausted"] += 1
                 self.session.log_event(self.seat.side, "system", {"text": f"Auto-finishing: {reason}."})
+                self.session.transcript.write("system", self.seat.side, episode=key, text=f"auto-finish: {reason}")
                 if self._over_budget():
                     self._autopilot()
                 else:
                     self.seat.force_episode(key)
                 return
             try:
-                resp = await self.llm.chat(messages, oa_tools)
+                resp = await self._call_llm(messages, oa_tools, key, sent)
                 self.consecutive_llm_errors = 0
             except LLMError as e:
                 self.usage["llm_errors"] += 1
                 self.consecutive_llm_errors += 1
                 self.session.log_event(self.seat.side, "error", {"text": str(e)[:500]})
+                self.session.transcript.write("llm_error", self.seat.side, episode=key, error=str(e)[:2000],
+                                              infra=e.infra, fatal=e.fatal)
                 if e.infra:
                     self.session.infra_error = str(e)[:300]
                     self.session.abort()
@@ -175,19 +218,17 @@ class SeatDriver:
                 if e.fatal or self.consecutive_llm_errors >= self.limits.max_llm_errors:
                     self.session.log_event(self.seat.side, "system",
                                            {"text": "Model unavailable - default actions for the rest of the game."})
+                    self.unavailable = True
                     self._autopilot()
                 else:
                     self.seat.force_episode(key)
                 return
-            self.usage["llm_calls"] += 1
-            self.usage["prompt_tokens"] += resp.prompt_tokens
-            self.usage["completion_tokens"] += resp.completion_tokens
-            self.usage["cost"] += resp.cost
-            self.usage["latency"] += resp.latency
             thought = (resp.content or "").strip() or (resp.reasoning or "").strip()
             if thought:
                 self.session.log_event(self.seat.side, "thought", {"text": thought[:1500]})
             messages.append(resp.raw_message)
+            sent = len(messages)  # the assistant message is logged as the call's response; tool results go
+            #                       out with the next call's new_messages
             if not resp.tool_calls:
                 self.usage["no_tool_replies"] += 1
                 illegal_streak += 1
@@ -200,21 +241,53 @@ class SeatDriver:
                     continue
                 calls += 1
                 self.usage["tool_calls"] += 1
+                t_tool = time.time()
                 if tc.parse_error:
                     text, bad = f"Error: {tc.parse_error}", True
                 else:
                     try:
                         r = await client.call_tool(tc.name, tc.arguments)
                         text = "\n".join(getattr(c, "text", "") for c in (r.content or []))
-                        bad = bool(r.is_error) or text.startswith("ILLEGAL")
+                        bad = (bool(r.is_error) or text.startswith("ILLEGAL")) \
+                            and not text.startswith(INTERNAL_ERROR)
                     except Exception as e:
                         text, bad = f"Error calling {tc.name}: {e}", True
                 if bad:
                     illegal_streak += 1
                     self.seat.counters["invalid_tool_calls"] += 1
-                elif tc.name not in ("get_state", "get_legal_actions", "get_player", "send_message"):
+                elif tc.name not in INFO_TOOLS and tc.name not in ("send_message", "reflect"):
                     illegal_streak = 0
                 self.seat.counters["tool:" + tc.name] += 1
                 self.session.log_event(self.seat.side, "tool", {
                     "name": tc.name, "args": tc.arguments, "ok": not bad, "result": text[:800]})
+                self.session.transcript.write("tool", self.seat.side, episode=key, call_id=tc.id, name=tc.name,
+                                              args=tc.arguments, raw_args=tc.raw_arguments, ok=not bad, result=text,
+                                              duration=round(time.time() - t_tool, 3))
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": text})
+        # The turn ended without end_turn (turnover / touchdown): ask once for the reflection we missed.
+        if d.our_turn and not self.session.finished and not self.seat.autopilot \
+                and self.seat.autopilot_key != key \
+                and not self.session.has_reflection(self.seat, *turn_id):
+            await self._missed_reflection(messages, client, key, sent)
+
+    async def _missed_reflection(self, messages, client, key, sent):
+        reflect_tool = [t for t in self._oa_tools if t["function"]["name"] == "reflect"]
+        if not reflect_tool:
+            return
+        messages.append({"role": "user", "content":
+                         "Your turn is over (a turnover or touchdown ended it before you called end_turn). Call "
+                         "reflect(plan, prediction) now: your plan for your next turn and what you expect the "
+                         "opponent to do."})
+        try:
+            resp = await self._call_llm(messages, reflect_tool, key + "#reflect", sent)
+        except LLMError as e:
+            self.session.transcript.write("llm_error", self.seat.side, episode=key + "#reflect", error=str(e)[:500])
+            return
+        for tc in resp.tool_calls[:1]:
+            if tc.name == "reflect" and not tc.parse_error:
+                r = await client.call_tool("reflect", tc.arguments)
+                text = "\n".join(getattr(c, "text", "") for c in (r.content or []))
+                self.session.transcript.write("tool", self.seat.side, episode=key + "#reflect", call_id=tc.id,
+                                              name="reflect", args=tc.arguments, ok=not r.is_error, result=text)
+                if not text.startswith("ILLEGAL"):
+                    self.session.seat(self.seat.side).counters["reflections_after_turnover"] += 1

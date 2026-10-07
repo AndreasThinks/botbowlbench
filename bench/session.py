@@ -171,8 +171,16 @@ class GameSession:
         self.error: Optional[str] = None
         self.infra_error: Optional[str] = None
         self.messages: List[dict] = []
+        self.reflections: List[dict] = []
+        self.action_log: dict = {"home": [], "away": []}
+        self.time_capped = False
+        self.harness_errors: List[str] = []
+        self.seed = seed
+        from bench.transcript import NullTranscript
+        self.transcript = NullTranscript()
         self.frames: List[bytes] = []
         self.latest_json: Optional[str] = None
+        self.snapshot_seq = 0
         self.started_at = time.time()
         self.ended_at = None
 
@@ -246,6 +254,7 @@ class GameSession:
             return
         with self.lock:
             self.latest_json = js
+            self.snapshot_seq += 1
             if self.record_frames:
                 self.frames.append(zlib.compress(js.encode("utf-8"), 6))
 
@@ -268,7 +277,50 @@ class GameSession:
         seat.counters["messages_sent"] += 1
         seat.counters["message_chars"] += len(text)
         self.log_event(seat.side, "message", {"text": text})
+        self.transcript.write("message", seat.side, text=text, half=msg["half"], turn=msg["turn"])
         return "Message delivered to your opponent."
+
+    # ---- research records ------------------------------------------------------------------------
+    def current_turn_key(self, seat: Seat) -> str:
+        return f"{self.game.state.half}-{seat.team.state.turn}" if seat.team else "-"
+
+    def record_reflection(self, seat: Seat, plan: str, prediction: str, trigger: str):
+        rec = {"side": seat.side, "half": self.game.state.half, "turn": seat.team.state.turn,
+               "plan": plan.strip()[:1500], "prediction": prediction.strip()[:1500], "trigger": trigger,
+               "ts": time.time()}
+        with self.lock:
+            self.reflections.append(rec)
+        seat.counters["reflections"] += 1
+        self.log_event(seat.side, "reflection", {"plan": rec["plan"], "prediction": rec["prediction"],
+                                                 "turn": rec["turn"], "half": rec["half"], "trigger": trigger})
+        self.transcript.write("reflection", seat.side, **{k: v for k, v in rec.items() if k not in ("side", "ts")})
+
+    def has_reflection(self, seat: Seat, half: int, turn: int) -> bool:
+        return any(r["side"] == seat.side and r["half"] == half and r["turn"] == turn for r in self.reflections)
+
+    def record_action(self, seat: Seat, rec: dict):
+        with self.lock:
+            self.action_log[seat.side].append(rec)
+        self.transcript.write("action", seat.side, **rec)
+
+    def mark_action_outcome(self, seat: Seat, turn_id, turnover: bool, touchdown: bool):
+        with self.lock:
+            for rec in reversed(self.action_log[seat.side]):
+                if (rec["half"], rec["turn"]) != tuple(turn_id):
+                    break
+                if "success_est" in rec:
+                    rec["turnover"] = rec["turnover"] or turnover
+                    rec["touchdown"] = rec["touchdown"] or touchdown
+                    self.transcript.write("action_outcome", seat.side, half=rec["half"], turn=rec["turn"],
+                                          activation=rec["activation"], turnover=turnover, touchdown=touchdown)
+                    break
+
+    def harness_error(self, text: str):
+        """Bugs in the bench itself: logged, never blamed on the model, and they make the game inadmissible."""
+        import traceback as tb
+        self.harness_errors.append(text)
+        self.log_event(None, "error", {"text": f"harness error: {text}"})
+        self.transcript.write("harness_error", None, text=text, traceback=tb.format_exc()[-4000:])
 
     def unread_messages(self, seat: Seat) -> List[str]:
         opp_side = self.opponent(seat).side

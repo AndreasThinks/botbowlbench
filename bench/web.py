@@ -2,14 +2,16 @@
 Web server: the benchmark site (live games, leaderboard, tournaments, model profiles) plus the
 botbowl board UI (served at /board) which renders live and replayed matches.
 """
+import gzip
 import hmac
 import json
 import os
-import time
 
-from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory
+from flask import (Flask, Response, abort, jsonify, render_template, request, send_file, send_from_directory,
+                   stream_with_context)
 
-from bench import db, ratings
+from bench import db, export, ratings
+from bench.transcript import transcript_path
 from bench.scheduler import frame_json, get_bench, load_frames
 
 BOTBOWL_WEB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "botbowl", "web")
@@ -82,6 +84,10 @@ def create_app(start_scheduler: bool = True) -> Flask:
     def about_page():
         return render_template("about.html", page="about")
 
+    @app.route("/data")
+    def data_page():
+        return render_template("data.html", page="data")
+
     @app.route("/board")
     def board():
         """The original botbowl Angular UI, used (embedded) to draw the pitch."""
@@ -130,6 +136,8 @@ def create_app(start_scheduler: bool = True) -> Flask:
         out = dict(m)
         out.update(match_summary(m, names))
         out["home_stats"], out["away_stats"] = m.get("home_stats"), m.get("away_stats")
+        out["meta"] = m.get("meta")
+        out["has_transcript"] = os.path.exists(transcript_path(match_id))
         t = db.row("SELECT id, name, kind FROM tournaments WHERE id=?", (m["tournament_id"],))
         out["tournament"] = t
         runner = bench.live.get(match_id)
@@ -143,12 +151,27 @@ def create_app(start_scheduler: bool = True) -> Flask:
                                         for k, v in d.usage.items()} for side, d in runner.drivers.items()}
         return jsonify(out)
 
+    _gz_cache = {}
+
     @app.route("/api/matches/<match_id>/state")
     def api_match_state(match_id):
-        js = bench.live_state(match_id)
+        """Polled by every spectator ~1.4x/s: answers 304 when nothing changed and gzips the body."""
+        tag, js = bench.live_state(match_id)
         if js is None:
             abort(404)
-        return Response(js, mimetype="application/json", headers={"Cache-Control": "no-store"})
+        etag = f'"{tag}"'
+        headers = {"ETag": etag, "Cache-Control": "no-cache", "Vary": "Accept-Encoding"}
+        if etag in [t.strip() for t in request.headers.get("If-None-Match", "").split(",")]:
+            return Response(status=304, headers=headers)
+        if "gzip" in request.headers.get("Accept-Encoding", ""):
+            body = _gz_cache.get(tag)
+            if body is None:
+                body = gzip.compress(js.encode("utf-8"), 5)
+                _gz_cache.clear()
+                _gz_cache[tag] = body
+            headers["Content-Encoding"] = "gzip"
+            return Response(body, mimetype="application/json", headers=headers)
+        return Response(js, mimetype="application/json", headers=headers)
 
     @app.route("/api/matches/<match_id>/events")
     def api_match_events(match_id):
@@ -171,12 +194,18 @@ def create_app(start_scheduler: bool = True) -> Flask:
         return jsonify({i: json.loads(frame_json(frames[i])) for i in range(from_idx, min(len(frames), from_idx + num_steps))})
 
     # ---- API: rankings ------------------------------------------------------------------------------
+    _ci_cache = {}
+
     @app.route("/api/leaderboard")
     def api_leaderboard():
         names = models_by_id()
         ms = completed_matches()
         elo = ratings.compute_elo(ms)
         agg = ratings.aggregate(ms)
+        ci_key = (len(ms), ms[-1]["finished_at"] if ms else None)
+        if _ci_cache.get("key") != ci_key:
+            _ci_cache.update(key=ci_key, ci=ratings.bootstrap_elo(ms))
+        ci = _ci_cache["ci"]
         rows = []
         for mid, info in names.items():
             a = agg.get(mid)
@@ -186,8 +215,9 @@ def create_app(start_scheduler: bool = True) -> Flask:
                          "added_at": info["added_at"],
                          "enabled": bool(info["enabled"]),
                          "elo": elo.get(mid, {}).get("elo", ratings.START_ELO),
+                         "elo_ci": ci.get(mid),
                          "history": elo.get(mid, {}).get("history", []),
-                         **(a or {"played": 0, "wins": 0, "draws": 0, "losses": 0, "td_for": 0, "td_against": 0,
+                         **(a or {"played": 0, "wins": 0, "draws": 0, "losses": 0, "td_for": 0, "td_against": 0, "td_diff": 0,
                                   "style": {}, "sums": {}, "avg_cost": 0, "avg_tokens": 0, "win_rate": 0,
                                   "avg_latency": 0, "cas_per_game": 0})})
         rows.sort(key=lambda r: (-r["elo"], -r["played"], r["name"]))
@@ -222,7 +252,20 @@ def create_app(start_scheduler: bool = True) -> Flask:
             opp = e["away_model"] if e["side"] == "home" else e["home_model"]
             msgs.append({"text": json.loads(e["payload"]).get("text"), "match_id": e["match_id"],
                          "opponent": names.get(opp, {}).get("name", opp)})
-        return jsonify({"model": info, "elo": elo, "stats": agg, "head_to_head": sorted(h2h.values(), key=lambda r: r["name"]),
+        refl = []
+        for e in db.rows("SELECT e.payload, e.side, m.home_model, m.away_model, m.id AS match_id FROM events e "
+                         "JOIN matches m ON m.id=e.match_id WHERE e.kind='reflection' AND "
+                         "((e.side='home' AND m.home_model=?) OR (e.side='away' AND m.away_model=?)) "
+                         "ORDER BY e.id DESC LIMIT 12", (model_id, model_id)):
+            opp = e["away_model"] if e["side"] == "home" else e["home_model"]
+            p = json.loads(e["payload"])
+            refl.append({**p, "match_id": e["match_id"], "opponent": names.get(opp, {}).get("name", opp)})
+        all_ms = completed_matches()
+        if _ci_cache.get("key") != (len(all_ms), all_ms[-1]["finished_at"] if all_ms else None):
+            _ci_cache.update(key=(len(all_ms), all_ms[-1]["finished_at"] if all_ms else None),
+                             ci=ratings.bootstrap_elo(all_ms))
+        return jsonify({"model": info, "elo": elo, "elo_ci": _ci_cache["ci"].get(model_id), "stats": agg,
+                        "reflections": refl, "head_to_head": sorted(h2h.values(), key=lambda r: r["name"]),
                         "recent": recent, "messages": msgs})
 
     @app.route("/api/tournaments")
@@ -253,6 +296,31 @@ def create_app(start_scheduler: bool = True) -> Flask:
         matches = [match_summary(m, names) for m in db.rows(
             "SELECT * FROM matches WHERE tournament_id=? ORDER BY seq", (tid,))]
         return jsonify({"tournament": t, "standings": table, "matches": matches})
+
+    # ---- API: dataset export --------------------------------------------------------------------------
+    @app.route("/api/matches/<match_id>/transcript")
+    def api_match_transcript(match_id):
+        path = transcript_path(match_id)
+        if not os.path.exists(path):
+            abort(404)
+        return send_file(path, mimetype="application/gzip", as_attachment=True,
+                         download_name=f"botbowlbench-{match_id}.jsonl.gz")
+
+    @app.route("/api/export/matches.jsonl")
+    def api_export_matches():
+        only = request.args.get("admissible")
+        rows = export.iter_matches()
+        if only in ("1", "true"):
+            rows = (m for m in rows if m["admissible"])
+        return Response(stream_with_context(export.jsonl(rows)), mimetype="application/x-ndjson",
+                        headers={"Content-Disposition": "attachment; filename=matches.jsonl"})
+
+    @app.route("/api/export/events.jsonl")
+    def api_export_events():
+        kinds = [k for k in request.args.get("kind", "").split(",") if k] or None
+        return Response(stream_with_context(export.jsonl(export.iter_events(kinds))),
+                        mimetype="application/x-ndjson",
+                        headers={"Content-Disposition": "attachment; filename=events.jsonl"})
 
     # ---- API: admin ---------------------------------------------------------------------------------
     @app.route("/api/admin/round-robin", methods=["POST"])
@@ -287,7 +355,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
 
     @app.after_request
     def no_cache_api(resp):
-        if request.path.startswith("/api/"):
+        if request.path.startswith("/api/") and "Cache-Control" not in resp.headers:
             resp.headers["Cache-Control"] = "no-store"
         return resp
 

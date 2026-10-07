@@ -278,7 +278,9 @@ class Bench:
         try:
             runner = MatchRunner(match_id, home_cfg, away_cfg, self.settings,
                                  api_key=os.environ.get("OPENROUTER_API_KEY"),
-                                 event_sink=lambda mid, side, kind, payload: db.add_event(mid, side, kind, payload))
+                                 event_sink=lambda mid, side, kind, payload: db.add_event(mid, side, kind, payload),
+                                 transcript=True)
+            db.execute("UPDATE matches SET seed=? WHERE id=?", (runner.seed, match_id))
             self.live[match_id] = runner
             result = runner.run()
             if result.get("infra_error"):
@@ -293,10 +295,11 @@ class Bench:
             save_frames(match_id, runner.session.frames)
             status = "error" if result["error"] else "completed"
             db.execute("UPDATE matches SET status=?, home_score=?, away_score=?, winner=?, home_stats=?, "
-                       "away_stats=?, error=?, finished_at=?, duration=?, frames=? WHERE id=?",
+                       "away_stats=?, error=?, finished_at=?, duration=?, frames=?, meta=?, admissible=? WHERE id=?",
                        (status, result["home_score"], result["away_score"], result["winner"],
                         json.dumps(result["home_stats"]), json.dumps(result["away_stats"]), result["error"],
-                        time.time(), result["duration"], len(runner.session.frames), match_id))
+                        time.time(), result["duration"], len(runner.session.frames),
+                        json.dumps(result["meta"], default=str), 1 if result["meta"]["admissible"] else 0, match_id))
             return result
         except Exception as e:
             traceback.print_exc()
@@ -309,12 +312,16 @@ class Bench:
             self._finish_tournaments()
 
     # ---- live access for the web layer ------------------------------------------------------------------
-    def live_state(self, match_id: str) -> Optional[str]:
+    def live_state(self, match_id: str):
+        """(version tag, json) of the latest board state - live snapshot or the final replay frame."""
         runner = self.live.get(match_id)
         if runner is not None:
-            return runner.session.latest_json
+            with runner.session.lock:
+                return f"{match_id}-{runner.session.snapshot_seq}", runner.session.latest_json
         frames = load_frames(match_id)
-        return frame_json(frames[-1]) if frames else None
+        if not frames:
+            return None, None
+        return f"{match_id}-final-{len(frames)}", frame_json(frames[-1])
 
 
 _bench: Optional[Bench] = None

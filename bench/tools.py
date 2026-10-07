@@ -57,6 +57,62 @@ def _choice(game, action_type: ActionType):
     return None
 
 
+INTERNAL_ERROR = "INTERNAL ERROR"
+
+_RECORDED = {ActionType.MOVE, ActionType.BLOCK, ActionType.PASS, ActionType.HANDOFF, ActionType.FOUL}
+_STARTS = {ActionType.START_MOVE, ActionType.START_BLOCK, ActionType.START_BLITZ, ActionType.START_PASS,
+           ActionType.START_HANDOFF, ActionType.START_FOUL}
+
+
+def _roll_prob(targets) -> float:
+    if isinstance(targets, (int, float)):
+        targets = [targets]
+    p = 1.0
+    for t in targets or []:
+        if isinstance(t, (int, float)):
+            p *= (7 - min(6, max(2, int(t)))) / 6.0
+    return p
+
+
+def block_success(dice, attacker) -> float:
+    """Chance a block does NOT knock the attacker down (a turnover), ignoring re-rolls.
+    Each die: Attacker Down 1/6, Both Down 1/6 (harmless to an attacker with Block)."""
+    from botbowl.core.table import Skill
+    if not dice:
+        return 1.0
+    has_block = attacker is not None and attacker.has_skill(Skill.BLOCK)
+    bad = (1 if has_block else 2) / 6.0
+    n = abs(int(dice))
+    if dice > 0:      # attacker picks: only fails if every die is bad
+        return 1.0 - bad ** n
+    return (1.0 - bad) ** n   # defender picks: fails if any die is bad
+
+
+def action_odds(game, action: Action) -> dict:
+    """Success odds for a primitive action, from botbowl's own pathfinding/roll annotations.
+
+    reach_prob: probability of getting to the square (dodges, GFIs, pick-ups on the way)
+    roll_prob:  probability of the final roll (pass/hand-off/catch target, foul armour break,
+                block not knocking the attacker down)
+    block_dice: dice for a block (+n attacker picks, -n defender picks)
+    """
+    out = {"reach_prob": 1.0, "roll_prob": 1.0, "block_dice": None}
+    choice = _choice(game, action.action_type)
+    if choice is None or action.position is None or action.position not in choice.positions:
+        return out
+    i = choice.positions.index(action.position)
+    if choice.paths and i < len(choice.paths) and choice.paths[i] is not None:
+        out["reach_prob"] = round(float(choice.paths[i].prob), 4)
+    if action.action_type == ActionType.BLOCK and choice.block_dice and i < len(choice.block_dice):
+        out["block_dice"] = choice.block_dice[i]
+        attacker = action.player or game.state.active_player
+        out["roll_prob"] = round(block_success(out["block_dice"], attacker), 4)
+    elif action.action_type in (ActionType.PASS, ActionType.HANDOFF, ActionType.FOUL) \
+            and choice.rolls and i < len(choice.rolls):
+        out["roll_prob"] = round(_roll_prob(choice.rolls[i]), 4)
+    return out
+
+
 def is_trivial(game) -> Optional[Action]:
     """If the pending decision has exactly one possible action, return it."""
     actions = game.state.available_actions
@@ -80,6 +136,8 @@ class SeatTools:
         self.game = session.game
         self.max_illegal = max_illegal
         self.consecutive_illegal = 0
+        self.activation_index = 0
+        self._activation_key = None
 
     # ---- helpers ---------------------------------------------------------------------------
     @property
@@ -108,9 +166,59 @@ class SeatTools:
         if not self.game._is_action_allowed(action):
             return f"{action.action_type.name} with player={render.pid(action.player) if action.player else None} " \
                    f"position={render.sq(action.position)} is not legal now."
+        try:
+            record = self._action_record(action)
+        except Exception as e:  # measurement must never break play
+            self.session.harness_error(f"action record: {e!r}")
+            record = None
+        turn_id = (self.game.state.half, self.team.state.turn)
+        reports_before = len(self.game.state.reports)
         self.seat.submit(action)
         self._auto_resolve()
+        if record is not None:
+            self.session.record_action(self.seat, record)
+        try:
+            self._mark_outcome(reports_before, turn_id)
+        except Exception as e:
+            self.session.harness_error(f"action outcome: {e!r}")
         return None
+
+    def _action_record(self, action: Action) -> Optional[dict]:
+        """Decision-quality data captured *before* an action is executed."""
+        if action.action_type not in _RECORDED and action.action_type not in _STARTS:
+            return None
+        game, team = self.game, self.team
+        turn = game.current_turn()
+        if turn is None or turn.team != team:
+            return None
+        rec = {"half": game.state.half, "turn": team.state.turn, "action": action.action_type.name,
+               "turnover": False, "touchdown": False,
+               "player": render.pid(action.player or game.state.active_player),
+               "target": [action.position.x, action.position.y] if action.position is not None else None}
+        if action.action_type in _STARTS:
+            unused = [p for p in game.get_players_on_pitch(team) if not p.state.used]
+            rec["unused_before"] = len(unused)
+            self.activation_index += 1
+            rec["activation"] = self.activation_index
+        else:
+            rec.update(action_odds(game, action))
+            rec["success_est"] = round(rec["reach_prob"] * rec["roll_prob"], 4)
+            rec["activation"] = self.activation_index
+            target = game.get_player_at(action.position) if action.position is not None else None
+            if target is not None:
+                rec["target_player"] = render.pid(target)
+        return rec
+
+    def _mark_outcome(self, reports_before: int, turn_id):
+        """Attribute a turnover / touchdown to the last logged action of the turn. Turnovers usually happen
+        on a follow-up decision (choosing the block die, declining a re-roll), not the logged action itself."""
+        from botbowl.core.table import OutcomeType
+        new = self.game.state.reports[reports_before:]
+        turnover = any(r.outcome_type == OutcomeType.TURNOVER and r.team == self.team for r in new)
+        touchdown = any(r.outcome_type == OutcomeType.TOUCHDOWN and r.player is not None
+                        and r.player.team == self.team for r in new)
+        if turnover or touchdown:
+            self.session.mark_action_outcome(self.seat, turn_id, turnover=turnover, touchdown=touchdown)
 
     def _auto_resolve(self):
         start = self.seat.decision
@@ -151,6 +259,9 @@ class SeatTools:
         if err:
             return err
         key = self.seat.decision.key
+        if key != self._activation_key:
+            self._activation_key = key
+            self.activation_index = 0
         report_idx = len(self.game.state.reports)
         for i, step in enumerate(steps):
             if self.session.finished or self.seat.decision is None or self.seat.decision.key != key:
@@ -337,15 +448,27 @@ class SeatTools:
         return self._run([self._start(p, ActionType.START_FOUL),
                           self._at(ActionType.FOUL, lambda: t.position, f"Foul on {target_id}")])
 
-    def end_turn(self) -> str:
-        def step():
-            if _choice(self.game, ActionType.END_TURN) is None:
-                if _choice(self.game, ActionType.END_PLAYER_TURN) is not None:
-                    raise ValueError("A player is mid-action: call take_action('END_PLAYER_TURN') first, "
+    def end_turn(self, plan: str = "", prediction: str = "") -> str:
+        err = self._not_ready()
+        if err:
+            return err
+        if _choice(self.game, ActionType.END_TURN) is None:
+            if _choice(self.game, ActionType.END_PLAYER_TURN) is not None:
+                return self._illegal("A player is mid-action: call take_action('END_PLAYER_TURN') first, "
                                      "or resolve the pending decision.")
-                raise ValueError("You cannot end the turn right now.")
-            return Action(ActionType.END_TURN)
-        return self._run([step])
+            return self._illegal("You cannot end the turn right now.")
+        missing = [k for k, v in (("plan", plan), ("prediction", prediction)) if len((v or "").strip()) < 3]
+        if missing:
+            return self._illegal(f"end_turn needs a short reflection: {' and '.join(missing)} "
+                                 f"(1-3 sentences each). Nothing was done.")
+        self.session.record_reflection(self.seat, plan, prediction, trigger="end_turn")
+        return self._run([lambda: Action(ActionType.END_TURN)])
+
+    def reflect(self, plan: str = "", prediction: str = "") -> str:
+        if len((plan or "").strip()) < 3 or len((prediction or "").strip()) < 3:
+            return "ILLEGAL: reflect needs both a plan and a prediction (1-3 sentences each)."
+        self.session.record_reflection(self.seat, plan, prediction, trigger="reflect")
+        return "Reflection recorded."
 
     def take_action(self, action_type: str, player_id: Optional[str] = None,
                     x: Optional[int] = None, y: Optional[int] = None) -> str:
@@ -361,6 +484,8 @@ class SeatTools:
                 if player is None:
                     raise ValueError(f"Unknown player '{player_id}'.")
             pos = _square(self.game, x, y)
+            if at == ActionType.END_TURN:
+                raise ValueError("Use the end_turn tool (with your plan and prediction) to end the turn.")
             if at == ActionType.END_SETUP and not self.game.is_setup_legal(self.team):
                 raise ValueError("Setup is not legal yet: use a SETUP_FORMATION_* action first.")
             return Action(at, player=player, position=pos)
@@ -389,7 +514,11 @@ TOOL_DOCS = {
                  "up the ball), then throw to square (target_x,target_y).",
     "handoff": "Hand-off (once per turn): optionally move first, then hand the ball to ADJACENT team-mate target_id.",
     "foul": "Foul (once per turn): player_id kicks a PRONE/STUNNED opponent target_id (moves next to it if needed).",
-    "end_turn": "End your team turn. The call returns when it is your turn again (or the game is over).",
+    "end_turn": "End your team turn. Requires a short reflection: `plan` = what you intend to do on your next "
+                "turn (1-3 concrete sentences), `prediction` = what you expect your opponent to do on their turn. "
+                "The call returns when it is your turn again (or the game is over).",
+    "reflect": "Record your reflection without ending the turn: `plan` for your next turn and `prediction` of the "
+               "opponent's next turn. Use it when asked to after a turnover.",
     "take_action": "Low-level: perform any legal action listed by get_legal_actions, e.g. "
                    "take_action('SELECT_DEFENDER_DOWN'), take_action('USE_REROLL'), take_action('PUSH', x=5, y=3), "
                    "take_action('SETUP_FORMATION_WEDGE'), take_action('END_SETUP'), take_action('HEADS'), "
@@ -403,8 +532,16 @@ def build_mcp_server(tools: SeatTools) -> MCPServer:
     """Create an MCP server exposing the tools for one seat."""
     server = MCPServer("botbowl", instructions="Play Blood Bowl. " + RULES_PRIMER)
 
+    def guarded(fn, *args):
+        try:
+            return fn(*args)
+        except Exception as e:  # a bug in the harness, not a mistake by the model
+            tools.session.harness_error(f"{fn.__name__}: {e!r}")
+            return (f"{INTERNAL_ERROR}: the game server hit an error ({type(e).__name__}). This is not your "
+                    f"fault and does not count against you. Call get_legal_actions to continue.")
+
     def run(fn, *args):
-        return anyio.to_thread.run_sync(lambda: fn(*args))
+        return anyio.to_thread.run_sync(lambda: guarded(fn, *args))
 
     @server.tool(description=TOOL_DOCS["get_state"])
     async def get_state() -> str:
@@ -445,8 +582,12 @@ def build_mcp_server(tools: SeatTools) -> MCPServer:
         return await run(tools.foul, player_id, target_id)
 
     @server.tool(description=TOOL_DOCS["end_turn"])
-    async def end_turn() -> str:
-        return await run(tools.end_turn)
+    async def end_turn(plan: str, prediction: str) -> str:
+        return await run(tools.end_turn, plan, prediction)
+
+    @server.tool(description=TOOL_DOCS["reflect"])
+    async def reflect(plan: str, prediction: str) -> str:
+        return await run(tools.reflect, plan, prediction)
 
     @server.tool(description=TOOL_DOCS["take_action"])
     async def take_action(action_type: str, player_id: Optional[str] = None,
