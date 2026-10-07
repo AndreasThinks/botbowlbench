@@ -54,3 +54,9 @@ models:
 
   - name: Mistral Large 4
     model: mistralai/mistral-large-4-0
+
+  - name: GPT-6 Luna
+    model: openai/gpt-6-luna
+
+  - name: Qwen 3.8 Flash
+    model: qwen/qwen3.8-flash
