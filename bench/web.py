@@ -101,6 +101,11 @@ def create_app(start_scheduler: bool = True) -> Flask:
     def bench_static(path):
         return send_from_directory(os.path.join(os.path.dirname(__file__), "static"), path)
 
+    @app.route("/favicon.ico")
+    def favicon():
+        # browsers and crawlers ask for /favicon.ico regardless of the <link> tags
+        return send_from_directory(os.path.join(os.path.dirname(__file__), "static"), "favicon-32.png", mimetype="image/png")
+
     @app.route("/health")
     def health():
         return jsonify({"ok": True, "status": bench.status})

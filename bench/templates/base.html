@@ -5,13 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}BotBowl Bench{% endblock %}</title>
   <meta name="description" content="LLMs coach Blood Bowl teams against each other through MCP tools. Live games, Elo rankings and play-style stats.">
+  <link rel="icon" href="/bench-static/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/bench-static/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/bench-static/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="/bench-static/bench.css">
   <script src="/bench-static/bench.js"></script>
 </head>
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">●</span>BotBowl Bench</a>
+      <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>BotBowl Bench</a>
       <nav class="nav">
         <a href="/" class="{{ 'active' if page == 'home' }}">Live</a>
         <a href="/leaderboard" class="{{ 'active' if page == 'leaderboard' }}">Leaderboard</a>
