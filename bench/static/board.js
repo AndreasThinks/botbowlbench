@@ -89,6 +89,8 @@ const BBBoard = (() => {
   const WEATHER = { NICE: "nice", VERY_SUNNY: "sunny", SWELTERING_HEAT: "heat", POURING_RAIN: "rain", BLIZZARD: "blizzard" };
   const h = (tag, cls, ...kids) => { const e = document.createElement(tag); if (cls) e.className = cls; kids.flat().forEach((k) => k != null && e.append(k)); return e; };
   const pretty = (s) => String(s || "").toLowerCase().replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+  const DOING = { MOVE: "Moving", BLOCK: "Blocking", BLITZ: "Blitzing", PASS: "Passing", HANDOFF: "Handing off", FOUL: "Fouling", THROW_BOMB: "Throwing a bomb" };
+  const TARGET_VERB = { BLOCK: "blocking", BLITZ: "blitzing", PASS: "passing to", HANDOFF: "handing off to", FOUL: "fouling" };
 
   function sprite(race, role, home, active) {
     const base = (ICONS[race] || {})[role] || "hlineman";
@@ -105,6 +107,8 @@ const BBBoard = (() => {
     pitch.append(layer);
     pitchWrap.append(pitch);
     const dugouts = h("div", "st-dugouts");
+    const now = h("div", "st-now");
+    now.setAttribute("aria-live", "polite");
     const ticker = h("ol", "st-ticker");
     ticker.setAttribute("aria-label", "Latest game events");
     if (opts.onLog) {
@@ -112,8 +116,115 @@ const BBBoard = (() => {
       ticker.title = "Open the full game log";
       ticker.addEventListener("click", () => opts.onLog());
     }
-    root.append(head, pitchWrap, dugouts, ticker);
+    const card = h("div", "st-card");
+    card.hidden = true;
+    root.append(head, pitchWrap, now, dugouts, ticker, card);
     let lastKey = null;
+    let lastGame = null;
+
+    // ---- player card: shown for the hovered player, or one pinned by click/tap; survives re-renders ----
+    let hoverId = null, pinnedId = null;
+    const touch = window.matchMedia && matchMedia("(hover: none)").matches;
+    const pidOf = (t) => { const el = t && t.closest && t.closest("[data-pid]"); return el && root.contains(el) ? el.dataset.pid : null; };
+    root.addEventListener("mouseover", (e) => { const id = card.contains(e.target) ? hoverId : pidOf(e.target); if (id !== hoverId) { hoverId = id; showCard(); } });
+    root.addEventListener("mouseleave", () => { hoverId = null; showCard(); });
+    root.addEventListener("click", (e) => {
+      if (card.contains(e.target)) return;
+      const id = pidOf(e.target);
+      pinnedId = id && id !== pinnedId ? id : null;
+      showCard();
+    });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && pinnedId) { pinnedId = null; showCard(); } });
+
+    function findPlayer(game, id) {
+      for (const [side, team] of [["home", game.state.home_team], ["away", game.state.away_team]]) {
+        if (team.players_by_id[id]) return { side, team, p: team.players_by_id[id] };
+      }
+      return null;
+    }
+
+    function where(game, side, p) {
+      if (p.position) return null;
+      const dug = side === "home" ? game.state.home_dugout : game.state.away_dugout;
+      if (!dug) return "Off the pitch";
+      if ((dug.casualties || []).includes(p.player_id)) return "Casualty";
+      if ((dug.kod || []).includes(p.player_id)) return "Knocked out";
+      if ((dug.dungeon || []).includes(p.player_id)) return "Sent off";
+      return "In reserve";
+    }
+
+    // what the player is up to right now, in a few words
+    function doing(game, side, p) {
+      const st = game.state, s = p.state || {};
+      const out = [];
+      if (p.player_id === st.active_player_id) {
+        out.push(DOING[st.player_action_type] || "Acting now");
+        const other = game.active_other_player_id && findPlayer(game, game.active_other_player_id);
+        const verb = TARGET_VERB[st.player_action_type];
+        if (other && verb) out.push(`${verb} ${other.side === "home" ? "Home" : "Away"} #${other.p.nr}`);
+      } else if (p.player_id === game.active_other_player_id) {
+        const act = findPlayer(game, st.active_player_id);
+        if (act) out.push(`Targeted by ${act.side === "home" ? "Home" : "Away"} #${act.p.nr}`);
+      }
+      const off = where(game, side, p);
+      if (off) out.push(off);
+      else if (s.stunned) out.push("Stunned");
+      else if (!s.up) out.push("Prone");
+      if (s.bone_headed) out.push("Bone-headed");
+      if (s.really_stupid) out.push("Really stupid");
+      if (s.hypnotized) out.push("Hypnotized");
+      if (s.heated) out.push("Heat exhaustion");
+      if (s.used && p.player_id !== st.active_player_id && !off) out.push("Already acted this turn");
+      return out;
+    }
+
+    function cardBody(game, id) {
+      const f = findPlayer(game, id);
+      if (!f) return null;
+      const { side, team, p } = f, s = p.state || {};
+      const img = document.createElement("img");
+      img.src = sprite(team.race, p.role, side === "home", false); img.alt = "";
+      const moved = s.moves || 0;
+      const maLeft = p.ma - moved;
+      const stat = (label, val, note) => h("div", "st-stat", h("b", null, String(val)), h("span", null, label), note ? h("small", null, note) : null);
+      const maNote = moved ? (maLeft >= 0 ? `${maLeft} left` : `${-maLeft} GFI`) : null;
+      const skills = [...(p.role_skills || []), ...(p.extra_skills || [])];
+      const status = doing(game, side, p);
+      const ball = ((game.state.pitch && game.state.pitch.balls) || game.state.balls || [])
+        .some((b) => b.is_carried && b.position && p.position && b.position.x === p.position.x && b.position.y === p.position.y);
+      if (ball) status.unshift("Carrying the ball");
+      return h("div", `st-card-in ${side}`,
+        h("div", "st-card-top", img,
+          h("div", "st-card-id",
+            h("div", "st-card-name", `#${p.nr} ${p.name}`),
+            h("div", "st-card-role", `${side === "home" ? "Home" : "Away"} · ${p.role}`))),
+        h("div", "st-stats", stat("MA", p.ma, maNote), stat("ST", p.st), stat("AG", p.ag), stat("AV", p.av)),
+        status.length ? h("div", "st-card-doing", status.join(" · ")) : null,
+        skills.length ? h("div", "st-skills", skills.map((k) => h("span", "st-skill", pretty(k)))) : null,
+        (p.injuries && p.injuries.length) ? h("div", "st-card-inj", "Injuries: " + p.injuries.map(pretty).join(", ")) : null,
+        pinnedId === id ? h("div", "st-card-hint", touch ? "Pinned · tap the player again to close" : "Pinned · click again or press Esc to close") : null);
+    }
+
+    function showCard() {
+      const id = hoverId || pinnedId;
+      const body = id && lastGame ? cardBody(lastGame, id) : null;
+      const anchor = id && root.querySelector(`[data-pid="${CSS.escape(id)}"]:not(.st-now)`);
+      if (!body || !anchor) { card.hidden = true; card.innerHTML = ""; return; }
+      card.innerHTML = ""; card.append(body); card.hidden = false;
+      // sit beside the player, flipping to the other side near the edge, clamped inside the stadium
+      const r = root.getBoundingClientRect(), a = anchor.getBoundingClientRect();
+      const cw = card.offsetWidth, ch = card.offsetHeight, gap = 8;
+      const clamp = (v, max) => Math.max(4, Math.min(max - 4, v));
+      let left = a.right - r.left + gap, top = a.top - r.top + a.height / 2 - ch / 2;
+      if (left + cw > r.width - 4) left = a.left - r.left - cw - gap;
+      if (left < 4) {  // no room either side (narrow screens): centre it below the player instead
+        left = a.left - r.left + a.width / 2 - cw / 2;
+        top = a.bottom - r.top + gap;
+        if (top + ch > r.height - 4) top = a.top - r.top - ch - gap;
+      }
+      left = clamp(left, r.width - cw); top = clamp(top, r.height - ch);
+      card.style.left = `${left}px`; card.style.top = `${top}px`;
+    }
 
     function teamHead(team, side, game, label) {
       const acting = game.state.current_team_id === team.team_id;
@@ -126,6 +237,7 @@ const BBBoard = (() => {
     }
 
     function render(game) {
+      lastGame = game;
       const st = game.state, home = st.home_team, away = st.away_team;
       const board = game.arena.board, W = board[0].length - 2, H = board.length - 2;
       const names = opts.names ? opts.names() : {};
@@ -164,13 +276,13 @@ const BBBoard = (() => {
           const active = p.player_id === activeId;
           const cls = ["st-player", side, s.up ? "" : "down", s.stunned ? "stunned" : "", s.used ? "used" : "", active ? "active" : ""].join(" ");
           const el = place(h("div", cls), p.position.x, p.position.y);
+          el.dataset.pid = p.player_id;
           const img = document.createElement("img");
           img.src = sprite(team.race, p.role, side === "home", active); img.alt = "";
           el.append(img, h("span", "st-nr", String(p.nr)));
           if (carrierAt.has(`${p.position.x},${p.position.y}`)) el.append(h("span", "st-ball carried"));
           if (s.stunned) el.append(h("span", "st-status", "z"));
-          const skills = [...(p.role_skills || []), ...(p.extra_skills || [])].map(pretty).join(", ");
-          el.title = `${side === "home" ? "H" : "A"}${p.nr} · ${p.name} (${p.role})\nMA${p.ma} ST${p.st} AG${p.ag}+ AV${p.av}+${skills ? "\n" + skills : ""}\n${s.stunned ? "Stunned" : s.up ? "Standing" : "Prone"}${s.used ? " · used this turn" : ""}`;
+          el.setAttribute("aria-label", `${side === "home" ? "Home" : "Away"} #${p.nr} ${p.name}, ${p.role}`);
           layer.append(el);
         }
       }
@@ -186,7 +298,7 @@ const BBBoard = (() => {
           ids.forEach((id) => {
             const p = team.players_by_id[id]; if (!p) return;
             const img = document.createElement("img"); img.src = sprite(team.race, p.role, side === "home", false);
-            img.alt = `#${p.nr}`; img.title = `#${p.nr} ${p.name} (${p.role})`; g.append(img);
+            img.alt = `#${p.nr} ${p.name} (${p.role})`; img.dataset.pid = p.player_id; g.append(img);
           });
           return g;
         };
@@ -195,12 +307,34 @@ const BBBoard = (() => {
         dugouts.append(box);
       }
 
+      // who is acting right now, always visible (no hover needed)
+      now.innerHTML = "";
+      const act = !st.game_over && activeId && findPlayer(game, activeId);
+      now.hidden = !act;
+      if (act) {
+        const img = document.createElement("img");
+        img.src = sprite(act.team.race, act.p.role, act.side === "home", false); img.alt = "";
+        const bits = doing(game, act.side, act.p).filter((t) => t !== "Already acted this turn");
+        const moved = (act.p.state && act.p.state.moves) || 0;
+        if (moved || ["MOVE", "BLITZ", "PASS", "HANDOFF", "FOUL"].includes(st.player_action_type)) {
+          const left = act.p.ma - moved;
+          bits.push(left >= 0 ? `${left} MA left` : `${-left} GFI`);
+        }
+        now.dataset.pid = activeId;
+        now.className = `st-now ${act.side}`;
+        now.append(h("span", "st-now-label", "Now"), img,
+          h("b", null, `${act.side === "home" ? "Home" : "Away"} #${act.p.nr} ${act.p.role}`),
+          bits.length ? h("span", null, " · " + bits.join(" · ")) : null);
+      }
+
       // the last few game events (server-side text, perspective-neutral)
       const log = (game.bench && game.bench.log) || [];
       ticker.innerHTML = "";
       ticker.hidden = !log.length;
       const named = (t) => t.replace(/Home\(H\)/g, home.name).replace(/Away\(A\)/g, away.name);
       [...log].reverse().slice(0, 4).forEach((t, i) => ticker.append(h("li", i ? "" : "latest", named(t))));
+
+      showCard();
     }
 
     // live mode: poll the match's latest state (the server answers 304 when nothing changed)

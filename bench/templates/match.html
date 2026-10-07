@@ -76,10 +76,10 @@ function setBoard(mode) {
   const note = document.getElementById("board-note");
   if (mode === "live") {
     stadium.live(MATCH_ID);
-    note.textContent = "Live — the board updates as the models act. Hover a player for details.";
+    note.textContent = "Live — the board updates as the models act. Hover or tap a player for their stats; click to pin.";
   } else if (mode === "replay") {
     stadium.stop();
-    note.textContent = "Keys: Space play/pause · ← → step · Shift+← → jump a turn. On the scrubber, ▲ marks touchdowns and ticks mark turns.";
+    note.textContent = "Hover or tap a player for their stats. Keys: Space play/pause · ← → step · Shift+← → jump a turn. On the scrubber, ▲ marks touchdowns and ticks mark turns.";
     initReplay();
   } else {
     document.getElementById("stadium").innerHTML = '<div class="stadium-empty">The board appears when the match kicks off.</div>';

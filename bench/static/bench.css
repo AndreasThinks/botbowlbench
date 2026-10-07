@@ -247,7 +247,7 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 }
 
 /* ---- stadium: native board (header + pitch + dugouts + ticker, one card) ---- */
-.stadium { padding: 0; overflow: hidden; }
+.stadium { padding: 0; overflow: hidden; position: relative; }
 .st-head { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; padding: 12px 16px; }
 .st-team { min-width: 0; max-width: 100%; padding: 4px 10px; border-radius: 8px; transition: background .2s; }
 .st-team.away { text-align: right; border-right: 4px solid var(--away); justify-self: end; }
@@ -301,6 +301,36 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 .st-step.home::after { background: var(--home); }
 .st-step.away::after { background: var(--away); }
 
+.st-player, .st-dg img { cursor: pointer; }
+.st-player:hover img { transform: scale(1.12); }
+.st-player.down:hover img { transform: rotate(90deg) scale(1.12); }
+.st-now { display: flex; align-items: center; gap: 6px; margin: 8px 16px 0; padding: 4px 10px; border-radius: 8px;
+  font-size: .8rem; color: var(--text-secondary); cursor: pointer; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-now.home { background: var(--home-soft); border-left: 4px solid var(--home); }
+.st-now.away { background: var(--away-soft); border-left: 4px solid var(--away); }
+.st-now img { width: 20px; height: 20px; image-rendering: pixelated; flex: none; }
+.st-now b { color: var(--text-primary); }
+.st-now-label { text-transform: uppercase; letter-spacing: .04em; font-size: .68rem; font-weight: 700; color: var(--text-muted); }
+.st-card { position: absolute; z-index: 5; width: 230px; max-width: calc(100% - 8px); pointer-events: auto; }
+.st-card-in { background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.18); padding: 10px 12px; font-size: .8rem; }
+.st-card-in.home { border-top: 4px solid var(--home); }
+.st-card-in.away { border-top: 4px solid var(--away); }
+.st-card-top { display: flex; gap: 8px; align-items: center; }
+.st-card-top img { width: 32px; height: 32px; image-rendering: pixelated; flex: none; }
+.st-card-id { min-width: 0; }
+.st-card-name { font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-card-role { color: var(--text-muted); font-size: .75rem; }
+.st-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 8px; text-align: center; }
+.st-stat { background: var(--surface-2); border-radius: 6px; padding: 4px 0; line-height: 1.1; }
+.st-stat b { display: block; font-size: 1rem; font-variant-numeric: tabular-nums; }
+.st-stat span { font-size: .65rem; color: var(--text-muted); letter-spacing: .04em; }
+.st-stat small { display: block; font-size: .62rem; color: var(--text-secondary); }
+.st-card-doing { margin-top: 8px; font-weight: 600; }
+.st-skills { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 8px; }
+.st-skill { background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; font-size: .7rem; color: var(--text-secondary); }
+.st-card-inj { margin-top: 6px; font-size: .72rem; color: var(--critical); }
+.st-card-hint { margin-top: 6px; font-size: .68rem; color: var(--text-muted); }
 .st-dugouts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 8px 16px 0; }
 .st-dugout { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; min-height: 26px; font-size: .75rem; color: var(--text-muted); }
 .st-dugout.away { justify-content: flex-end; }
@@ -326,6 +356,7 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
   .st-dugouts { padding: 6px 8px 0; }
   .st-dg img { width: 16px; height: 16px; }
   .st-ticker { padding: 6px 8px 10px; }
+  .st-now { margin: 6px 8px 0; }
 }
 .match-bar { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; justify-content: space-between; margin-bottom: 12px; font-size: .9rem; }
 .match-links { display: flex; gap: 14px; font-size: .85rem; }
