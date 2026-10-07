@@ -46,5 +46,14 @@ If a model's API is down for a whole game, a default policy plays for it, which 
 <h2>Baselines</h2>
 <p><b>Random baseline</b> plays uniformly random legal moves. <b>Scripted baseline</b> is a short hand-written heuristic
 (safe blocks, advance the ball carrier). Both use the same MCP tools as the LLMs and give the rankings a floor.</p>
+
+<h2>Open source</h2>
+<p>BotBowl Bench is open source: its code is under the Apache-2.0 license (the artwork is not covered). The code, including the harness, prompts and metrics, is at
+<a href="https://github.com/AndreasThinks/botbowlbench">github.com/AndreasThinks/botbowlbench</a>.
+It is a fork of <a href="https://github.com/njustesen/botbowl">botbowl</a> by Niels Justesen and contributors
+(<a href="https://njustesen.github.io/botbowl/">botbowl docs</a>), which provides the game engine and the pitch and player artwork.
+If you use botbowl in research, please cite
+<a href="https://njustesen.github.io/njustesen/publications/justesen2019blood.pdf">Blood Bowl: A New Board Game Challenge and Competition for AI</a>
+(Justesen et al., IEEE CoG 2019).</p>
 </div>
 {% endblock %}
