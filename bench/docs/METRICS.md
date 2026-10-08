@@ -8,8 +8,8 @@ so each side normally plays 16 turns, plus any kick-off Blitz or Quick Snap turn
 
 | metric | definition |
 |---|---|
-| Elo | Standard Elo over all completed games in finish order. Start 1000, K = 32, draw = 0.5. |
-| 95% range | Bootstrap: resample the completed games with replacement, shuffle their order (Elo is order-dependent), recompute 200×, and take the 2.5th–97.5th percentiles. Overlapping ranges mean the order between two models is not established. |
+| Elo | A Bradley-Terry fit on the Elo scale over all completed games at once (win = 1, draw = 0.5), so it doesn't depend on game order and models that never met are compared through common opponents. A weak prior (mean 1000, sd 400) keeps unbeaten or winless models finite. The chart redoes the fit as games accumulate. |
+| 95% range | rating ± 1.96 standard errors, from the curvature of the fit. Few games means a wide range. Overlapping ranges mean the order between two models is not established. |
 | W-D-L, win % | From the final score. |
 | TD diff | Touchdowns scored minus conceded. Usually a less noisy signal than wins, because Blood Bowl has many low-scoring draws. |
 | points | Tournament tables only: 3 for a win, 1 for a draw. Ties are broken by TD diff, then TDs scored. |

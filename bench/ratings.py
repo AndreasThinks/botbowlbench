@@ -1,9 +1,9 @@
-"""Elo ratings and tournament standings computed from completed matches."""
+"""Ratings (Elo scale) and tournament standings computed from completed matches."""
+import math
 from collections import defaultdict
 from typing import Dict, Iterable, List
 
 START_ELO = 1000.0
-K = 32.0
 
 STYLE_KEYS = ["aggression", "risk_taking", "passing_game", "dirty_play", "chattiness", "illegal_rate",
               # decision quality / research metrics (averaged over the games where they are defined)
@@ -20,20 +20,92 @@ def expected(ra: float, rb: float) -> float:
     return 1.0 / (1.0 + 10 ** ((rb - ra) / 400.0))
 
 
-def compute_elo(matches: Iterable[dict]) -> Dict[str, dict]:
-    """matches must be completed and ordered chronologically."""
-    elo = defaultdict(lambda: START_ELO)
-    history = defaultdict(list)
+# Ratings are a Bradley-Terry fit on the Elo scale: every completed game is used at once, so the result doesn't depend
+# on the order games were played in, and a model with few games gets a wide interval instead of a confident number.
+# A weak prior (centred on START_ELO) keeps unbeaten or winless models finite.
+_C = math.log(10) / 400.0     # Elo points -> natural log-odds
+PRIOR_SD = 400.0              # Elo points
+
+
+def _fit(n: int, W, N, x0=None):
+    """Newton's method on the penalised log-likelihood. W[i,j] = points i scored against j (draw = 0.5),
+    N[i,j] = games between i and j. Returns ratings in log-odds units and their covariance."""
+    import numpy as np
+    x = np.zeros(n) if x0 is None else np.array(x0, dtype=float)
+    inv_tau2 = 1.0 / (PRIOR_SD * _C) ** 2
+    for _ in range(100):
+        P = 1.0 / (1.0 + np.exp(x[None, :] - x[:, None]))   # P[i,j] = chance i beats j
+        g = (W - N * P).sum(axis=1) - x * inv_tau2
+        Hm = N * P * (1.0 - P)
+        H = Hm - np.diag(Hm.sum(axis=1) + inv_tau2)          # negative definite thanks to the prior
+        step = np.linalg.solve(H, g)
+        x = x - step
+        if np.abs(step).max() < 1e-7:
+            break
+    P = 1.0 / (1.0 + np.exp(x[None, :] - x[:, None]))
+    Hm = N * P * (1.0 - P)
+    cov = np.linalg.inv(np.diag(Hm.sum(axis=1) + inv_tau2) - Hm)
+    return x, cov
+
+
+def fit_ratings(matches: Iterable[dict]) -> Dict[str, dict]:
+    """Rating, standard error and 95% interval (all in Elo points) for every model that has played."""
+    import numpy as np
+    matches = list(matches)
+    ids = sorted({m["home_model"] for m in matches} | {m["away_model"] for m in matches})
+    if not ids:
+        return {}
+    ix = {k: i for i, k in enumerate(ids)}
+    W, N = np.zeros((len(ids), len(ids))), np.zeros((len(ids), len(ids)))
     for m in matches:
-        h, a = m["home_model"], m["away_model"]
-        score_h = 1.0 if m["winner"] == "home" else (0.0 if m["winner"] == "away" else 0.5)
-        eh = expected(elo[h], elo[a])
-        delta = K * (score_h - eh)
-        elo[h] += delta
-        elo[a] -= delta
-        history[h].append({"t": m["finished_at"], "elo": round(elo[h], 1)})
-        history[a].append({"t": m["finished_at"], "elo": round(elo[a], 1)})
-    return {k: {"elo": round(v, 1), "history": history[k]} for k, v in elo.items()}
+        h, a = ix[m["home_model"]], ix[m["away_model"]]
+        s = _score(m)
+        W[h, a] += s
+        W[a, h] += 1.0 - s
+        N[h, a] += 1
+        N[a, h] += 1
+    x, cov = _fit(len(ids), W, N)
+    return {k: _rating(x[i], cov[i, i]) for k, i in ix.items()}
+
+
+def _score(m: dict) -> float:
+    return 1.0 if m["winner"] == "home" else (0.0 if m["winner"] == "away" else 0.5)
+
+
+def _rating(x: float, var: float) -> dict:
+    elo, se = START_ELO + x / _C, math.sqrt(max(var, 0.0)) / _C
+    return {"elo": round(elo, 1), "se": round(se, 1), "lo": round(elo - 1.96 * se), "hi": round(elo + 1.96 * se)}
+
+
+def compute_elo(matches: Iterable[dict], max_points: int = 300) -> Dict[str, dict]:
+    """The current fit plus a history: the fit is redone as games accumulate (matches must be completed and in
+    chronological order), and each model gets a point after each of its games. Long histories are sampled down to
+    about max_points refits, each covering a run of games."""
+    import numpy as np
+    matches = list(matches)
+    ids = sorted({m["home_model"] for m in matches} | {m["away_model"] for m in matches})
+    if not ids:
+        return {}
+    ix = {k: i for i, k in enumerate(ids)}
+    W, N = np.zeros((len(ids), len(ids))), np.zeros((len(ids), len(ids)))
+    history = defaultdict(list)
+    step = max(1, math.ceil(len(matches) / max_points))
+    x, cov, touched = None, None, set()
+    for n, m in enumerate(matches, 1):
+        h, a = ix[m["home_model"]], ix[m["away_model"]]
+        s = _score(m)
+        W[h, a] += s
+        W[a, h] += 1.0 - s
+        N[h, a] += 1
+        N[a, h] += 1
+        touched.update((h, a))
+        if n % step and n != len(matches):
+            continue
+        x, cov = _fit(len(ids), W, N, x)
+        for i in sorted(touched):
+            history[ids[i]].append({"t": m["finished_at"], "elo": round(START_ELO + x[i] / _C, 1)})
+        touched = set()
+    return {k: {**_rating(x[i], cov[i, i]), "history": history[k]} for k, i in ix.items()}
 
 
 def aggregate(matches: Iterable[dict]) -> Dict[str, dict]:
@@ -94,26 +166,3 @@ def standings(matches: List[dict]) -> List[dict]:
                       "td_diff": a["td_for"] - a["td_against"], "cas": a["sums"].get("casualties_inflicted", 0)})
     table.sort(key=lambda r: (-r["points"], -r["td_diff"], -r["td_for"], r["model"]))
     return table
-
-
-def bootstrap_elo(matches: List[dict], n: int = 200, seed: int = 0) -> Dict[str, dict]:
-    """95% intervals for each model's Elo: resample games with replacement and shuffle their order
-    (Elo is order-dependent), recompute, take the 2.5/97.5 percentiles."""
-    import random
-    rng = random.Random(seed)
-    samples = defaultdict(list)
-    if not matches:
-        return {}
-    for _ in range(n):
-        resample = [matches[rng.randrange(len(matches))] for _ in matches]
-        rng.shuffle(resample)
-        elo = compute_elo(resample)
-        for model in {m["home_model"] for m in matches} | {m["away_model"] for m in matches}:
-            samples[model].append(elo.get(model, {"elo": START_ELO})["elo"])
-    out = {}
-    for model, vals in samples.items():
-        vals.sort()
-        lo = vals[int(0.025 * (len(vals) - 1))]
-        hi = vals[int(round(0.975 * (len(vals) - 1)))]
-        out[model] = {"lo": round(lo), "hi": round(hi)}
-    return out

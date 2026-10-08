@@ -1,7 +1,9 @@
 # BotBowl Bench competitors.
 #
-# Every time a model is added here (and the service restarts or picks up the change), a "gauntlet"
-# is scheduled: the new model plays every other enabled model, home and away, one game at a time.
+# Every time a model is added here (and the service restarts or picks up the change), a "placement"
+# is scheduled: the new model plays 5 anchor models spread across the current ratings, home and away,
+# then up to 6 top-up games against the opponents it is closest to. The cost per newcomer stays the
+# same however long this list gets (see the placement_* settings below; placement_size: 0 = play everyone).
 # The very first time the bench starts with 2+ models, a full round-robin tournament is scheduled.
 #
 # Fields per model:
@@ -26,6 +28,8 @@ settings:
                                 # hands the rest of the game to the fallback policy, so keep it well above normal spend.
   legs: 2                       # play each pairing home and away
   pause_between_matches: 5
+  placement_size: 5             # anchors a newcomer plays (home and away), spread from top to bottom of the table
+  placement_extra_games: 6      # most top-up games after that, against the least predictable opponents
 
 models:
   - name: Scripted baseline

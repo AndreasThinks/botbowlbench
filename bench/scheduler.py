@@ -3,7 +3,9 @@ The tournament scheduler: watches models.yaml, creates tournaments and plays que
 after the other in a background thread.
 
 * First start with >= 2 enabled models  -> a round-robin tournament between all of them.
-* A model appears that wasn't known before -> a "gauntlet": the newcomer vs every other enabled model.
+* A model appears that wasn't known before -> a "placement": the newcomer plays a handful of anchor models spread
+  across the current ratings, then a few top-up games against the opponents that tell us most about it, until its
+  rating interval is narrow enough or the top-up allowance is used. The cost per newcomer stays flat as the list grows.
 * A model is disabled/removed -> its queued matches are cancelled (history is kept).
 * Admins can also queue a fresh full round robin from the web API or CLI.
 """
@@ -19,7 +21,7 @@ import uuid
 import zlib
 from typing import Dict, List, Optional
 
-from bench import config, db, version
+from bench import config, db, ratings, version
 from bench.match import CHECKPOINT_VERSION, MatchRunner
 from bench.session import timeline_point
 
@@ -232,7 +234,7 @@ class Bench:
             for mid in added:
                 others = [o for o in enabled_ids if o != mid]
                 if others:
-                    self.create_gauntlet(mid, others)
+                    self.create_placement(mid, others)
         self._finish_tournaments()
         return added
 
@@ -246,15 +248,19 @@ class Bench:
                 out.append((b, a))
         return out
 
-    def _create(self, kind: str, name: str, fixtures, focus: Optional[str] = None) -> int:
-        now = time.time()
+    def _create(self, kind: str, name: str, fixtures, focus: Optional[str] = None, extra: Optional[dict] = None) -> int:
         tid = db.execute("INSERT INTO tournaments(kind, name, status, focus_model, settings, created_at) "
-                         "VALUES(?,?,?,?,?,?)", (kind, name, "queued", focus, json.dumps(self.settings), now))
+                         "VALUES(?,?,?,?,?,?)", (kind, name, "queued", focus,
+                                                 json.dumps({**self.settings, **(extra or {})}), time.time()))
+        self._add_matches(tid, fixtures, 0)
+        return tid
+
+    def _add_matches(self, tid: int, fixtures, first_seq: int):
+        now = time.time()
         for i, (h, a) in enumerate(fixtures):
             db.execute("INSERT INTO matches(id, tournament_id, seq, home_model, away_model, status, created_at) "
-                       "VALUES(?,?,?,?,?,?,?)", (str(uuid.uuid4()), tid, i, h, a, "queued", now))
+                       "VALUES(?,?,?,?,?,?,?)", (str(uuid.uuid4()), tid, first_seq + i, h, a, "queued", now))
         self.wake()
-        return tid
 
     def create_round_robin(self, model_ids: Optional[List[str]] = None, name: Optional[str] = None) -> int:
         if model_ids is None:
@@ -286,15 +292,79 @@ class Bench:
             players = [players[0]] + [players[-1]] + players[1:-1]
         return out
 
-    def create_gauntlet(self, model_id: str, opponents: List[str]) -> int:
+    # ---- placement for newcomers -----------------------------------------------------------------------
+    @staticmethod
+    def _current_ratings() -> Dict[str, dict]:
+        return ratings.fit_ratings(db.rows("SELECT home_model, away_model, winner FROM matches WHERE status='completed'"))
+
+    def placement_anchors(self, model_id: str, opponents: List[str]) -> List[str]:
+        """The opponents a newcomer is placed against: settings.placement_anchors if given (names or ids), otherwise
+        settings.placement_size models spread evenly from the top to the bottom of the current ratings."""
+        listed = self.settings.get("placement_anchors")
+        if listed:
+            wanted = {config.slugify(str(a)) for a in listed} | {str(a) for a in listed}
+            chosen = [o for o in opponents if o in wanted]
+            if chosen:
+                return chosen
+        size = int(self.settings.get("placement_size", 5))
+        if size <= 0 or size >= len(opponents):
+            return list(opponents)
+        rated = self._current_ratings()
+        # models that have played, best to worst; untested ones (e.g. another newcomer) only as filler
+        ranked = sorted((o for o in opponents if o in rated), key=lambda o: -rated[o]["elo"])
+        ranked += [o for o in opponents if o not in rated][:size - len(ranked)]
+        if size == 1:
+            return ranked[:1]
+        return [ranked[round(i * (len(ranked) - 1) / (size - 1))] for i in range(size)]
+
+    def create_placement(self, model_id: str, opponents: List[str]) -> int:
         name = self.models.get(model_id, {}).get("name", model_id)
-        return self._create("gauntlet", f"Gauntlet: {name}", self._pairings([(model_id, o) for o in opponents]),
-                            focus=model_id)
+        fixtures = self._pairings([(model_id, o) for o in self.placement_anchors(model_id, opponents)])
+        return self._create("placement", f"Placement: {name}", fixtures, focus=model_id,
+                            extra={"placement_base": len(fixtures)})
+
+    def _top_up(self, t: dict) -> bool:
+        """After a placement's games are done: queue one more pairing (home and away) against the opponent whose
+        result is least predictable, while the newcomer's 95% interval is wider than settings.placement_target_range
+        and settings.placement_extra_games allows. Returns True if games were added."""
+        focus = t["focus_model"]
+        enabled = [r["id"] for r in db.rows("SELECT id FROM models WHERE enabled=1")]
+        if focus not in enabled:
+            return False
+        base = json.loads(t.get("settings") or "{}").get("placement_base")
+        played = db.row("SELECT COUNT(*) AS n, MAX(seq) AS last FROM matches WHERE tournament_id=?", (t["id"],))
+        if base is None:
+            return False
+        left = int(self.settings.get("placement_extra_games", 6)) - (played["n"] - base)
+        if left <= 0:
+            return False
+        rated = self._current_ratings()
+        me = rated.get(focus)
+        if me is None or me["hi"] - me["lo"] <= float(self.settings.get("placement_target_range", 300)):
+            return False
+        games = {}
+        for r in db.rows("SELECT home_model, away_model FROM matches WHERE status='completed' AND "
+                         "(home_model=? OR away_model=?)", (focus, focus)):
+            opp = r["away_model"] if r["home_model"] == focus else r["home_model"]
+            games[opp] = games.get(opp, 0) + 1
+
+        def information(o):
+            p = ratings.expected(me["elo"], rated.get(o, {}).get("elo", ratings.START_ELO))
+            return p * (1 - p) / (1 + games.get(o, 0))
+
+        opponents = [o for o in enabled if o != focus]
+        if not opponents:
+            return False
+        best = max(sorted(opponents), key=information)
+        self._add_matches(t["id"], self._pairings([(focus, best)])[:left], (played["last"] or 0) + 1)
+        return True
 
     def _finish_tournaments(self):
-        for t in db.rows("SELECT id FROM tournaments WHERE status IN ('queued','running')"):
+        for t in db.rows("SELECT * FROM tournaments WHERE status IN ('queued','running')"):
             left = db.row("SELECT COUNT(*) AS n FROM matches WHERE tournament_id=? AND status IN ('queued','running')",
                           (t["id"],))["n"]
+            if left == 0 and t["kind"] == "placement" and self._top_up(t):
+                continue
             if left == 0:
                 db.execute("UPDATE tournaments SET status='completed', finished_at=? WHERE id=?", (time.time(), t["id"]))
 
@@ -324,7 +394,7 @@ class Bench:
                             continue
                     else:
                         self.status = "idle"
-                        self.status_detail = "No matches queued. Add a model to models.yaml to start a gauntlet."
+                        self.status_detail = "No matches queued. Add a model to models.yaml to start its placement."
             except Exception as e:
                 traceback.print_exc()
                 self.status = "error"

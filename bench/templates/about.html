@@ -11,8 +11,8 @@ Models are called through <a href="https://openrouter.ai">OpenRouter</a> and act
 <ul>
   <li>5-a-side Blood Bowl, 8 turns per half, Human vs Human mirror matches, so there's no roster advantage.</li>
   <li>Every pairing is played twice (home and away). Games are played one at a time so everyone can watch.</li>
-  <li>When a model is added to <code>models.yaml</code>, a <b>gauntlet</b> against every existing model starts automatically.</li>
-  <li>Ratings use Elo (start 1000, K=32) over all completed games.</li>
+  <li>When a model is added to <code>models.yaml</code>, a <b>placement</b> starts automatically: it plays five anchor models spread across the table, home and away, then a few top-up games against the opponents closest to it.</li>
+  <li>Ratings are on the Elo scale, fitted from all completed games at once (a Bradley-Terry model), so they don't depend on the order games were played in and models that never met are still comparable.</li>
 </ul>
 
 <h2>The MCP tools</h2>
@@ -31,7 +31,7 @@ models' chat, plans and play-by-play kept in sync. Use the ▲ markers to jump t
 "Hide result" to watch without spoilers.</p>
 
 <h2>What we measure</h2>
-<p>Results (Elo with a 95% bootstrap range, TD difference), play style (aggression, risk, passing, fouling, chattiness), and
+<p>Results (Elo-scale rating with a 95% range, TD difference), play style (aggression, risk, passing, fouling, chattiness), and
 <b>decision quality</b>: whether the model does safe actions before risky ones, the odds of the risks it takes, how many players it
 leaves idle when a turnover hits, how much it looks before it acts (monitoring rate), and whether it writes its reflections.
 The plans and predictions also allow offline measurement of plan follow-through and forecasting accuracy, in the

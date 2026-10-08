@@ -283,18 +283,24 @@ def create_app(start_scheduler: bool = True) -> Flask:
         return jsonify({i: json.loads(frame_json(frames[i])) for i in range(from_idx, min(len(frames), from_idx + num_steps))})
 
     # ---- API: rankings ------------------------------------------------------------------------------
-    _ci_cache = {}
+    _elo_cache = {}
+
+    def fitted_ratings(ms):
+        """The rating fit (with its history), refitted only when a game has finished since the last call."""
+        key = (len(ms), ms[-1]["finished_at"] if ms else None)
+        if _elo_cache.get("key") != key:
+            _elo_cache.update(key=key, elo=ratings.compute_elo(ms))
+        return _elo_cache["elo"]
+
+    def rating_range(r):
+        return {"lo": r["lo"], "hi": r["hi"]} if r else None
 
     @app.route("/api/leaderboard")
     def api_leaderboard():
         names = models_by_id()
         ms = completed_matches()
-        elo = ratings.compute_elo(ms)
+        elo = fitted_ratings(ms)
         agg = ratings.aggregate(ms)
-        ci_key = (len(ms), ms[-1]["finished_at"] if ms else None)
-        if _ci_cache.get("key") != ci_key:
-            _ci_cache.update(key=ci_key, ci=ratings.bootstrap_elo(ms))
-        ci = _ci_cache["ci"]
         rows = []
         for mid, info in names.items():
             a = agg.get(mid)
@@ -304,7 +310,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
                          "added_at": info["added_at"],
                          "enabled": bool(info["enabled"]),
                          "elo": elo.get(mid, {}).get("elo", ratings.START_ELO),
-                         "elo_ci": ci.get(mid),
+                         "elo_ci": rating_range(elo.get(mid)),
                          "history": elo.get(mid, {}).get("history", []),
                          **(a or {"played": 0, "wins": 0, "draws": 0, "losses": 0, "td_for": 0, "td_against": 0, "td_diff": 0,
                                   "style": {}, "sums": {}, "avg_cost": 0, "avg_tokens": 0, "win_rate": 0,
@@ -320,7 +326,8 @@ def create_app(start_scheduler: bool = True) -> Flask:
             abort(404)
         ms = completed_matches("AND (home_model=? OR away_model=?)", (model_id, model_id))
         agg = ratings.aggregate(ms).get(model_id)
-        elo = ratings.compute_elo(completed_matches()).get(model_id, {"elo": ratings.START_ELO, "history": []})
+        fit = fitted_ratings(completed_matches()).get(model_id)
+        elo = {"elo": fit["elo"], "history": fit["history"]} if fit else {"elo": ratings.START_ELO, "history": []}
         # head to head
         h2h = {}
         for m in ms:
@@ -349,11 +356,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
             opp = e["away_model"] if e["side"] == "home" else e["home_model"]
             p = json.loads(e["payload"])
             refl.append({**p, "match_id": e["match_id"], "opponent": names.get(opp, {}).get("name", opp)})
-        all_ms = completed_matches()
-        if _ci_cache.get("key") != (len(all_ms), all_ms[-1]["finished_at"] if all_ms else None):
-            _ci_cache.update(key=(len(all_ms), all_ms[-1]["finished_at"] if all_ms else None),
-                             ci=ratings.bootstrap_elo(all_ms))
-        return jsonify({"model": info, "elo": elo, "elo_ci": _ci_cache["ci"].get(model_id), "stats": agg,
+        return jsonify({"model": info, "elo": elo, "elo_ci": rating_range(fit), "stats": agg,
                         "reflections": refl, "head_to_head": sorted(h2h.values(), key=lambda r: r["name"]),
                         "recent": recent, "messages": msgs})
 

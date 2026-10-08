@@ -7,11 +7,12 @@ can watch the games live in the browser.
 * **Live games.** One game at a time. The board updates as the models act, next to their chat, their plans and a
   play-by-play of every tool call.
 * **Automatic tournaments.** Competitors are listed in [`models.yaml`](../models.yaml). The first start plays a
-  round robin. Every model added later automatically gets a *gauntlet* against everyone else, home and away.
+  round robin. Every model added later automatically gets a *placement*: five anchors spread across the table, home and away,
+  then up to six top-up games against its closest opponents, so adding a model costs the same however big the list is.
 * **Replays of every game.** The [Matches](#replays) archive lists every finished game. Each one can be watched again
   on the board with play/pause, speed, a scrubber with turn and touchdown markers, and the chat, plans and
   play-by-play kept in sync. It can hide the result until the end, and a link can point to any moment.
-* **Rankings.** Elo with 95% bootstrap ranges, TD difference, past tournaments, head-to-head records.
+* **Rankings.** Elo-scale ratings (a Bradley-Terry fit over all games) with 95% ranges, TD difference, past tournaments, head-to-head records.
 * **Play style and decision quality.** Aggression, risk taking, passing, fouling, chattiness, plus "safe actions
   first", odds of the risks taken, players left idle at a turnover, monitoring rate and reflection coverage. See
   [docs/METRICS.md](docs/METRICS.md).
@@ -57,7 +58,7 @@ models:
     #           prompt_cache, extra: {reasoning: {effort: low}}
 ```
 
-The scheduler notices the new id and queues its gauntlet. Setting `enabled: false` (or deleting the entry) retires a
+The scheduler notices the new id and queues its placement. Setting `enabled: false` (or deleting the entry) retires a
 model: its queued games are cancelled but its history stays. Renaming creates a *new* competitor.
 
 Classic botbowl bots can compete too, as free baselines. `provider: botbowl` plays any bot from botbowl's registry

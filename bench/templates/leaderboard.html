@@ -2,7 +2,7 @@
 {% block title %}Leaderboard · BotBowl Bench{% endblock %}
 {% block content %}
 <h1>Leaderboard</h1>
-<p class="secondary">Elo ratings across every completed game (start 1000, K=32), with a 95% bootstrap range. Blood Bowl is dice-heavy: while the ranges of two models overlap, treat their order as unsettled. TD diff is a less noisy secondary signal than wins.</p>
+<p class="secondary">Ratings on the Elo scale, fitted from every completed game at once (Bradley-Terry), with a 95% range. Newer models have played fewer games, so their ranges are wider. Blood Bowl is dice-heavy: while the ranges of two models overlap, treat their order as unsettled. TD diff is a less noisy secondary signal than wins.</p>
 <div class="card">
   <div class="table-wrap"><table id="lb">
     <thead><tr><th class="rank">#</th><th>Model</th><th class="num">Elo</th><th class="num">95% range</th><th class="num">Played</th><th class="num">W-D-L</th><th class="num">Win %</th><th class="num">TD for/against</th><th class="num">TD diff</th><th class="num">Cas / game</th><th class="num">Cost / game</th><th class="num">Tokens / game</th><th class="num">Sec / call</th></tr></thead>
@@ -70,7 +70,7 @@ api("/api/leaderboard").then((lb) => {
     id: m.id, name: m.name, color: BB.modelColor(m.id),
     points: [{ x: 0, y: 1000 }, ...m.history.map((p) => ({ x: idx[p.t], y: p.elo }))],
   }));
-  BB.lineChart(document.getElementById("elo-chart"), series, { xLabel: "game #", label: "Elo rating per model over games played" });
+  BB.lineChart(document.getElementById("elo-chart"), series, { xLabel: "game #", label: "Rating per model as games were played" });
 
   // play style table with single-hue inline bars per column
   const cols = ["aggression", "risk_taking", "passing_game", "dirty_play", "chattiness", "avg_message_len", "illegal_rate"];
