@@ -47,8 +47,8 @@ HOW THIS WORKS
   and your next pending decision. Resolve interrupting decisions (block dice, push squares, re-rolls) with take_action.
 - Call end_turn when you are done with your turn. Unused players simply stay where they are.
 - Budget: at most {limits.max_tool_calls_per_turn} tool calls and {int(limits.turn_time_limit)} seconds per turn. \
-{limits.max_illegal_streak} illegal calls in a row, {limits.max_truncation_streak} truncated replies in a row, \
-or running out of budget, ends your turn automatically.
+{limits.max_illegal_streak} illegal calls or {limits.max_truncation_streak} truncated replies in total since your \
+last game action, or running out of budget, ends your turn automatically.
 - You may talk to your opponent with send_message (max 2 per turn). Spectators can read the chat.
 - Always answer with a tool call. Keep any text you write very short."""
 
@@ -65,7 +65,8 @@ class SeatDriver:
         self.tools = SeatTools(session, seat, max_illegal=limits.max_illegal_streak)
         self.usage = {"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0,
                       "reasoning_tokens": 0, "cost": 0.0, "latency": 0.0, "tool_calls": 0, "llm_errors": 0,
-                      "no_tool_replies": 0, "output_truncations": 0, "budget_exhausted": 0, "episodes": 0,
+                      "no_tool_replies": 0, "output_truncations": 0, "http_timeouts": 0,
+                      "uncertain_spend_calls": 0, "budget_exhausted": 0, "episodes": 0,
                       "served": {}}
         self.unavailable = False
         self._oa_tools = []
@@ -169,9 +170,17 @@ class SeatDriver:
             k = f"{resp.served_model or '?'}@{resp.provider or '?'}"
             u["served"][k] = u["served"].get(k, 0) + 1
 
-    async def _call_llm(self, messages, tools, key, sent):
+    async def _call_llm(self, messages, tools, key, sent, deadline=None):
         """One model call, fully recorded in the transcript. ``sent`` = messages already logged."""
-        resp = await self.llm.chat(messages, tools)
+        try:
+            resp = await self.llm.chat(messages, tools, deadline=deadline)
+        except LLMError as e:
+            if e.timeout:
+                self.usage["http_timeouts"] += 1
+            if e.uncertain_spend:
+                # no usage came back, so this call's cost is missing from usage["cost"] and the dollar cap
+                self.usage["uncertain_spend_calls"] += 1
+            raise
         self._record_usage(resp)
         self.session.transcript.write(
             "llm_call", self.seat.side, episode=key, new_messages=messages[sent:],
@@ -207,10 +216,10 @@ class SeatDriver:
             elif time.time() - t0 > self.limits.turn_time_limit:
                 reason = f"time limit ({int(self.limits.turn_time_limit)}s) exceeded"
             elif illegal_streak >= self.limits.max_illegal_streak:
-                reason = f"{illegal_streak} illegal/invalid calls in a row"
+                reason = f"{illegal_streak} illegal/invalid calls since last game action"
             elif truncation_streak >= self.limits.max_truncation_streak:
-                reason = (f"{truncation_streak} output truncations in a row "
-                          f"(completion hit max_tokens before a tool call)")
+                reason = (f"{truncation_streak} output truncations since last game action "
+                          f"(output length limit reached before a tool call)")
             elif self._over_budget():
                 reason = f"cost budget ${self.limits.budget_usd} for this game exhausted"
             if reason:
@@ -224,14 +233,15 @@ class SeatDriver:
                     self.seat.force_episode(key)
                 return
             try:
-                resp = await self._call_llm(messages, oa_tools, key, sent)
+                resp = await self._call_llm(messages, oa_tools, key, sent, deadline=t0 + self.limits.turn_time_limit)
                 self.consecutive_llm_errors = 0
             except LLMError as e:
                 self.usage["llm_errors"] += 1
                 self.consecutive_llm_errors += 1
                 self.session.log_event(self.seat.side, "error", {"text": str(e)[:500]})
                 self.session.transcript.write("llm_error", self.seat.side, episode=key, error=str(e)[:2000],
-                                              infra=e.infra, fatal=e.fatal)
+                                              infra=e.infra, fatal=e.fatal, timeout=e.timeout,
+                                              uncertain_spend=e.uncertain_spend)
                 if e.infra:
                     self.session.infra_error = str(e)[:300]
                     self.session.abort()
@@ -286,7 +296,8 @@ class SeatDriver:
                     illegal_streak += 1
                     self.seat.counters["invalid_tool_calls"] += 1
                 elif tc.name not in INFO_TOOLS and tc.name not in ("send_message", "reflect"):
-                    # A successful game action clears both invalid-call and truncation streaks.
+                    # A successful game action clears both counters (they are independent running totals since the last
+                    # game action, not strictly consecutive).
                     # Info / chat / reflect alone must not reset them (avoids infinite length retries).
                     illegal_streak = 0
                     truncation_streak = 0

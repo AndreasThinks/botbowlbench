@@ -46,10 +46,12 @@ class LLMResponse:
 
 
 class LLMError(Exception):
-    def __init__(self, msg, fatal=False, infra=False):
+    def __init__(self, msg, fatal=False, infra=False, timeout=False, uncertain_spend=False):
         super().__init__(msg)
         self.fatal = fatal
         self.infra = infra  # our problem (bad key / no credits), not the model's
+        self.timeout = timeout  # HTTP read timeout: the request was sent and never answered
+        self.uncertain_spend = uncertain_spend  # the provider may have generated (and billed) a reply we never saw
 
 
 def with_cache_breakpoints(messages: List[dict]) -> List[dict]:
@@ -82,7 +84,7 @@ class OpenRouterLLM:
     async def aclose(self):
         await self.client.aclose()
 
-    async def chat(self, messages: List[dict], tools: List[dict]) -> LLMResponse:
+    async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None) -> LLMResponse:
         body = {
             "model": self.model,
             "messages": with_cache_breakpoints(messages) if self.prompt_cache else messages,
@@ -106,6 +108,11 @@ class OpenRouterLLM:
             t0 = time.time()
             try:
                 r = await self.client.post(OPENROUTER_URL, json=body, headers=headers)
+            except httpx.ReadTimeout as e:
+                # The request went out and the reply never came: the provider may still be generating (and billing)
+                # it. Retrying would stack up unseen spend, so fail this call instead.
+                raise LLMError(f"HTTP read timeout after {self.timeout:g}s: {type(e).__name__}",
+                               timeout=True, uncertain_spend=True)
             except httpx.HTTPError as e:
                 last_err = f"network error: {e}"
             else:
@@ -126,6 +133,8 @@ class OpenRouterLLM:
                 else:
                     last_err = f"OpenRouter HTTP {r.status_code}: {r.text[:300]}"
             if attempt < self.max_retries:
+                if deadline is not None and time.time() + delay >= deadline:
+                    raise LLMError(f"{last_err or 'unknown error'} (no time left to retry)")
                 await asyncio.sleep(delay)
                 delay *= 2
         raise LLMError(last_err or "unknown error")
@@ -202,7 +211,7 @@ class RandomPolicy:
             return self._single("reflect", {"plan": self.PLAN, "prediction": self.PREDICTION})
         return None
 
-    async def chat(self, messages: List[dict], tools: List[dict]) -> LLMResponse:
+    async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None) -> LLMResponse:
         from botbowl.core.table import ActionType
         from bench import render
         self._n += 1
@@ -249,7 +258,7 @@ class ScriptedPolicy(RandomPolicy):
     BLOCK_PREF = ["SELECT_DEFENDER_DOWN", "SELECT_DEFENDER_STUMBLES", "SELECT_PUSH", "SELECT_BOTH_DOWN",
                   "SELECT_ATTACKER_DOWN"]
 
-    async def chat(self, messages: List[dict], tools: List[dict]) -> LLMResponse:
+    async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None) -> LLMResponse:
         from botbowl.core.table import ActionType
         from bench import render
         from bench.session import fallback_action
@@ -352,7 +361,7 @@ class BotbowlAgentPolicy(RandomPolicy):
         self.agent = botbowl.make_bot(bot)
         self._started = False
 
-    async def chat(self, messages: List[dict], tools: List[dict]) -> LLMResponse:
+    async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None) -> LLMResponse:
         from botbowl.core.table import ActionType
         from bench import render
         from bench.session import fallback_action

@@ -295,7 +295,8 @@ class Bench:
     # ---- placement for newcomers -----------------------------------------------------------------------
     @staticmethod
     def _current_ratings() -> Dict[str, dict]:
-        return ratings.fit_ratings(db.rows("SELECT home_model, away_model, winner FROM matches WHERE status='completed'"))
+        rows = db.rows("SELECT home_model, away_model, winner, meta FROM matches WHERE status='completed'")
+        return ratings.fit_ratings(r for r in rows if version.is_current_protocol(r))
 
     def placement_anchors(self, model_id: str, opponents: List[str]) -> List[str]:
         """The opponents a newcomer is placed against: settings.placement_anchors if given (names or ids), otherwise
@@ -343,8 +344,10 @@ class Bench:
         if me is None or me["hi"] - me["lo"] <= float(self.settings.get("placement_target_range", 300)):
             return False
         games = {}
-        for r in db.rows("SELECT home_model, away_model FROM matches WHERE status='completed' AND "
+        for r in db.rows("SELECT home_model, away_model, meta FROM matches WHERE status='completed' AND "
                          "(home_model=? OR away_model=?)", (focus, focus)):
+            if not version.is_current_protocol(r):
+                continue
             opp = r["away_model"] if r["home_model"] == focus else r["home_model"]
             games[opp] = games.get(opp, 0) + 1
 

@@ -54,7 +54,9 @@ Comparability: only compare games that share `meta.harness.protocol_version`. `p
 the system prompt, rules primer or tool descriptions change. `PROTOCOL_VERSION` (in `bench/version.py`) is bumped by
 hand when a change makes results incomparable. Protocol **1.1** classifies `finish_reason=length` (no tool call) as
 `output_truncations` rather than `no_tool_replies`, and removes the default harness response-token cap for all
-models (provider limits still apply); do not pool 1.0 and 1.1 games.
+models (provider limits still apply). The leaderboard, rating fit, tournament standings and newcomer placement
+include only games of the current protocol (a missing `protocol_version` counts as legacy 1.0); 1.0 games remain in
+the database, replays, transcripts and exports.
 
 ## Transcripts (`<match_id>.jsonl.gz`)
 

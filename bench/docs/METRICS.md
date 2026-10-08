@@ -53,7 +53,8 @@ These are computed from the **action log**. Every move, block, pass, hand-off or
 | `latency` | Total seconds spent waiting for the model. The leaderboard shows the average per call. |
 | `forced_actions`, `budget_exhausted`, `timeouts` | Decisions taken by the default policy, and the reasons |
 | `no_tool_replies`, `llm_errors` | Replies without a tool call (and without `finish_reason=length`), and API errors after retries |
-| `output_truncations` | Replies with `finish_reason=length` and no tool call — the completion budget was spent (often on reasoning) before a tool call. Counted separately from `no_tool_replies`. A bounded streak (`max_truncation_streak`, default same as `max_illegal_streak`) auto-finishes the turn; a successful action tool resets the streak (info/chat/reflect alone do not). |
+| `output_truncations` | Replies with `finish_reason=length` and no tool call — the completion budget was spent (often on reasoning) before a tool call. Counted separately from `no_tool_replies`. The count since the last successful game action (`max_truncation_streak`, default same as `max_illegal_streak`) auto-finishes the turn; it is a running total, not strictly consecutive, and only a successful action tool resets it (info/chat/reflect alone do not). |
+| `http_timeouts`, `uncertain_spend_calls` | HTTP read timeouts (never retried) and calls whose provider-side cost is unknown because no usage came back; the real spend may exceed `cost`. |
 | `served` | `{"<model>@<provider>": calls}`: what OpenRouter actually routed to |
 | `restart_cost` | Only after a server restart mid-game: USD spent on the part of a turn that was played again. Not included in `cost` or the game budget. |
 

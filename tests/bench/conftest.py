@@ -15,6 +15,8 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
     # the completion budget on reasoning. 0 disables. Separate from the usual n%11 text-only nudges.
     length_truncations_left = 0
     length_truncation_mode = "main"  # \"main\" | \"reflect\": only fire on main-loop / reflect-only calls
+    # Scripted main-loop replies consumed first: "L" = empty finish_reason=length, "T" = text-only stop.
+    script = []
 
     def log_message(self, *args):
         pass
@@ -51,8 +53,14 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
                                        "prompt_tokens_details": {"cached_tokens": 600},
                                        "completion_tokens_details": {"reasoning_tokens": usage_comp}}})
             return
+        scripted = FakeOpenRouter.script.pop(0) if FakeOpenRouter.script and not reflect_only else None
+        if scripted == "L":
+            self._send(200, {"id": f"gen-{n}", "model": body["model"], "provider": "FakeCloud",
+                             "choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "length"}],
+                             "usage": {"prompt_tokens": 10, "completion_tokens": 10, "cost": 0.0001}})
+            return
         calls = []
-        if n % 11 == 0:
+        if scripted == "T" or (scripted is None and n % 11 == 0):
             msg = {"role": "assistant", "content": "Hmm, let me think."}  # no tool call -> nudged
             finish = "stop"
         else:
@@ -102,6 +110,7 @@ def fake_openrouter(monkeypatch):
     FakeOpenRouter.bodies = []
     FakeOpenRouter.length_truncations_left = 0
     FakeOpenRouter.length_truncation_mode = "main"
+    FakeOpenRouter.script = []
     import bench.llm
     monkeypatch.setattr(bench.llm, "OPENROUTER_URL", f"http://127.0.0.1:{server.server_port}/chat/completions")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
