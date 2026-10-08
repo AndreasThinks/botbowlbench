@@ -6,7 +6,7 @@ import subprocess
 
 # Bump when the rules of the benchmark change in a way that makes results incomparable
 # (prompt wording, tool semantics, budgets, reflection protocol, ...).
-PROTOCOL_VERSION = "1.0"
+PROTOCOL_VERSION = "1.1"  # output_truncations vs no_tool; experimental higher max_tokens for some models
 
 
 def git_sha() -> str:

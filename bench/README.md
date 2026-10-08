@@ -140,14 +140,20 @@ their frames on first view.
 * 5-a-side, 8 turns per half, Human vs Human mirror matches, each pairing played home and away. All of this is
   configurable in `models.yaml` → `settings`.
 * Per team turn: at most `max_tool_calls_per_turn` (40) tool calls and `turn_time_limit` (300 s). Three invalid calls
-  in a row, or an exhausted budget, lets a safe default policy finish the turn. Per game: `budget_usd_per_game`
+  in a row, three consecutive output truncations (`finish_reason=length` with no tool call), or an exhausted budget,
+  lets a safe default policy finish the turn. Per game: `budget_usd_per_game`
   ($2) per model and `max_game_minutes` (120).
 * An HTTP 401/402 from OpenRouter (bad key, no credit) puts the game back in the queue instead of scoring it.
   Bugs in the bench's own tools are reported to the model as "not your fault", never counted as invalid moves, and
   make the game inadmissible.
-* The ending reflection is part of the protocol (`PROTOCOL_VERSION` 1.0). It changes behaviour a little, as any
+* The ending reflection is part of the protocol (`PROTOCOL_VERSION` 1.1). It changes behaviour a little, as any
   scaffold does, but it is identical for every model. It is what makes plan follow-through and forecast accuracy
   measurable.
+* **Reasoning output length (experimental):** some models (Mistral Large 4, Qwen 3.8 Flash, GPT-5 mini) set
+  `max_tokens: 8192` in `models.yaml`. Live audits under the old default of 2048 showed many `finish_reason=length`
+  replies with no tool call (reasoning filled the budget). Raising the cap is **not yet validated** as a gameplay
+  improvement; results under protocol 1.1 are not comparable to older games. A fresh experiment is planned — no
+  paid API calls were made for this change.
 
 ### Cost
 
@@ -162,8 +168,8 @@ OpenAI/DeepSeek/Gemini, enabled by the bench for Anthropic models) reduces it. `
 * The botbowl web UI is AngularJS. After editing `botbowl/web/static/js/*.js`, rebuild the bundle with
   `python bench/build_js.py`, which does the same as the original gulp task, without Node.
 * `tests/bench/conftest.py` contains a fake OpenRouter server used by the tests. It returns tool calls, malformed
-  arguments, text-only replies, `reasoning_details` and usage data, so the full driver path is tested without
-  spending money.
+  arguments, text-only replies, `finish_reason=length` truncations, `reasoning_details` and usage data, so the full
+  driver path is tested without spending money.
 * The original botbowl test suite still passes: `pytest tests`.
 
 ## Known limitations

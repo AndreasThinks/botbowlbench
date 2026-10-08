@@ -52,7 +52,9 @@ continued it, `dropped_records` and `restart_cost` (see the `resume` transcript 
 
 Comparability: only compare games that share `meta.harness.protocol_version`. `prompt_fingerprint` changes whenever
 the system prompt, rules primer or tool descriptions change. `PROTOCOL_VERSION` (in `bench/version.py`) is bumped by
-hand when a change makes results incomparable.
+hand when a change makes results incomparable. Protocol **1.1** classifies `finish_reason=length` (no tool call) as
+`output_truncations` rather than `no_tool_replies`, and some models use an experimental higher `max_tokens`; do not
+pool 1.0 and 1.1 games.
 
 ## Transcripts (`<match_id>.jsonl.gz`)
 

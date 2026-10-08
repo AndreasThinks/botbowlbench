@@ -11,6 +11,10 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
     calls = 0
     status = 200
     bodies = []
+    # When set, the next N replies are empty (no tools) with finish_reason=\"length\" — models that burn
+    # the completion budget on reasoning. 0 disables. Separate from the usual n%11 text-only nudges.
+    length_truncations_left = 0
+    length_truncation_mode = "main"  # \"main\" | \"reflect\": only fire on main-loop / reflect-only calls
 
     def log_message(self, *args):
         pass
@@ -28,12 +32,31 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
         content = last.get("content") or ""
         if isinstance(content, list):  # content blocks (e.g. with cache_control)
             content = "".join(b.get("text", "") for b in content)
+        names = [t["function"]["name"] for t in body["tools"]]
+        reflect_only = names == ["reflect"]
+        mode = FakeOpenRouter.length_truncation_mode
+        want_length = FakeOpenRouter.length_truncations_left > 0 and (
+            mode == "any"
+            or (mode == "main" and not reflect_only)
+            or (mode == "reflect" and reflect_only)
+        )
+        if want_length:
+            FakeOpenRouter.length_truncations_left -= 1
+            msg = {"role": "assistant", "content": "", "reasoning": "…" * 200}
+            finish = "length"
+            usage_comp = int(body.get("max_tokens") or 2048)
+            self._send(200, {"id": f"gen-{n}", "model": body["model"] + "-20260901", "provider": "FakeCloud",
+                             "choices": [{"message": msg, "finish_reason": finish}],
+                             "usage": {"prompt_tokens": 1000, "completion_tokens": usage_comp, "cost": 0.0001,
+                                       "prompt_tokens_details": {"cached_tokens": 600},
+                                       "completion_tokens_details": {"reasoning_tokens": usage_comp}}})
+            return
         calls = []
         if n % 11 == 0:
             msg = {"role": "assistant", "content": "Hmm, let me think."}  # no tool call -> nudged
+            finish = "stop"
         else:
-            names = [t["function"]["name"] for t in body["tools"]]
-            if names == ["reflect"]:
+            if reflect_only:
                 calls = [("reflect", {"plan": "Score next turn.", "prediction": "They will blitz."})]
             elif last["role"] == "user" and "CURRENT SITUATION" in content:
                 calls = [("get_state", {}), ("send_message", {"text": f"hello #{n}"})]
@@ -54,8 +77,9 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
                 tool_calls.append({"id": f"c{n}_{i}", "type": "function", "function": {"name": name, "arguments": raw}})
             msg = {"role": "assistant", "content": "", "tool_calls": tool_calls,
                    "reasoning_details": [{"type": "reasoning.encrypted", "data": f"sig-{n}"}]}
+            finish = "tool_calls"
         self._send(200, {"id": f"gen-{n}", "model": body["model"] + "-20260901", "provider": "FakeCloud",
-                         "choices": [{"message": msg, "finish_reason": "tool_calls"}],
+                         "choices": [{"message": msg, "finish_reason": finish}],
                          "usage": {"prompt_tokens": 1000, "completion_tokens": 50, "cost": 0.0001,
                                    "prompt_tokens_details": {"cached_tokens": 600}}})
 
@@ -76,6 +100,8 @@ def fake_openrouter(monkeypatch):
     FakeOpenRouter.calls = 0
     FakeOpenRouter.status = 200
     FakeOpenRouter.bodies = []
+    FakeOpenRouter.length_truncations_left = 0
+    FakeOpenRouter.length_truncation_mode = "main"
     import bench.llm
     monkeypatch.setattr(bench.llm, "OPENROUTER_URL", f"http://127.0.0.1:{server.server_port}/chat/completions")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")

@@ -11,6 +11,7 @@ DEFAULT_SETTINGS = {
     "max_tool_calls_per_turn": 40,
     "turn_time_limit": 300,           # seconds of wall time per team turn
     "max_illegal_streak": 3,
+    "max_truncation_streak": 3,  # finish_reason=length with no tool call; defaults same as illegal cap
     "max_messages_per_turn": 2,
     "max_message_len": 280,
     "decision_timeout": 900,          # hard safety net per decision, seconds

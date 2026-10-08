@@ -49,6 +49,9 @@ models:
 
   - name: GPT-5 mini
     model: openai/gpt-5-mini
+    # Experimental: live audits saw finish_reason=length at the default 2048 (reasoning ate the budget).
+    # 8192 is unvalidated for gameplay improvement; re-run before treating results as comparable to older games.
+    max_tokens: 8192
 
   - name: Gemini 2.5 Flash Lite
     model: google/gemini-2.5-flash-lite
@@ -58,12 +61,17 @@ models:
 
   - name: Mistral Large 4
     model: mistralai/mistral-large-4-0
+    # Experimental: audit — 439/902 replies finish_reason=length @2048, all no-tool (reasoning filled max_tokens).
+    # OpenRouter high-reasoning default; effort is high|none only — do not change reasoning mode here.
+    max_tokens: 8192
 
   - name: GPT-6 Luna
     model: openai/gpt-6-luna
 
   - name: Qwen 3.8 Flash
     model: qwen/qwen3.8-flash
+    # Experimental: audit — 139 length truncations; same class of issue as Mistral/GPT-5 mini.
+    max_tokens: 8192
 
   - name: Claude Haiku 5.5
     model: anthropic/claude-haiku-5.5

@@ -150,6 +150,125 @@ def test_openrouter_auth_failure_is_infra_error(fake_openrouter):
     assert result["infra_error"] and "401" in result["infra_error"]
 
 
+def test_length_truncation_is_not_counted_as_no_tool(fake_openrouter):
+    """finish_reason=length with no tools is output truncation, not a no-tool refusal."""
+    fake_openrouter.length_truncations_left = 2
+    fake_openrouter.length_truncation_mode = "main"
+    cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 20}
+    result = MatchRunner("t-trunc", cfg, RANDOM, {"budget_usd_per_game": 10}, api_key="k").run()
+    hs = result["home_stats"]
+    assert hs["output_truncations"] >= 2
+    # text-only n%11 nudges still exist and must stay on no_tool_replies
+    assert hs["no_tool_replies"] > 0
+    # the two length replies must not have been double-counted as no_tool
+    assert hs["no_tool_replies"] + hs["output_truncations"] <= hs["llm_calls"]
+    assert result["error"] is None
+
+
+def test_length_truncation_streak_auto_finishes_without_unlimited_retries(fake_openrouter):
+    """Bounded truncation streak ends the episode; no unlimited retries."""
+    fake_openrouter.length_truncations_left = 50
+    fake_openrouter.length_truncation_mode = "main"
+    cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model",
+           "max_tool_calls_per_turn": 40, "max_tokens": 512}
+    events = []
+    result = MatchRunner("t-trunc-cap", cfg, RANDOM,
+                         {"budget_usd_per_game": 10, "max_illegal_streak": 3, "max_game_minutes": 5},
+                         api_key="k", event_sink=lambda *a: events.append(a)).run()
+    hs = result["home_stats"]
+    assert hs["output_truncations"] >= 3
+    assert hs["budget_exhausted"] >= 1
+    system_texts = [e[3].get("text", "") for e in events if e[2] == "system"]
+    assert any("truncat" in t.lower() for t in system_texts)
+    # no unlimited retries: at most max_truncation_streak per episode (+ a small slack)
+    assert hs["output_truncations"] <= hs["episodes"] * 3 + 5
+    assert result["error"] is None
+
+
+def test_true_no_tool_replies_still_count_separately(fake_openrouter):
+    """finish_reason=stop without tools stays no_tool_replies (not output_truncations)."""
+    cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 12}
+    result = MatchRunner("t-notool", cfg, RANDOM, {"budget_usd_per_game": 10}, api_key="k").run()
+    hs = result["home_stats"]
+    assert hs["no_tool_replies"] > 0
+    assert hs.get("output_truncations", 0) == 0
+
+
+def test_successful_action_resets_truncation_streak(fake_openrouter):
+    """A single length truncation then normal tools must not auto-finish on truncation alone."""
+    fake_openrouter.length_truncations_left = 1
+    fake_openrouter.length_truncation_mode = "main"
+    cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 30}
+    events = []
+    result = MatchRunner("t-trunc-reset", cfg, RANDOM, {"budget_usd_per_game": 10, "max_illegal_streak": 3},
+                         api_key="k", event_sink=lambda *a: events.append(a)).run()
+    hs = result["home_stats"]
+    assert hs["output_truncations"] >= 1
+    assert hs["tool_calls"] > 0
+    system_texts = [e[3].get("text", "") for e in events if e[2] == "system"]
+    assert not any("truncat" in t.lower() and "auto-finish" in t.lower() for t in system_texts)
+    assert result["error"] is None
+
+
+def test_reflect_length_truncation_is_counted():
+    """_missed_reflection: finish_reason=length is output_truncations; no reflect tool is executed."""
+    import anyio
+    from bench.driver import DriverLimits, SeatDriver
+    from bench.llm import LLMResponse
+    from bench.session import GameSession
+
+    class TruncLLM:
+        async def chat(self, messages, tools):
+            return LLMResponse(content="", reasoning="…" * 50, finish_reason="length",
+                               raw_message={"role": "assistant", "content": ""})
+
+        async def aclose(self):
+            pass
+
+    class BoomClient:
+        async def call_tool(self, *a, **k):
+            raise AssertionError("reflect must not be called after a length truncation")
+
+    s = GameSession("t-reflect-unit", "A", "B", seed=1)
+    d = SeatDriver(s, s.home, TruncLLM(), "A", DriverLimits(), opponent_name="B")
+    d._oa_tools = [{"type": "function", "function": {"name": "reflect", "description": "", "parameters": {}}}]
+    anyio.run(d._missed_reflection, [{"role": "user", "content": "turn over"}], BoomClient(), "turn-1-1", 0)
+    assert d.usage["output_truncations"] == 1
+    assert d.usage["no_tool_replies"] == 0
+
+
+def test_per_model_max_tokens_reaches_openrouter_payload(fake_openrouter):
+    """models.yaml max_tokens must land on the OpenRouter request body (not only the default 2048)."""
+    cfg = {"name": "Big context", "provider": "openrouter", "model": "fake/model",
+           "max_tokens": 8192, "max_tool_calls_per_turn": 6}
+    MatchRunner("t-maxtok", cfg, RANDOM, {"max_game_minutes": 5}, api_key="k").run()
+    assert fake_openrouter.bodies
+    assert all(b.get("max_tokens") == 8192 for b in fake_openrouter.bodies)
+
+
+def test_models_yaml_sets_experimental_max_tokens_for_reasoning_models():
+    """Mistral / Qwen / GPT-5 mini carry an explicit experimental max_tokens=8192."""
+    from bench.config import load_models_file, models_path
+    data = load_models_file(models_path())
+    by_name = {m["name"]: m for m in data["models"]}
+    for name in ("Mistral Large 4", "Qwen 3.8 Flash", "GPT-5 mini"):
+        assert by_name[name].get("max_tokens") == 8192, name
+
+
+def test_output_truncations_aggregate_on_leaderboard():
+    from bench import ratings
+    ms = [{
+        "home_model": "a", "away_model": "b", "winner": "home",
+        "home_score": 1, "away_score": 0,
+        "home_stats": {"output_truncations": 4, "no_tool_replies": 1, "tool_calls": 10, "turns": 16},
+        "away_stats": {"output_truncations": 0, "no_tool_replies": 2, "tool_calls": 8, "turns": 16},
+    }]
+    agg = ratings.aggregate(ms)
+    assert agg["a"]["sums"]["output_truncations"] == 4
+    assert agg["b"]["sums"].get("output_truncations", 0) == 0
+    assert agg["a"]["sums"]["no_tool_replies"] == 1
+
+
 def test_scheduler_round_robin_placement_and_retire(bench_env):
     from bench.scheduler import Bench, load_frames
     b = Bench()
