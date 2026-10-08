@@ -64,3 +64,6 @@ models:
 
   - name: Qwen 3.8 Flash
     model: qwen/qwen3.8-flash
+
+  - name: Claude Haiku 5.5
+    model: anthropic/claude-haiku-5.5
