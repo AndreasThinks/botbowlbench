@@ -149,11 +149,13 @@ their frames on first view.
 * The ending reflection is part of the protocol (`PROTOCOL_VERSION` 1.1). It changes behaviour a little, as any
   scaffold does, but it is identical for every model. It is what makes plan follow-through and forecast accuracy
   measurable.
-* **Reasoning output length (experimental):** some models (Mistral Large 4, Qwen 3.8 Flash, GPT-5 mini) set
-  `max_tokens: 8192` in `models.yaml`. Live audits under the old default of 2048 showed many `finish_reason=length`
-  replies with no tool call (reasoning filled the budget). Raising the cap is **not yet validated** as a gameplay
-  improvement; results under protocol 1.1 are not comparable to older games. A fresh experiment is planned — no
-  paid API calls were made for this change.
+* **Output length:** the harness no longer imposes a default response-token cap on any model. When
+  `max_tokens` is absent or null, requests omit the field entirely; no `max_completion_tokens` cap is substituted.
+  Provider defaults and model/context limits still apply, so this is not unlimited generation. An explicit
+  per-model `max_tokens` remains available for opt-in experiments, but no shipped model uses it. Dollar, HTTP,
+  turn/game-time and bounded retry guards remain; the dollar cap is checked between calls and one response can
+  overshoot it. Removing the cap is not yet validated as a gameplay improvement; do not pool protocol 1.1
+  results with older games. No paid API calls were made for this change.
 
 ### Cost
 

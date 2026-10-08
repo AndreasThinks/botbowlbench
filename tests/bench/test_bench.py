@@ -246,13 +246,36 @@ def test_per_model_max_tokens_reaches_openrouter_payload(fake_openrouter):
     assert all(b.get("max_tokens") == 8192 for b in fake_openrouter.bodies)
 
 
-def test_models_yaml_sets_experimental_max_tokens_for_reasoning_models():
-    """Mistral / Qwen / GPT-5 mini carry an explicit experimental max_tokens=8192."""
+def test_models_yaml_does_not_impose_output_caps():
     from bench.config import load_models_file, models_path
     data = load_models_file(models_path())
-    by_name = {m["name"]: m for m in data["models"]}
-    for name in ("Mistral Large 4", "Qwen 3.8 Flash", "GPT-5 mini"):
-        assert by_name[name].get("max_tokens") == 8192, name
+    for model in data["models"]:
+        assert "max_tokens" not in model, model["name"]
+        assert "max_tokens" not in model.get("extra", {}), model["name"]
+        assert "max_completion_tokens" not in model.get("extra", {}), model["name"]
+
+
+def test_default_and_null_output_caps_are_omitted_from_payload(fake_openrouter):
+    import anyio
+    from bench.llm import OpenRouterLLM
+    from bench.match import make_llm
+
+    async def exercise():
+        clients = [OpenRouterLLM("fake/model", "k")]
+        for cfg in ({}, {"max_tokens": None}):
+            clients.append(make_llm({"model": "fake/model", **cfg}, None, "k"))
+        for client in clients:
+            try:
+                await client.chat([{"role": "system", "content": "test"}],
+                                  [{"type": "function", "function": {"name": "reflect"}}])
+            finally:
+                await client.aclose()
+
+    anyio.run(exercise)
+    assert len(fake_openrouter.bodies) == 3
+    for body in fake_openrouter.bodies:
+        assert "max_tokens" not in body
+        assert "max_completion_tokens" not in body
 
 
 def test_output_truncations_aggregate_on_leaderboard():

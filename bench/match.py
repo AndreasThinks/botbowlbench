@@ -25,7 +25,7 @@ def make_llm(model_cfg: dict, seat, api_key: Optional[str]):
         raise RuntimeError("OPENROUTER_API_KEY is not set")
     return OpenRouterLLM(model_cfg["model"], api_key,
                          temperature=model_cfg.get("temperature"),
-                         max_tokens=model_cfg.get("max_tokens", 2048),
+                         max_tokens=model_cfg.get("max_tokens"),
                          extra=model_cfg.get("extra") or {},
                          prompt_cache=model_cfg.get("prompt_cache"))
 

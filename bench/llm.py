@@ -66,7 +66,7 @@ def with_cache_breakpoints(messages: List[dict]) -> List[dict]:
 
 class OpenRouterLLM:
     def __init__(self, model: str, api_key: str, temperature: Optional[float] = None,
-                 max_tokens: int = 2048, extra: Optional[dict] = None, timeout: float = 180.0,
+                 max_tokens: Optional[int] = None, extra: Optional[dict] = None, timeout: float = 180.0,
                  max_retries: int = 4, prompt_cache: Optional[bool] = None):
         self.model = model
         # OpenAI, DeepSeek, Gemini... cache prompt prefixes automatically; Anthropic needs explicit breakpoints
@@ -88,9 +88,10 @@ class OpenRouterLLM:
             "messages": with_cache_breakpoints(messages) if self.prompt_cache else messages,
             "tools": tools,
             "tool_choice": "auto",
-            "max_tokens": self.max_tokens,
             "usage": {"include": True},
         }
+        if self.max_tokens is not None:
+            body["max_tokens"] = self.max_tokens
         if self.temperature is not None:
             body["temperature"] = self.temperature
         body.update(self.extra)
