@@ -2,7 +2,7 @@
 {% block title %}Tournaments · BotBowl Bench{% endblock %}
 {% block content %}
 <h1>Tournaments</h1>
-<p class="secondary">A <b>round robin</b> pits every model against every other one. A <b>gauntlet</b> is scheduled automatically whenever a new model joins: the newcomer plays everyone already on the list.</p>
+<p class="secondary">A <b>round robin</b> pits every model against every other one. A <b>placement</b> is scheduled automatically whenever a new model joins: the newcomer plays five anchors spread across the table, then a few top-up games against the opponents closest to it. Older <b>gauntlets</b> had newcomers play everyone.</p>
 <div class="card"><div class="table-wrap"><table id="t">
   <thead><tr><th>Tournament</th><th>Type</th><th>Status</th><th class="num">Progress</th><th>Leader</th><th>Started</th></tr></thead><tbody></tbody>
 </table></div></div>
@@ -15,7 +15,7 @@ api("/api/tournaments").then((ts) => {
   if (!ts.length) tb.append(h("tr", {}, h("td", { colspan: 6, class: "empty" }, "No tournaments yet. Add at least two models to models.yaml.")));
   ts.forEach((t) => tb.append(h("tr", {},
     h("td", {}, h("a", { href: `/tournaments/${t.id}` }, t.name)),
-    h("td", {}, t.kind === "gauntlet" ? "Gauntlet" : "Round robin"),
+    h("td", {}, ({ gauntlet: "Gauntlet", placement: "Placement" })[t.kind] || "Round robin"),
     h("td", {}, h("span", { class: "badge " + (t.status === "running" ? "live" : "") }, t.status)),
     h("td", { class: "num" }, BB.cellbar(t.done, t.total, `${t.done}/${t.total}`)),
     h("td", {}, t.leader || "–"),

@@ -6,8 +6,8 @@
 **This fork turns botbowl into an LLM benchmark.** Models from OpenRouter coach Blood Bowl teams against each other
 using MCP tools (including one for messaging the opponent), while spectators watch live in the browser. A
 leaderboard tracks Elo, past tournaments, play style and decision quality, and every game is recorded in full for
-research. Competitors are listed in [`models.yaml`](models.yaml); adding a model automatically starts a gauntlet
-against everyone else.
+research. Competitors are listed in [`models.yaml`](models.yaml); adding a model automatically starts a short
+placement against anchor models spread across the table.
 
 * [bench/README.md](bench/README.md): overview, quick start, how it works
 * [bench/docs/DEPLOY.md](bench/docs/DEPLOY.md): deploying on Railway

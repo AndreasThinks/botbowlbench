@@ -18,7 +18,7 @@ function load() {
     const head = document.getElementById("head"); head.innerHTML = "";
     const done = d.matches.filter((m) => m.status === "completed").length;
     head.append(h("h1", {}, t.name), h("p", { class: "secondary" },
-      `${t.kind === "gauntlet" ? "Gauntlet" : "Round robin"} · ${t.status} · ${done}/${d.matches.length} games played`,
+      `${({ gauntlet: "Gauntlet", placement: "Placement" })[t.kind] || "Round robin"} · ${t.status} · ${done}/${d.matches.length} games played`,
       t.settings && t.settings.game_mode ? ` · ${t.settings.game_mode}-a-side` : ""));
     const tb = document.querySelector("#st tbody"); tb.innerHTML = "";
     if (!d.standings.length) tb.append(h("tr", {}, h("td", { colspan: 10, class: "empty" }, "No completed games yet.")));

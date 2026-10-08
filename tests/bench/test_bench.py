@@ -150,7 +150,7 @@ def test_openrouter_auth_failure_is_infra_error(fake_openrouter):
     assert result["infra_error"] and "401" in result["infra_error"]
 
 
-def test_scheduler_round_robin_gauntlet_and_retire(bench_env):
+def test_scheduler_round_robin_placement_and_retire(bench_env):
     from bench.scheduler import Bench, load_frames
     b = Bench()
     assert sorted(b.sync_models(force=True)) == ["random-baseline", "random-two", "scripted-baseline"]
@@ -165,12 +165,12 @@ def test_scheduler_round_robin_gauntlet_and_retire(bench_env):
     assert len(load_frames(m["id"])) == done["frames"] > 10
     assert db.get_events(m["id"])
 
-    # adding a model schedules a gauntlet against the 3 existing ones, home and away
+    # adding a model schedules a placement; with only 3 existing models (fewer than placement_size) it plays them all
     time.sleep(0.01)
     bench_env.write_text(bench_env.read_text() + "  - name: Newcomer\n    provider: random\n")
     os.utime(bench_env, (time.time() + 5, time.time() + 5))
     assert b.sync_models() == ["newcomer"]
-    g = db.row("SELECT * FROM tournaments WHERE kind='gauntlet'")
+    g = db.row("SELECT * FROM tournaments WHERE kind='placement'")
     assert g["focus_model"] == "newcomer"
     assert db.row("SELECT COUNT(*) n FROM matches WHERE tournament_id=?", (g["id"],))["n"] == 6
 
@@ -183,6 +183,46 @@ def test_scheduler_round_robin_gauntlet_and_retire(bench_env):
     assert db.row("SELECT enabled FROM models WHERE id='newcomer'")["enabled"] == 0
 
 
+def test_placement_anchors_and_top_ups(bench_env):
+    from bench.scheduler import Bench
+    names = [f"M{i}" for i in range(8)]
+    bench_env.write_text("settings:\n  placement_size: 3\n  placement_extra_games: 4\nmodels:\n" +
+                         "".join(f"  - name: {n}\n    provider: random\n" for n in names))
+    b = Bench()
+    b.sync_models(force=True)
+    # the opening round robin: lower numbers always win, so m0 is top and m7 bottom
+    for m in db.rows("SELECT * FROM matches"):
+        winner = "home" if m["home_model"] < m["away_model"] else "away"
+        db.execute("UPDATE matches SET status='completed', winner=?, finished_at=? WHERE id=?",
+                   (winner, time.time(), m["id"]))
+    b._finish_tournaments()
+
+    bench_env.write_text(bench_env.read_text() + "  - name: Newcomer\n    provider: random\n")
+    os.utime(bench_env, (time.time() + 5, time.time() + 5))
+    assert b.sync_models() == ["newcomer"]
+    t = db.row("SELECT * FROM tournaments WHERE kind='placement'")
+    fixtures = db.rows("SELECT home_model, away_model FROM matches WHERE tournament_id=? ORDER BY seq", (t["id"],))
+    opponents = [f["away_model"] for f in fixtures if f["home_model"] == "newcomer"]
+    assert opponents == ["m0", "m4", "m7"] and len(fixtures) == 6     # top, middle, bottom; home and away
+
+    def finish_queued():
+        for m in db.rows("SELECT id FROM matches WHERE tournament_id=? AND status='queued'", (t["id"],)):
+            db.execute("UPDATE matches SET status='completed', winner='draw', finished_at=? WHERE id=?",
+                       (time.time(), m["id"]))
+        b._finish_tournaments()
+        return db.rows("SELECT * FROM matches WHERE tournament_id=? AND status='queued' ORDER BY seq", (t["id"],))
+
+    # 6 games leave a wide range, so a top-up pairing (home and away) is queued against a close, little-played model
+    top_up = finish_queued()
+    assert len(top_up) == 2 and {top_up[0]["home_model"], top_up[1]["away_model"]} == {"newcomer"}
+    assert top_up[0]["away_model"] not in ("m0", "m4", "m7")
+    assert db.row("SELECT status FROM tournaments WHERE id=?", (t["id"],))["status"] != "completed"
+    assert len(finish_queued()) == 2      # the allowance of 4 extra games is now used up
+    assert finish_queued() == []
+    assert db.row("SELECT status FROM tournaments WHERE id=?", (t["id"],))["status"] == "completed"
+    assert db.row("SELECT COUNT(*) n FROM matches WHERE tournament_id=?", (t["id"],))["n"] == 10
+
+
 def test_ratings():
     ms = [
         {"home_model": "a", "away_model": "b", "winner": "home", "home_score": 2, "away_score": 0, "finished_at": 1},
@@ -190,6 +230,17 @@ def test_ratings():
     ]
     elo = ratings.compute_elo(ms)
     assert elo["a"]["elo"] > 1000 > elo["b"]["elo"]
+    assert elo["a"]["lo"] < elo["a"]["elo"] < elo["a"]["hi"] and len(elo["a"]["history"]) == 2
+
+    # the fit doesn't depend on game order, stays finite for an unbeaten model, and gets surer with more games
+    games = [{"home_model": "a", "away_model": "b", "winner": "home"}, {"home_model": "b", "away_model": "c",
+             "winner": "home"}, {"home_model": "c", "away_model": "a", "winner": "draw"}]
+    assert ratings.fit_ratings(games) == ratings.fit_ratings(games[::-1])
+    few = ratings.fit_ratings(games)
+    many = ratings.fit_ratings(games * 20)
+    assert many["a"]["hi"] - many["a"]["lo"] < few["a"]["hi"] - few["a"]["lo"]
+    unbeaten = ratings.fit_ratings([{"home_model": "x", "away_model": "y", "winner": "home"}] * 10)
+    assert 1000 < unbeaten["x"]["elo"] < 2000
     table = ratings.standings(ms)
     assert table[0]["model"] == "a" and table[0]["points"] == 4 and table[1]["points"] == 1
 

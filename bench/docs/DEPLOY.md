@@ -30,7 +30,7 @@ supervised game (`python -m bench play <model> scripted-baseline -v` locally), t
 ## Day-to-day
 
 * **Add or retire a model:** edit `models.yaml` and push. Railway redeploys; on start the bench sees the new id and
-  queues its gauntlet. With `MODELS_CONFIG` on the volume, edits are picked up within ~20 seconds without a redeploy.
+  queues its placement. With `MODELS_CONFIG` on the volume, edits are picked up within ~20 seconds without a redeploy.
 * **Redeploys pause the current game.** The game is saved at the start of every team turn; on start the new
   container continues it from the start of the interrupted turn, with the board, dice, score, chat and spend as they
   were. Only that partial turn is played again, and its spend is reported as `restart_cost`. Games resume across

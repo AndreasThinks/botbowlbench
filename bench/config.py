@@ -18,6 +18,11 @@ DEFAULT_SETTINGS = {
     "budget_usd_per_game": 2.0,       # per model per game; null = unlimited
     "legs": 2,                        # 2 = every pairing is played home and away
     "pause_between_matches": 5,       # seconds
+    # placement of models added later (the opening tournament is still a full round robin)
+    "placement_size": 5,              # anchor opponents, spread across the ratings; 0 = play everyone
+    "placement_anchors": None,        # or an explicit list of model names to place against
+    "placement_extra_games": 6,       # most top-up games after the anchors
+    "placement_target_range": 300,    # stop topping up once the 95% rating range is this narrow (Elo points)
 }
 
 
