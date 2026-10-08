@@ -3,6 +3,8 @@ import os
 import threading
 import time
 
+import pytest
+
 from bench import db, ratings, render
 from bench.match import MatchRunner
 from bench.session import GameSession, fallback_action
@@ -150,6 +152,148 @@ def test_openrouter_auth_failure_is_infra_error(fake_openrouter):
     assert result["infra_error"] and "401" in result["infra_error"]
 
 
+def test_length_truncation_is_not_counted_as_no_tool(fake_openrouter):
+    """finish_reason=length with no tools is output truncation, not a no-tool refusal."""
+    fake_openrouter.length_truncations_left = 2
+    fake_openrouter.length_truncation_mode = "main"
+    cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 20}
+    result = MatchRunner("t-trunc", cfg, RANDOM, {"budget_usd_per_game": 10}, api_key="k").run()
+    hs = result["home_stats"]
+    assert hs["output_truncations"] >= 2
+    # text-only n%11 nudges still exist and must stay on no_tool_replies
+    assert hs["no_tool_replies"] > 0
+    # the two length replies must not have been double-counted as no_tool
+    assert hs["no_tool_replies"] + hs["output_truncations"] <= hs["llm_calls"]
+    assert result["error"] is None
+
+
+def test_length_truncation_streak_auto_finishes_without_unlimited_retries(fake_openrouter):
+    """Bounded truncation streak ends the episode; no unlimited retries."""
+    fake_openrouter.length_truncations_left = 50
+    fake_openrouter.length_truncation_mode = "main"
+    cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model",
+           "max_tool_calls_per_turn": 40, "max_tokens": 512}
+    events = []
+    result = MatchRunner("t-trunc-cap", cfg, RANDOM,
+                         {"budget_usd_per_game": 10, "max_illegal_streak": 3, "max_game_minutes": 5},
+                         api_key="k", event_sink=lambda *a: events.append(a)).run()
+    hs = result["home_stats"]
+    assert hs["output_truncations"] >= 3
+    assert hs["budget_exhausted"] >= 1
+    system_texts = [e[3].get("text", "") for e in events if e[2] == "system"]
+    assert any("truncat" in t.lower() for t in system_texts)
+    # no unlimited retries: at most max_truncation_streak per episode (+ a small slack)
+    assert hs["output_truncations"] <= hs["episodes"] * 3 + 5
+    assert result["error"] is None
+
+
+def test_true_no_tool_replies_still_count_separately(fake_openrouter):
+    """finish_reason=stop without tools stays no_tool_replies (not output_truncations)."""
+    cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 12}
+    result = MatchRunner("t-notool", cfg, RANDOM, {"budget_usd_per_game": 10}, api_key="k").run()
+    hs = result["home_stats"]
+    assert hs["no_tool_replies"] > 0
+    assert hs.get("output_truncations", 0) == 0
+
+
+def test_successful_action_resets_truncation_streak(fake_openrouter):
+    """A single length truncation then normal tools must not auto-finish on truncation alone."""
+    fake_openrouter.length_truncations_left = 1
+    fake_openrouter.length_truncation_mode = "main"
+    cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 30}
+    events = []
+    result = MatchRunner("t-trunc-reset", cfg, RANDOM, {"budget_usd_per_game": 10, "max_illegal_streak": 3},
+                         api_key="k", event_sink=lambda *a: events.append(a)).run()
+    hs = result["home_stats"]
+    assert hs["output_truncations"] >= 1
+    assert hs["tool_calls"] > 0
+    system_texts = [e[3].get("text", "") for e in events if e[2] == "system"]
+    assert not any("truncat" in t.lower() and "auto-finish" in t.lower() for t in system_texts)
+    assert result["error"] is None
+
+
+def test_reflect_length_truncation_is_counted():
+    """_missed_reflection: finish_reason=length is output_truncations; no reflect tool is executed."""
+    import anyio
+    from bench.driver import DriverLimits, SeatDriver
+    from bench.llm import LLMResponse
+    from bench.session import GameSession
+
+    class TruncLLM:
+        async def chat(self, messages, tools, deadline=None):
+            return LLMResponse(content="", reasoning="…" * 50, finish_reason="length",
+                               raw_message={"role": "assistant", "content": ""})
+
+        async def aclose(self):
+            pass
+
+    class BoomClient:
+        async def call_tool(self, *a, **k):
+            raise AssertionError("reflect must not be called after a length truncation")
+
+    s = GameSession("t-reflect-unit", "A", "B", seed=1)
+    d = SeatDriver(s, s.home, TruncLLM(), "A", DriverLimits(), opponent_name="B")
+    d._oa_tools = [{"type": "function", "function": {"name": "reflect", "description": "", "parameters": {}}}]
+    anyio.run(d._missed_reflection, [{"role": "user", "content": "turn over"}], BoomClient(), "turn-1-1", 0)
+    assert d.usage["output_truncations"] == 1
+    assert d.usage["no_tool_replies"] == 0
+
+
+def test_per_model_max_tokens_reaches_openrouter_payload(fake_openrouter):
+    """models.yaml max_tokens must land on the OpenRouter request body (not only the default 2048)."""
+    cfg = {"name": "Big context", "provider": "openrouter", "model": "fake/model",
+           "max_tokens": 8192, "max_tool_calls_per_turn": 6}
+    MatchRunner("t-maxtok", cfg, RANDOM, {"max_game_minutes": 5}, api_key="k").run()
+    assert fake_openrouter.bodies
+    assert all(b.get("max_tokens") == 8192 for b in fake_openrouter.bodies)
+
+
+def test_models_yaml_does_not_impose_output_caps():
+    from bench.config import load_models_file, models_path
+    data = load_models_file(models_path())
+    for model in data["models"]:
+        assert "max_tokens" not in model, model["name"]
+        assert "max_tokens" not in model.get("extra", {}), model["name"]
+        assert "max_completion_tokens" not in model.get("extra", {}), model["name"]
+
+
+def test_default_and_null_output_caps_are_omitted_from_payload(fake_openrouter):
+    import anyio
+    from bench.llm import OpenRouterLLM
+    from bench.match import make_llm
+
+    async def exercise():
+        clients = [OpenRouterLLM("fake/model", "k")]
+        for cfg in ({}, {"max_tokens": None}):
+            clients.append(make_llm({"model": "fake/model", **cfg}, None, "k"))
+        for client in clients:
+            try:
+                await client.chat([{"role": "system", "content": "test"}],
+                                  [{"type": "function", "function": {"name": "reflect"}}])
+            finally:
+                await client.aclose()
+
+    anyio.run(exercise)
+    assert len(fake_openrouter.bodies) == 3
+    for body in fake_openrouter.bodies:
+        assert "max_tokens" not in body
+        assert "max_completion_tokens" not in body
+
+
+def test_output_truncations_aggregate_on_leaderboard():
+    from bench import ratings
+    ms = [{
+        "home_model": "a", "away_model": "b", "winner": "home",
+        "home_score": 1, "away_score": 0,
+        "home_stats": {"output_truncations": 4, "no_tool_replies": 1, "tool_calls": 10, "turns": 16},
+        "away_stats": {"output_truncations": 0, "no_tool_replies": 2, "tool_calls": 8, "turns": 16},
+    }]
+    agg = ratings.aggregate(ms)
+    assert agg["a"]["sums"]["output_truncations"] == 4
+    assert agg["b"]["sums"].get("output_truncations", 0) == 0
+    assert agg["a"]["sums"]["no_tool_replies"] == 1
+
+
 def test_scheduler_round_robin_placement_and_retire(bench_env):
     from bench.scheduler import Bench, load_frames
     b = Bench()
@@ -188,13 +332,15 @@ def test_placement_anchors_and_top_ups(bench_env):
     names = [f"M{i}" for i in range(8)]
     bench_env.write_text("settings:\n  placement_size: 3\n  placement_extra_games: 4\nmodels:\n" +
                          "".join(f"  - name: {n}\n    provider: random\n" for n in names))
+    from bench import version
+    current = json.dumps({"harness": {"protocol_version": version.PROTOCOL_VERSION}})  # as a real finished game has
     b = Bench()
     b.sync_models(force=True)
     # the opening round robin: lower numbers always win, so m0 is top and m7 bottom
     for m in db.rows("SELECT * FROM matches"):
         winner = "home" if m["home_model"] < m["away_model"] else "away"
-        db.execute("UPDATE matches SET status='completed', winner=?, finished_at=? WHERE id=?",
-                   (winner, time.time(), m["id"]))
+        db.execute("UPDATE matches SET status='completed', winner=?, finished_at=?, meta=? WHERE id=?",
+                   (winner, time.time(), current, m["id"]))
     b._finish_tournaments()
 
     bench_env.write_text(bench_env.read_text() + "  - name: Newcomer\n    provider: random\n")
@@ -207,8 +353,8 @@ def test_placement_anchors_and_top_ups(bench_env):
 
     def finish_queued():
         for m in db.rows("SELECT id FROM matches WHERE tournament_id=? AND status='queued'", (t["id"],)):
-            db.execute("UPDATE matches SET status='completed', winner='draw', finished_at=? WHERE id=?",
-                       (time.time(), m["id"]))
+            db.execute("UPDATE matches SET status='completed', winner='draw', finished_at=?, meta=? WHERE id=?",
+                       (time.time(), current, m["id"]))
         b._finish_tournaments()
         return db.rows("SELECT * FROM matches WHERE tournament_id=? AND status='queued' ORDER BY seq", (t["id"],))
 
@@ -537,3 +683,207 @@ def test_resume_accounts_for_spend_of_the_replayed_turn(fake_openrouter, tmp_pat
     assert result["meta"]["resumes"][0]["restart_cost"]["home"] == hs["restart_cost"]
     assert abs(hs["cost"] - 0.0001 * hs["llm_calls"]) < 1e-9   # the game's own cost excludes the lost spend
     assert hs["llm_calls"] > kept_calls
+
+
+# ---- review follow-ups for PR13: HTTP timeouts, protocol isolation, streak wording ----------------------------
+
+def _mock_llm(handler, **kw):
+    import httpx
+    from bench.llm import OpenRouterLLM
+    llm = OpenRouterLLM("fake/model", "secret-key-123", **kw)
+    llm.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return llm
+
+
+_TOOLS = [{"type": "function", "function": {"name": "reflect"}}]
+
+
+def test_http_read_timeout_is_not_retried_and_is_flagged(monkeypatch):
+    """A read timeout may still be billed upstream: one request only, error flagged as uncertain spend."""
+    import anyio
+    import httpx
+    from bench.llm import LLMError
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        raise httpx.ReadTimeout("slow generation", request=request)
+
+    async def go():
+        llm = _mock_llm(handler, max_retries=4)
+        try:
+            await llm.chat([{"role": "system", "content": "x"}], _TOOLS)
+        finally:
+            await llm.aclose()
+
+    with pytest.raises(LLMError) as ei:
+        anyio.run(go)
+    assert len(seen) == 1
+    assert ei.value.timeout is True and ei.value.uncertain_spend is True
+    assert not ei.value.fatal
+    assert "secret-key-123" not in str(ei.value)
+
+
+def test_transient_http_statuses_and_connect_errors_are_still_retried(monkeypatch):
+    import anyio
+    import httpx
+    import bench.llm
+    seen = []
+
+    async def no_sleep(_):
+        pass
+    monkeypatch.setattr(bench.llm.asyncio, "sleep", no_sleep)
+
+    def handler(request):
+        seen.append(1)
+        if len(seen) == 1:
+            return httpx.Response(503, text="busy")
+        if len(seen) == 2:
+            raise httpx.ConnectTimeout("no route", request=request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                                         "usage": {}})
+
+    async def go():
+        llm = _mock_llm(handler)
+        try:
+            return await llm.chat([{"role": "system", "content": "x"}], _TOOLS)
+        finally:
+            await llm.aclose()
+
+    assert anyio.run(go).content == "ok"
+    assert len(seen) == 3
+
+
+def test_retries_stop_at_the_deadline(monkeypatch):
+    import anyio
+    import httpx
+    import bench.llm
+    from bench.llm import LLMError
+    seen = []
+
+    async def no_sleep(_):
+        pass
+    monkeypatch.setattr(bench.llm.asyncio, "sleep", no_sleep)
+
+    def handler(request):
+        seen.append(1)
+        return httpx.Response(503, text="busy")
+
+    async def go():
+        llm = _mock_llm(handler, max_retries=4)
+        try:
+            await llm.chat([{"role": "system", "content": "x"}], _TOOLS, deadline=time.time() - 1)
+        finally:
+            await llm.aclose()
+
+    with pytest.raises(LLMError):
+        anyio.run(go)
+    assert len(seen) == 1
+
+
+def test_driver_counts_http_timeouts_and_uncertain_spend():
+    import anyio
+    from bench import ratings
+    from bench.driver import DriverLimits, SeatDriver
+    from bench.llm import LLMError
+    from bench.session import GameSession
+
+    class TimeoutLLM:
+        async def chat(self, messages, tools, deadline=None):
+            raise LLMError("network error: read timeout", timeout=True, uncertain_spend=True)
+
+        async def aclose(self):
+            pass
+
+    s = GameSession("t-timeout-unit", "A", "B", seed=1)
+    d = SeatDriver(s, s.home, TimeoutLLM(), "A", DriverLimits(), opponent_name="B")
+
+    async def go():
+        try:
+            await d._call_llm([{"role": "user", "content": "hi"}], [], "k", 0)
+        except LLMError:
+            pass
+    anyio.run(go)
+    assert d.usage["http_timeouts"] == 1
+    assert d.usage["uncertain_spend_calls"] == 1
+    agg = ratings.aggregate([{"home_model": "a", "away_model": "b", "winner": "home", "home_score": 1,
+                              "away_score": 0, "home_stats": d.usage, "away_stats": {}}])
+    assert agg["a"]["sums"]["http_timeouts"] == 1
+    assert agg["a"]["sums"]["uncertain_spend_calls"] == 1
+
+
+def test_interleaved_truncations_trip_the_limit_since_last_game_action(fake_openrouter):
+    """L, text, L, text, L is not three in a row, but nothing reset the counter: wording must say so."""
+    fake_openrouter.script = ["L", "T", "L", "T", "L"]
+    cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 20}
+    events = []
+    result = MatchRunner("t-interleave", cfg, RANDOM, {"budget_usd_per_game": 10, "max_illegal_streak": 3},
+                         api_key="k", event_sink=lambda *a: events.append(a)).run()
+    texts = [e[3].get("text", "") for e in events if e[2] == "system"]
+    hit = [t for t in texts if "output truncations" in t]
+    assert hit, texts
+    assert "since last game action" in hit[0]
+    assert "output length limit" in hit[0] and "max_tokens" not in hit[0]
+    assert "in a row" not in hit[0]
+    assert result["home_stats"]["output_truncations"] >= 3
+
+
+def test_prompt_wording_is_not_strictly_consecutive():
+    from bench.driver import DriverLimits, system_prompt
+    p = system_prompt("M", DriverLimits(), "home", "O")
+    assert "in a row" not in p and "since your last game action" in p
+
+
+def _insert_match(mid, tid, a, b, winner, protocol, stats=None):
+    meta = None if protocol == "missing" else json.dumps({"harness": {"protocol_version": protocol}})
+    st = json.dumps(stats or {"tool_calls": 10, "turns": 16})
+    db.execute("INSERT INTO matches (id, tournament_id, seq, home_model, away_model, status, home_score, away_score, "
+               "winner, home_stats, away_stats, created_at, finished_at, meta) VALUES "
+               "(?,?,?,?,?, 'completed', 1, 0, ?, ?, ?, ?, ?, ?)",
+               (mid, tid, 99, a, b, winner, st, st, time.time(), time.time(), meta))
+
+
+def test_current_protocol_filter_defaults_missing_to_legacy():
+    from bench import version
+    assert version.match_protocol({"meta": None}) == "1.0"
+    assert version.match_protocol({"meta": {}}) == "1.0"
+    assert version.match_protocol({"meta": {"harness": {"protocol_version": "1.1"}}}) == "1.1"
+    assert version.is_current_protocol({"meta": {"harness": {"protocol_version": version.PROTOCOL_VERSION}}})
+    assert not version.is_current_protocol({"meta": None})
+
+
+def test_leaderboard_and_placement_use_current_protocol_only(bench_env):
+    from bench import version
+    from bench.scheduler import Bench, get_bench
+    from bench.web import create_app
+    app = create_app(start_scheduler=False)
+    b = get_bench()
+    tid = db.row("SELECT id FROM tournaments LIMIT 1")["id"]
+    for i in range(6):   # legacy results that would make scripted-baseline dominant if pooled
+        _insert_match(f"old10-{i}", tid, "scripted-baseline", "random-baseline", "home", "1.0",
+                      {"output_truncations": 7, "tool_calls": 10, "turns": 16})
+    _insert_match("oldmissing", tid, "scripted-baseline", "random-two", "home", "missing")
+    _insert_match("new11", tid, "random-baseline", "random-two", "home", version.PROTOCOL_VERSION)
+
+    c = app.test_client()
+    lb = json.loads(c.get("/api/leaderboard").data)
+    assert lb["matches"] == 1
+    assert lb["protocol_version"] == version.PROTOCOL_VERSION
+    rows = {r["id"]: r for r in lb["models"]}
+    assert rows["scripted-baseline"]["played"] == 0
+    assert rows["scripted-baseline"]["elo"] == 1000.0
+    assert rows["random-baseline"]["played"] == 1 and rows["random-two"]["played"] == 1
+    assert rows["scripted-baseline"]["sums"].get("output_truncations", 0) == 0
+
+    model = json.loads(c.get("/api/models/scripted-baseline").data)
+    assert model["stats"] is None
+
+    rated = b._current_ratings()
+    assert set(rated) == {"random-baseline", "random-two"}
+
+    t = json.loads(c.get(f"/api/tournaments/{tid}").data)
+    assert sum(r["played"] for r in t["standings"]) == 2          # only the 1.1 game is ranked
+    assert len(t["matches"]) >= 8                                   # history stays visible
+    # archives are untouched
+    assert c.get("/api/matches/old10-0").status_code == 200
+    assert db.row("SELECT COUNT(*) n FROM matches WHERE id LIKE 'old%'")["n"] == 7

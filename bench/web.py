@@ -10,7 +10,7 @@ import os
 from flask import (Flask, Response, abort, jsonify, render_template, request, send_file, send_from_directory,
                    stream_with_context)
 
-from bench import db, export, ratings
+from bench import db, export, ratings, version
 from bench.transcript import transcript_path
 from bench.scheduler import delete_checkpoint, frame_json, get_bench, load_frames, load_timeline
 
@@ -41,9 +41,11 @@ def create_app(start_scheduler: bool = True) -> Flask:
         m["away_name"] = names.get(m["away_model"], {}).get("name", m["away_model"])
         return m
 
-    def completed_matches(where="", args=()):
+    def completed_matches(where="", args=(), all_protocols=False):
+        """Completed games for rankings: current protocol only unless ``all_protocols`` (archives keep the rest)."""
         ms = db.rows(f"SELECT * FROM matches WHERE status='completed' {where} ORDER BY finished_at", args)
-        return [db.decode_match(m) for m in ms]
+        ms = [db.decode_match(m) for m in ms]
+        return ms if all_protocols else [m for m in ms if version.is_current_protocol(m)]
 
     def require_admin():
         token = os.environ.get("ADMIN_TOKEN")
@@ -316,7 +318,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
                                   "style": {}, "sums": {}, "avg_cost": 0, "avg_tokens": 0, "win_rate": 0,
                                   "avg_latency": 0, "cas_per_game": 0})})
         rows.sort(key=lambda r: (-r["elo"], -r["played"], r["name"]))
-        return jsonify({"models": rows, "matches": len(ms)})
+        return jsonify({"models": rows, "matches": len(ms), "protocol_version": version.PROTOCOL_VERSION})
 
     @app.route("/api/models/<model_id>")
     def api_model(model_id):

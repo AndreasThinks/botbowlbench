@@ -6,7 +6,26 @@ import subprocess
 
 # Bump when the rules of the benchmark change in a way that makes results incomparable
 # (prompt wording, tool semantics, budgets, reflection protocol, ...).
-PROTOCOL_VERSION = "1.0"
+PROTOCOL_VERSION = "1.1"  # output_truncations vs no_tool; no default harness output-token cap
+LEGACY_PROTOCOL_VERSION = "1.0"  # matches recorded before protocol versions were enforced have no version in meta
+
+
+def match_protocol(m: dict) -> str:
+    """The protocol a (decoded) match row was played under; a missing version means the legacy 1.0."""
+    meta = m.get("meta")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except ValueError:
+            meta = None
+    harness = meta.get("harness") if isinstance(meta, dict) else None
+    v = harness.get("protocol_version") if isinstance(harness, dict) else None
+    return str(v) if v else LEGACY_PROTOCOL_VERSION
+
+
+def is_current_protocol(m: dict) -> bool:
+    """Only current-protocol results feed ratings, leaderboards and placement; older ones stay as archives."""
+    return match_protocol(m) == PROTOCOL_VERSION
 
 
 def git_sha() -> str:

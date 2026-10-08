@@ -13,7 +13,8 @@ SUM_KEYS = ["touchdowns", "blocks", "blitzes", "fouls", "passes", "handoffs", "c
             "knockdowns_inflicted", "turnovers", "messages_sent", "message_chars", "invalid_tool_calls",
             "tool_calls", "llm_calls", "prompt_tokens", "completion_tokens", "cost", "forced_actions",
             "budget_exhausted", "turns", "latency", "rerolls_used", "dodges", "failed_dodges", "gfis", "failed_gfis",
-            "cached_tokens", "reasoning_tokens", "reflections", "risky_actions", "long_shots"]
+            "cached_tokens", "reasoning_tokens", "reflections", "risky_actions", "long_shots",
+            "no_tool_replies", "output_truncations", "llm_errors", "http_timeouts", "uncertain_spend_calls"]
 
 
 def expected(ra: float, rb: float) -> float:
