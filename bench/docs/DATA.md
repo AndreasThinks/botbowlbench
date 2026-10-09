@@ -68,7 +68,8 @@ The complete research record of one game. Each line has `type`, `ts` (unix secon
 | `meta` | first line: same as `matches.meta` (seed, harness, settings, models) |
 | `episode` | a fresh conversation for one seat: `episode` (key such as `turn-1-3`, `Setup-1-0`), `our_turn`, `proc`, `half`, `turn`, `messages` (system prompt + opening situation) |
 | `llm_call` | `episode`, `new_messages` (sent since the previous call: tool results, nudges), `response` (`content`, `reasoning`, `message` exactly as returned incl. `tool_calls` / `reasoning_details`, `finish_reason`), `usage` (`prompt_tokens`, `completion_tokens`, `cached_tokens`, `reasoning_tokens`, `cost`), `latency`, `served_model`, `provider`, `generation_id` |
-| `llm_error` | `episode`, `error`, `infra`, `fatal` |
+| `llm_error` | `episode`, `error`, `infra`, `fatal`, `timeout`, `uncertain_spend` |
+| `llm_cutoff` | a model call cancelled at the turn's time limit: `episode`, `error`, `waited` (seconds since the turn began) |
 | `tool` | `episode`, `call_id`, `name`, `args`, `raw_args`, `ok`, `result` (full text the model saw), `duration` |
 | `action` | `half`, `turn`, `activation` (nth player activated this turn), `action`, `player`, `target`, `target_player`, `reach_prob`, `roll_prob`, `success_est`, `block_dice`, `unused_before` (on START_* actions), `turnover`, `touchdown` |
 | `action_outcome` | a turnover or touchdown attributed to the last logged action of the turn |

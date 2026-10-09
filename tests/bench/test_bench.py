@@ -831,7 +831,8 @@ def test_in_flight_call_is_cut_off_at_the_deadline():
 
     err, took = anyio.run(go)
     assert took < 2
-    assert err.timeout and err.uncertain_spend and err.deadline
+    assert err.deadline and err.uncertain_spend
+    assert not err.timeout   # the turn's time ran out; not an HTTP timeout
 
 
 def test_deadline_cutoff_auto_finishes_without_marking_model_unavailable(monkeypatch):
@@ -840,7 +841,7 @@ def test_deadline_cutoff_auto_finishes_without_marking_model_unavailable(monkeyp
 
     class SlowLLM:
         async def chat(self, messages, tools, deadline=None):
-            raise LLMError("no reply within 300s, request cancelled", timeout=True, uncertain_spend=True,
+            raise LLMError("turn time limit reached after 300s without a reply", uncertain_spend=True,
                            deadline=True)
 
         async def aclose(self):
@@ -854,9 +855,31 @@ def test_deadline_cutoff_auto_finishes_without_marking_model_unavailable(monkeyp
     result = MatchRunner("t-deadline", cfg, RANDOM, {"budget_usd_per_game": 10}, api_key="k",
                          event_sink=lambda *a: events.append(a)).run()
     texts = [e[3].get("text", "") for e in events if e[2] == "system"]
-    assert any("time limit" in t for t in texts), texts
+    assert any("time limit (300s) reached while waiting for the model's reply" in t for t in texts), texts
     assert not any("Model unavailable" in t for t in texts)
-    assert result["home_stats"]["budget_exhausted"] > 4
+    assert not [e for e in events if e[2] == "error"]   # a time-limit cut-off is not shown as an error
+    stats = result["home_stats"]
+    assert stats["deadline_cutoffs"] > 4 and stats["budget_exhausted"] >= stats["deadline_cutoffs"]
+    assert stats["llm_errors"] == 0 and stats["http_timeouts"] == 0
+    assert stats["uncertain_spend_calls"] == stats["deadline_cutoffs"]
+
+
+def test_settings_output_ceiling_applies_unless_the_model_sets_its_own(fake_openrouter):
+    from bench.version import PROTOCOL_VERSION
+    base = {"provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 4}
+    for name, extra, want in (("Default", {}, 16384), ("Own cap", {"max_tokens": 4096}, 4096),
+                              ("Opt out", {"max_tokens": None}, None)):
+        fake_openrouter.bodies = []
+        result = MatchRunner(f"t-cap-{want}", {"name": name, **base, **extra}, RANDOM,
+                             {"budget_usd_per_game": 10, "max_output_tokens": 16384}, api_key="k").run()
+        assert fake_openrouter.bodies
+        assert all(b.get("max_tokens") == want for b in fake_openrouter.bodies), name
+        assert result["meta"]["harness"]["protocol_version"] == PROTOCOL_VERSION == "1.2"
+
+
+def test_default_settings_carry_the_output_ceiling():
+    from bench.config import DEFAULT_SETTINGS
+    assert DEFAULT_SETTINGS["max_output_tokens"] == 16384
 
 
 def test_driver_counts_http_timeouts_and_uncertain_spend():

@@ -50,7 +50,7 @@ class LLMError(Exception):
         super().__init__(msg)
         self.fatal = fatal
         self.infra = infra  # our problem (bad key / no credits), not the model's
-        self.timeout = timeout  # HTTP read timeout: the request was sent and never answered
+        self.timeout = timeout  # HTTP timeout: the request was sent and never answered
         self.uncertain_spend = uncertain_spend  # the provider may have generated (and billed) a reply we never saw
         self.deadline = deadline  # cut off at the turn deadline: the turn's time ran out, not a model fault
 
@@ -117,8 +117,11 @@ class OpenRouterLLM:
                 r = await asyncio.wait_for(self.client.post(OPENROUTER_URL, json=body, headers=headers), budget)
             except asyncio.TimeoutError:
                 # like a read timeout, the provider may still be generating (and billing) after we hang up
+                if deadline is not None:
+                    raise LLMError(f"turn time limit reached after {budget:.0f}s without a reply (request cancelled)",
+                                   uncertain_spend=True, deadline=True)
                 raise LLMError(f"no reply within {budget:.0f}s, request cancelled", timeout=True,
-                               uncertain_spend=True, deadline=deadline is not None)
+                               uncertain_spend=True)
             except httpx.ReadTimeout as e:
                 # The request went out and the reply never came: the provider may still be generating (and billing)
                 # it. Retrying would stack up unseen spend, so fail this call instead.

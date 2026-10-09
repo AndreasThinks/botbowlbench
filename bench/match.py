@@ -92,6 +92,8 @@ class MatchRunner:
             seat = self.session.seat(side)
             cfg = dict(cfg)
             cfg.setdefault("seed", self.seed + i)   # baselines are reproducible from the match seed
+            if "max_tokens" not in cfg:   # one output ceiling for everyone; a model's own max_tokens (or null) wins
+                cfg["max_tokens"] = settings.get("max_output_tokens")
             llm = make_llm(cfg, seat, api_key)
             opp = away_cfg if side == "home" else home_cfg
             self.drivers[side] = SeatDriver(self.session, seat, llm, cfg["name"], limits_for(cfg, settings),

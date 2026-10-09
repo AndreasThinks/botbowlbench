@@ -6,7 +6,9 @@ import subprocess
 
 # Bump when the rules of the benchmark change in a way that makes results incomparable
 # (prompt wording, tool semantics, budgets, reflection protocol, ...).
-PROTOCOL_VERSION = "1.1"  # output_truncations vs no_tool; no default harness output-token cap
+# 1.1: output_truncations vs no_tool; no default harness output-token cap
+# 1.2: turn_time_limit is a hard deadline that cancels in-flight model calls; default output-token ceiling
+PROTOCOL_VERSION = "1.2"
 LEGACY_PROTOCOL_VERSION = "1.0"  # matches recorded before protocol versions were enforced have no version in meta
 
 

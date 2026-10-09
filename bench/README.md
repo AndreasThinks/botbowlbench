@@ -147,21 +147,22 @@ their frames on first view.
 * An HTTP 401/402 from OpenRouter (bad key, no credit) puts the game back in the queue instead of scoring it.
   Bugs in the bench's own tools are reported to the model as "not your fault", never counted as invalid moves, and
   make the game inadmissible.
-* The ending reflection is part of the protocol (`PROTOCOL_VERSION` 1.1). It changes behaviour a little, as any
+* The ending reflection is part of the protocol (`PROTOCOL_VERSION` 1.2). It changes behaviour a little, as any
   scaffold does, but it is identical for every model. It is what makes plan follow-through and forecast accuracy
   measurable.
-* **Output length:** the harness no longer imposes a default response-token cap on any model. When
-  `max_tokens` is absent or null, requests omit the field entirely; no `max_completion_tokens` cap is substituted.
-  Provider defaults and model/context limits still apply, so this is not unlimited generation. An explicit
-  per-model `max_tokens` remains available for opt-in experiments, but no shipped model uses it. Dollar, HTTP,
-  turn/game-time and bounded retry guards remain; the dollar cap is checked between calls and one response can
-  overshoot it. The HTTP client is non-streaming with a 180 s timeout; an HTTP **read timeout is never retried**
-  (the provider may still generate and bill the reply), so that call fails, is counted in `http_timeouts` and
-  `uncertain_spend_calls` (cost unknown, not in `cost` or the dollar cap), and retries of other transient failures stop
-  once the turn's time limit would be exceeded. A call can still run up to the timeout past `turn_time_limit`.
-  Removing the cap is not yet validated as a gameplay improvement. Leaderboard, ratings, tournament standings and
-  placement use only games whose `meta.harness.protocol_version` equals the current version (missing = legacy 1.0);
-  older games stay available as archives, replays and transcripts. No paid API calls were made for this change.
+* **Turn time limit:** `turn_time_limit` is a hard deadline. A model call still running when it expires is cancelled
+  and the turn auto-finishes, exactly like the between-calls time check. This is logged as a time-limit event, not an
+  error, counted in `deadline_cutoffs` (and `budget_exhausted`, `uncertain_spend_calls`), and never counts towards
+  marking the model unavailable. httpx's timeout is per socket read and OpenRouter keeps slow requests alive, so the
+  HTTP timeout alone never bounded a long generation.
+* **Output length:** every model gets the same default ceiling, `max_output_tokens` (16384), sent as `max_tokens`. It
+  is far above the old 2048 cap that starved reasoning models, and exists to turn runaway or looping generations into
+  classified `output_truncations` instead of turns lost to the clock. A per-model `max_tokens` overrides it, and
+  `max_tokens: null` removes it for that model. The dollar cap is checked between calls and one response can overshoot
+  it. A cancelled or timed-out call is never retried (the provider may still generate and bill it) and its cost is
+  unknown, so it is counted in `uncertain_spend_calls`, not in `cost` or the dollar cap. Leaderboard, ratings,
+  tournament standings and placement use only games whose `meta.harness.protocol_version` equals the current version
+  (missing = legacy 1.0); older games stay available as archives, replays and transcripts.
 
 ### Cost
 

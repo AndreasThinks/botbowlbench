@@ -66,7 +66,7 @@ class SeatDriver:
         self.usage = {"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0,
                       "reasoning_tokens": 0, "cost": 0.0, "latency": 0.0, "tool_calls": 0, "llm_errors": 0,
                       "no_tool_replies": 0, "output_truncations": 0, "http_timeouts": 0,
-                      "uncertain_spend_calls": 0, "budget_exhausted": 0, "episodes": 0,
+                      "uncertain_spend_calls": 0, "deadline_cutoffs": 0, "budget_exhausted": 0, "episodes": 0,
                       "served": {}}
         self.unavailable = False
         self._oa_tools = []
@@ -236,24 +236,28 @@ class SeatDriver:
                 resp = await self._call_llm(messages, oa_tools, key, sent, deadline=t0 + self.limits.turn_time_limit)
                 self.consecutive_llm_errors = 0
             except LLMError as e:
+                if e.deadline:
+                    # The turn's time ran out while the model was still replying. That is the time limit doing its
+                    # job, not a provider fault: report it like the time-limit check above, not as an error, and
+                    # don't count it towards marking the model unavailable.
+                    self.usage["deadline_cutoffs"] += 1
+                    self.seat.counters["budget_exhausted"] += 1
+                    self.usage["budget_exhausted"] += 1
+                    reason = (f"time limit ({int(self.limits.turn_time_limit)}s) reached while waiting for the "
+                              f"model's reply")
+                    self.session.log_event(self.seat.side, "system", {"text": f"Auto-finishing: {reason}."})
+                    self.session.transcript.write("llm_cutoff", self.seat.side, episode=key, error=str(e)[:2000],
+                                                  waited=round(time.time() - t0, 1))
+                    self.session.transcript.write("system", self.seat.side, episode=key,
+                                                  text=f"auto-finish: {reason}")
+                    self.seat.force_episode(key)
+                    return
                 self.usage["llm_errors"] += 1
                 self.consecutive_llm_errors += 1
                 self.session.log_event(self.seat.side, "error", {"text": str(e)[:500]})
                 self.session.transcript.write("llm_error", self.seat.side, episode=key, error=str(e)[:2000],
                                               infra=e.infra, fatal=e.fatal, timeout=e.timeout,
                                               uncertain_spend=e.uncertain_spend)
-                if e.deadline:
-                    # the call ran into the turn deadline: auto-finish like the time-limit check above, and don't
-                    # count it towards marking the model unavailable for the rest of the game
-                    self.consecutive_llm_errors = 0
-                    reason = f"time limit ({int(self.limits.turn_time_limit)}s) exceeded"
-                    self.seat.counters["budget_exhausted"] += 1
-                    self.usage["budget_exhausted"] += 1
-                    self.session.log_event(self.seat.side, "system", {"text": f"Auto-finishing: {reason}."})
-                    self.session.transcript.write("system", self.seat.side, episode=key,
-                                                  text=f"auto-finish: {reason}")
-                    self.seat.force_episode(key)
-                    return
                 if e.infra:
                     self.session.infra_error = str(e)[:300]
                     self.session.abort()

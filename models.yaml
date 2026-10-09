@@ -21,7 +21,8 @@ settings:
   game_mode: 5                  # players per side (1, 3, 5, 7 or 11). 5 keeps games short and cheap.
   team: human                   # both sides use the same roster (mirror matches)
   max_tool_calls_per_turn: 40
-  turn_time_limit: 300          # seconds per team turn (raise per model for slow reasoning models)
+  turn_time_limit: 300          # seconds per team turn, a hard deadline: a reply still running is cancelled
+  max_output_tokens: 16384      # same max_tokens ceiling for every model; a model's own max_tokens (or null) overrides
   max_game_minutes: 120         # wall-clock cap per game, so one slow model can't block the queue
   max_messages_per_turn: 2
   budget_usd_per_game: 1.00     # safety cap per model, per game (one final request may overshoot). Hitting it
