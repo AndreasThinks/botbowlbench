@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -67,6 +68,31 @@ def with_cache_breakpoints(messages: List[dict]) -> List[dict]:
     return out
 
 
+DSML = "\uff5cDSML\uff5c"     # DeepSeek V3.2's tool-call markup: <｜DSML｜invoke name="..."> ... </｜DSML｜invoke>
+DSML_INVOKE = "<" + DSML + "invoke"
+_DSML_INVOKE_RE = re.compile(r"<\uff5cDSML\uff5cinvoke\s+name=\"([^\"]+)\"\s*>(.*?)</\uff5cDSML\uff5cinvoke>", re.S)
+_DSML_PARAM_RE = re.compile(r"<\uff5cDSML\uff5cparameter\s+name=\"([^\"]+)\"(?:\s+string=\"(true|false)\")?\s*>"
+                            r"(.*?)</\uff5cDSML\uff5cparameter>", re.S)
+
+
+def parse_dsml_tool_calls(text: str) -> List[dict]:
+    """DeepSeek DSML invoke blocks -> OpenAI-style tool_calls. string="false" values are JSON."""
+    calls = []
+    for i, (name, body) in enumerate(_DSML_INVOKE_RE.findall(text)):
+        args = {}
+        for pname, is_str, value in _DSML_PARAM_RE.findall(body):
+            if is_str == "false":
+                try:
+                    args[pname] = json.loads(value)
+                    continue
+                except ValueError:
+                    pass
+            args[pname] = value
+        calls.append({"id": f"dsml_{i}", "type": "function",
+                      "function": {"name": name, "arguments": json.dumps(args)}})
+    return calls
+
+
 class OpenRouterLLM:
     def __init__(self, model: str, api_key: str, temperature: Optional[float] = None,
                  max_tokens: Optional[int] = None, extra: Optional[dict] = None, timeout: float = 180.0,
@@ -85,8 +111,11 @@ class OpenRouterLLM:
         if reasoning_max_tokens is not None and max_tokens is not None:
             reasoning_max_tokens = min(reasoning_max_tokens, max_tokens * 3 // 4)
         self.reasoning_max_tokens = None if "reasoning" in self.extra else reasoning_max_tokens
-        # "required" makes every reply a tool call. Some providers reject it (Anthropic with extended thinking,
-        # for one); the first such rejection drops this client back to "auto" for the rest of the game.
+        # "required" makes every reply a tool call. Some providers reject it; the first such rejection drops this
+        # client back to "auto" for the rest of the game. Anthropic can't think while a tool call is forced, and
+        # through OpenRouter that doesn't fail: thinking is silently dropped. So Claude models always use "auto".
+        if tool_choice == "required" and model.startswith("anthropic/"):
+            tool_choice = "auto"
         self.tool_choice = tool_choice
         self.hurry_max_tokens = hurry_max_tokens
         self.timeout = timeout
@@ -185,6 +214,11 @@ class OpenRouterLLM:
         msg = choice.get("message") or {}
         resp = LLMResponse(content=msg.get("content") or "", latency=latency)
         resp.reasoning = msg.get("reasoning") or ""
+        if not msg.get("tool_calls") and DSML_INVOKE in resp.content:
+            # Some DeepSeek hosts pass the model's native tool-call markup through as text instead of parsing it.
+            # The model did call a tool; recover the calls rather than count the reply as having none.
+            msg = dict(msg, tool_calls=parse_dsml_tool_calls(resp.content))
+            resp.content = resp.content[:resp.content.find("<" + DSML)].strip()
         for i, tc in enumerate(msg.get("tool_calls") or []):
             fn = tc.get("function") or {}
             raw = fn.get("arguments") or "{}"
