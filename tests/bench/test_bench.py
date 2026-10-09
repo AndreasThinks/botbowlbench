@@ -772,13 +772,91 @@ def test_retries_stop_at_the_deadline(monkeypatch):
     async def go():
         llm = _mock_llm(handler, max_retries=4)
         try:
-            await llm.chat([{"role": "system", "content": "x"}], _TOOLS, deadline=time.time() - 1)
+            await llm.chat([{"role": "system", "content": "x"}], _TOOLS, deadline=time.time() + 1)
         finally:
             await llm.aclose()
 
     with pytest.raises(LLMError):
         anyio.run(go)
     assert len(seen) == 1
+
+
+def test_no_request_is_sent_after_the_deadline():
+    import anyio
+    import httpx
+    from bench.llm import LLMError
+    seen = []
+
+    def handler(request):
+        seen.append(1)
+        return httpx.Response(503, text="busy")
+
+    async def go():
+        llm = _mock_llm(handler)
+        try:
+            await llm.chat([{"role": "system", "content": "x"}], _TOOLS, deadline=time.time() - 1)
+        finally:
+            await llm.aclose()
+
+    with pytest.raises(LLMError) as ei:
+        anyio.run(go)
+    assert seen == [] and ei.value.deadline is True
+
+
+def test_in_flight_call_is_cut_off_at_the_deadline():
+    """httpx's timeout is per read, so a reply that trickles in never trips it; the deadline must still hold."""
+    import asyncio
+    import anyio
+    import httpx
+    from bench.llm import LLMError, OpenRouterLLM
+
+    class Trickle(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            async def body():
+                while True:  # keep-alive whitespace, like OpenRouter sends while a model is generating
+                    yield b" "
+                    await asyncio.sleep(0.05)
+            return httpx.Response(200, content=body())
+
+    async def go():
+        llm = OpenRouterLLM("fake/model", "k", timeout=0.2)
+        llm.client = httpx.AsyncClient(transport=Trickle(), timeout=0.2)
+        t0 = time.time()
+        try:
+            with pytest.raises(LLMError) as ei:
+                await llm.chat([{"role": "system", "content": "x"}], _TOOLS, deadline=time.time() + 0.5)
+        finally:
+            await llm.aclose()
+        return ei.value, time.time() - t0
+
+    err, took = anyio.run(go)
+    assert took < 2
+    assert err.timeout and err.uncertain_spend and err.deadline
+
+
+def test_deadline_cutoff_auto_finishes_without_marking_model_unavailable(monkeypatch):
+    import bench.match
+    from bench.llm import LLMError
+
+    class SlowLLM:
+        async def chat(self, messages, tools, deadline=None):
+            raise LLMError("no reply within 300s, request cancelled", timeout=True, uncertain_spend=True,
+                           deadline=True)
+
+        async def aclose(self):
+            pass
+
+    real = bench.match.make_llm
+    monkeypatch.setattr(bench.match, "make_llm",
+                        lambda cfg, seat, key: SlowLLM() if cfg.get("provider") == "openrouter" else real(cfg, seat, key))
+    cfg = {"name": "Slow LLM", "provider": "openrouter", "model": "fake/model"}
+    events = []
+    result = MatchRunner("t-deadline", cfg, RANDOM, {"budget_usd_per_game": 10}, api_key="k",
+                         event_sink=lambda *a: events.append(a)).run()
+    texts = [e[3].get("text", "") for e in events if e[2] == "system"]
+    assert any("time limit" in t for t in texts), texts
+    assert not any("Model unavailable" in t for t in texts)
+    assert result["home_stats"]["budget_exhausted"] > 4
 
 
 def test_driver_counts_http_timeouts_and_uncertain_spend():

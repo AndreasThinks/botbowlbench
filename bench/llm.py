@@ -46,12 +46,13 @@ class LLMResponse:
 
 
 class LLMError(Exception):
-    def __init__(self, msg, fatal=False, infra=False, timeout=False, uncertain_spend=False):
+    def __init__(self, msg, fatal=False, infra=False, timeout=False, uncertain_spend=False, deadline=False):
         super().__init__(msg)
         self.fatal = fatal
         self.infra = infra  # our problem (bad key / no credits), not the model's
         self.timeout = timeout  # HTTP read timeout: the request was sent and never answered
         self.uncertain_spend = uncertain_spend  # the provider may have generated (and billed) a reply we never saw
+        self.deadline = deadline  # cut off at the turn deadline: the turn's time ran out, not a model fault
 
 
 def with_cache_breakpoints(messages: List[dict]) -> List[dict]:
@@ -106,8 +107,18 @@ class OpenRouterLLM:
         last_err = None
         for attempt in range(self.max_retries + 1):
             t0 = time.time()
+            # httpx's timeout is per socket read, and OpenRouter keeps slow requests alive with whitespace, so it
+            # never bounds a long generation. The turn deadline (or self.timeout without one) caps the whole request.
+            budget = self.timeout if deadline is None else deadline - t0
+            if budget <= 0:
+                raise LLMError(f"{last_err or 'turn deadline reached'} (no time left for a model call)",
+                               deadline=True)
             try:
-                r = await self.client.post(OPENROUTER_URL, json=body, headers=headers)
+                r = await asyncio.wait_for(self.client.post(OPENROUTER_URL, json=body, headers=headers), budget)
+            except asyncio.TimeoutError:
+                # like a read timeout, the provider may still be generating (and billing) after we hang up
+                raise LLMError(f"no reply within {budget:.0f}s, request cancelled", timeout=True,
+                               uncertain_spend=True, deadline=deadline is not None)
             except httpx.ReadTimeout as e:
                 # The request went out and the reply never came: the provider may still be generating (and billing)
                 # it. Retrying would stack up unseen spend, so fail this call instead.
