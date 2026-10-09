@@ -38,7 +38,8 @@ supervised game (`python -m bench play <model> scripted-baseline -v` locally), t
   the same seed. Railway stops the old container before starting the new one when a volume is attached, so two
   schedulers never run at once.
 * **Pause:** set `BENCH_PAUSED=1`. The current game finishes; no new one starts.
-* **Costs:** the leaderboard shows cost per game per model. `budget_usd_per_game` caps spend per model per game.
+* **Costs:** the leaderboard shows cost per game per model. There is no spending cap by default; set
+  `budget_usd_per_game` to cap spend per model per game.
   If the key runs out of credit (HTTP 402), games are re-queued and the status line says so. Top up and they resume.
 
 ## Admin API

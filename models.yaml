@@ -29,8 +29,8 @@ settings:
   last_chance_seconds: 45       # held back per turn: a reply still running then is cancelled for one short "act now" call
   max_game_minutes: 120         # wall-clock cap per game, so one slow model can't block the queue
   max_messages_per_turn: 2
-  budget_usd_per_game: 1.00     # safety cap per model, per game (one final request may overshoot). Hitting it
-                                # hands the rest of the game to the fallback policy, so keep it well above normal spend.
+  budget_usd_per_game: null     # no spending cap: cost is tracked per model per game instead. A number caps it, and
+                                # hitting it hands the rest of the game to the fallback policy.
   legs: 2                       # play each pairing home and away
   pause_between_matches: 5
   placement_size: 5             # anchors a newcomer plays (home and away), spread from top to bottom of the table
