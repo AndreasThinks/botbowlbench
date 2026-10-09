@@ -12,7 +12,8 @@
 #   provider   openrouter (default) | random | scripted | botbowl   (the others are free offline baselines)
 #   bot, module  (botbowl only) a bot id from botbowl's registry, and the module to import so it registers
 #   enabled    false = keep history but stop scheduling games
-#   temperature, max_tokens, budget_usd_per_game, max_tool_calls_per_turn, turn_time_limit (optional)
+#   temperature, max_tokens, reasoning_max_tokens, tool_choice, budget_usd_per_game, max_tool_calls_per_turn,
+#              turn_time_limit, last_chance_seconds (optional; override the settings below)
 #   prompt_cache  true/false: add cache breakpoints (default: on for anthropic/* models; others cache automatically)
 #   extra      dict merged into the OpenRouter request body, e.g. {reasoning: {effort: low}}
 #   delay      (baselines only) seconds per move, to make their games watchable
@@ -23,6 +24,9 @@ settings:
   max_tool_calls_per_turn: 40
   turn_time_limit: 300          # seconds per team turn, a hard deadline: a reply still running is cancelled
   max_output_tokens: 16384      # same max_tokens ceiling for every model; a model's own max_tokens (or null) overrides
+  reasoning_max_tokens: 12000   # same thinking budget for every model; a model's own value, null or extra.reasoning overrides
+  tool_choice: required         # replies must be tool calls (falls back to auto where a provider rejects it)
+  last_chance_seconds: 45       # held back per turn: a reply still running then is cancelled for one short "act now" call
   max_game_minutes: 120         # wall-clock cap per game, so one slow model can't block the queue
   max_messages_per_turn: 2
   budget_usd_per_game: 1.00     # safety cap per model, per game (one final request may overshoot). Hitting it

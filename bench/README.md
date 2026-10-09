@@ -150,11 +150,21 @@ their frames on first view.
 * The ending reflection is part of the protocol (`PROTOCOL_VERSION` 1.2). It changes behaviour a little, as any
   scaffold does, but it is identical for every model. It is what makes plan follow-through and forecast accuracy
   measurable.
-* **Turn time limit:** `turn_time_limit` is a hard deadline. A model call still running when it expires is cancelled
-  and the turn auto-finishes, exactly like the between-calls time check. This is logged as a time-limit event, not an
-  error, counted in `deadline_cutoffs` (and `budget_exhausted`, `uncertain_spend_calls`), and never counts towards
-  marking the model unavailable. httpx's timeout is per socket read and OpenRouter keeps slow requests alive, so the
-  HTTP timeout alone never bounded a long generation.
+* **Turn time limit:** `turn_time_limit` is a hard deadline. The last `last_chance_seconds` (45) are held back: a
+  reply still running when they start is cancelled and the model gets one short call ("Time is almost up… reply now
+  with a tool call") with `last_chance_max_tokens` (2048) and a 1024-token thinking budget, and keeps those short
+  settings for the rest of the turn. A reply still running at the deadline itself is cancelled and the turn
+  auto-finishes, exactly like the between-calls time check. Cut-offs are logged as time-limit events, not errors,
+  counted in `deadline_cutoffs` (and `last_chance_calls`, `uncertain_spend_calls`), and never count towards marking
+  the model unavailable. httpx's timeout is per socket read and OpenRouter keeps slow requests alive, so the HTTP
+  timeout alone never bounded a long generation.
+* **Tool calls are required:** requests send `tool_choice: required` (setting `tool_choice`), so a reply must be a
+  tool call rather than prose. If a provider rejects it (for example Anthropic with extended thinking), the request is
+  re-sent with `auto` and that model stays on `auto` for the rest of the game.
+* **Thinking budget:** every model gets `reasoning: {max_tokens: reasoning_max_tokens}` (12000; OpenRouter maps it to
+  an effort level for effort-only models, and kept below `max_tokens`), so a reasoning model is told to stop thinking
+  and answer rather than being cut off. A model's own `extra.reasoning`, or `reasoning_max_tokens: null`, overrides it.
+  On hybrid models where thinking is optional, sending a budget switches thinking on.
 * **Output length:** every model gets the same default ceiling, `max_output_tokens` (16384), sent as `max_tokens`. It
   is far above the old 2048 cap that starved reasoning models, and exists to turn runaway or looping generations into
   classified `output_truncations` instead of turns lost to the clock. A per-model `max_tokens` overrides it, and

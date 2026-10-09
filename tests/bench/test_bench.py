@@ -988,3 +988,137 @@ def test_leaderboard_and_placement_use_current_protocol_only(bench_env):
     # archives are untouched
     assert c.get("/api/matches/old10-0").status_code == 200
     assert db.row("SELECT COUNT(*) n FROM matches WHERE id LIKE 'old%'")["n"] == 7
+
+
+# ---- making models act within the turn: thinking budget, required tool calls, last-chance call -----------------
+
+_PROD_LIKE = {"budget_usd_per_game": 10, "max_output_tokens": 16384, "reasoning_max_tokens": 12000,
+              "tool_choice": "required", "last_chance_max_tokens": 2048}
+
+
+def test_thinking_budget_and_required_tool_choice_reach_the_payload(fake_openrouter):
+    base = {"provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 4}
+    cases = (("Default", {}, {"max_tokens": 12000}),
+             ("No budget", {"reasoning_max_tokens": None}, None),
+             ("Own reasoning", {"extra": {"reasoning": {"effort": "low"}}}, {"effort": "low"}),
+             ("Small cap", {"max_tokens": 4000}, {"max_tokens": 3000}))   # stays below max_tokens
+    for name, extra, want in cases:
+        fake_openrouter.bodies = []
+        MatchRunner(f"t-reason-{name}", {"name": name, **base, **extra}, RANDOM, _PROD_LIKE, api_key="k").run()
+        assert fake_openrouter.bodies, name
+        assert all(b.get("reasoning") == want for b in fake_openrouter.bodies), name
+        assert all(b["tool_choice"] == "required" for b in fake_openrouter.bodies), name
+
+
+def test_required_tool_choice_falls_back_to_auto_when_rejected():
+    import anyio
+    import httpx
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append(body["tool_choice"])
+        if body["tool_choice"] == "required":
+            return httpx.Response(400, text="Thinking may not be enabled when tool_choice forces tool use.")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                                         "usage": {}})
+
+    async def go():
+        llm = _mock_llm(handler, tool_choice="required")
+        try:
+            a = await llm.chat([{"role": "system", "content": "x"}], _TOOLS)
+            b = await llm.chat([{"role": "system", "content": "x"}], _TOOLS)
+            return a, b, llm.tool_choice
+        finally:
+            await llm.aclose()
+
+    a, b, choice = anyio.run(go)
+    assert a.content == b.content == "ok"
+    assert seen == ["required", "auto", "auto"] and choice == "auto"
+
+
+def test_a_real_400_still_fails_and_keeps_required():
+    import anyio
+    import httpx
+    from bench.llm import LLMError
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content)["tool_choice"])
+        return httpx.Response(400, text="context length exceeded")
+
+    async def go():
+        llm = _mock_llm(handler, tool_choice="required")
+        try:
+            await llm.chat([{"role": "system", "content": "x"}], _TOOLS)
+        finally:
+            await llm.aclose()
+        return llm.tool_choice
+
+    with pytest.raises(LLMError):
+        anyio.run(go)
+    assert seen == ["required", "auto"]
+
+
+def test_hurried_call_asks_for_a_short_reply():
+    import anyio
+    import httpx
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                                         "usage": {}})
+
+    async def go():
+        llm = _mock_llm(handler, max_tokens=16384, reasoning_max_tokens=12000, hurry_max_tokens=2048)
+        try:
+            await llm.chat([{"role": "system", "content": "x"}], _TOOLS, hurry=True)
+        finally:
+            await llm.aclose()
+
+    anyio.run(go)
+    assert bodies[0]["max_tokens"] == 2048 and bodies[0]["reasoning"] == {"max_tokens": 1024}
+
+
+def test_last_chance_call_lets_the_model_act_after_a_long_reply(monkeypatch):
+    """A reply that runs into the reserve is cancelled; one short call later the model moves itself."""
+    import bench.match
+    from bench.llm import LLMError, RandomPolicy
+
+    class SlowThenQuick:
+        def __init__(self, seat):
+            self.policy = RandomPolicy(seat, seed=3)
+            self.hurried_prompts = []
+
+        async def chat(self, messages, tools, deadline=None, hurry=False):
+            if not hurry:
+                raise LLMError("turn time limit reached after 255s without a reply (request cancelled)",
+                               uncertain_spend=True, deadline=True)
+            self.hurried_prompts.append(messages[-1]["content"] if messages[-1]["role"] == "user" else "")
+            return await self.policy.chat(messages, tools)
+
+        async def aclose(self):
+            pass
+
+    made = []
+    real = bench.match.make_llm
+
+    def fake_make(cfg, seat, key):
+        if cfg.get("provider") != "openrouter":
+            return real(cfg, seat, key)
+        made.append(SlowThenQuick(seat))
+        return made[-1]
+
+    monkeypatch.setattr(bench.match, "make_llm", fake_make)
+    cfg = {"name": "Slow LLM", "provider": "openrouter", "model": "fake/model"}
+    events = []
+    result = MatchRunner("t-last-chance", cfg, RANDOM, {"budget_usd_per_game": 10, "last_chance_seconds": 45},
+                         api_key="k", event_sink=lambda *a: events.append(a)).run()
+    stats = result["home_stats"]
+    assert result["error"] is None
+    assert stats["last_chance_calls"] > 4 and stats["deadline_cutoffs"] == stats["last_chance_calls"]
+    assert stats["tool_calls"] > 0 and stats["llm_errors"] == 0
+    texts = [e[3].get("text", "") for e in events if e[2] == "system"]
+    assert not any("time limit" in t for t in texts), texts
+    assert any("Time is almost up" in p for p in made[0].hurried_prompts)

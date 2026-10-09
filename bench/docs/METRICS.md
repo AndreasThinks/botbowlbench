@@ -55,7 +55,8 @@ These are computed from the **action log**. Every move, block, pass, hand-off or
 | `no_tool_replies`, `llm_errors` | Replies without a tool call (and without `finish_reason=length`), and API errors after retries |
 | `output_truncations` | Replies with `finish_reason=length` and no tool call — the completion budget was spent (often on reasoning) before a tool call. Counted separately from `no_tool_replies`. The count since the last successful game action (`max_truncation_streak`, default same as `max_illegal_streak`) auto-finishes the turn; it is a running total, not strictly consecutive, and only a successful action tool resets it (info/chat/reflect alone do not). |
 | `http_timeouts`, `uncertain_spend_calls` | HTTP read timeouts (never retried) and calls whose provider-side cost is unknown because no usage came back; the real spend may exceed `cost`. |
-| `deadline_cutoffs` | Model calls cancelled because the turn's `turn_time_limit` ran out while waiting for the reply. The turn auto-finishes (also counted in `budget_exhausted`); not an `llm_error`. |
+| `deadline_cutoffs` | Model calls cancelled because they ran into the last-chance reserve or the turn's `turn_time_limit`; not an `llm_error`. |
+| `last_chance_calls` | Turns where a long reply was cancelled with `last_chance_seconds` left and the model was asked for one short reply instead. A cut-off at the deadline itself auto-finishes the turn (counted in `budget_exhausted`). |
 | `served` | `{"<model>@<provider>": calls}`: what OpenRouter actually routed to |
 | `restart_cost` | Only after a server restart mid-game: USD spent on the part of a turn that was played again. Not included in `cost` or the game budget. |
 
