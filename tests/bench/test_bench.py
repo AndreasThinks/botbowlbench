@@ -539,7 +539,8 @@ def test_replays_and_match_archive(bench_env):
     lines = [l for e in plays for l in e["payload"]["lines"]]
     assert all(l["t"] and "<" not in l["t"] for l in lines)
     assert "Game started." in [l["t"] for l in lines]
-    assert all(e["side"] in ("home", "away") and e["payload"]["ht"] + e["payload"]["at"] > 0
+    # a turnover is filed under the team that suffered it (turn 0 is fine: a Blitz! kick-off gives a free turn)
+    assert all(e["side"] in ("home", "away")
                for e in plays if any(l["k"] == "turnover" for l in e["payload"]["lines"]))
     m = json.loads(c.get(f"/api/matches/{mid}").data)
     tds = sum(1 for l in lines if l["k"] == "td")
