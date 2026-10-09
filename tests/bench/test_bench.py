@@ -570,8 +570,10 @@ def test_resume_from_checkpoint(tmp_path, monkeypatch):
     full = first.run()
     assert full["error"] is None and len(checkpoints) >= 16   # one per team turn
     keys = [pickle.loads(c)["key"] for c in checkpoints]
-    assert len(set(keys)) == len(keys) and {k.split(":")[0] for k in keys} == {"home", "away"}
-    cp = pickle.loads(checkpoints[len(checkpoints) // 2])
+    assert {k.split(":")[0] for k in keys} == {"home", "away"}
+    # a regular team turn (keys ending in b/q are kick-off blitz / quick-snap turns, numbered 0)
+    regular = [c for c, k in zip(checkpoints, keys) if k.split("-")[-1].isdigit()]
+    cp = pickle.loads(regular[len(regular) // 2])
     side, _, episode = cp["key"].partition(":")
     half, turn = int(episode.split("-")[1]), int(episode.split("-")[2])
 
