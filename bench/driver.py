@@ -29,6 +29,7 @@ INFO_TOOLS = ("get_state", "get_legal_actions", "get_player")
 class DriverLimits:
     max_tool_calls_per_turn: int = 40
     turn_time_limit: float = 300.0
+    last_chance_seconds: float = 0.0  # held back from the turn for one short "act now" call; 0 = off
     max_illegal_streak: int = 3
     max_truncation_streak: int = 3  # finish_reason=length with no tools; separate from illegal
     max_llm_errors: int = 4
@@ -66,7 +67,7 @@ class SeatDriver:
         self.usage = {"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0,
                       "reasoning_tokens": 0, "cost": 0.0, "latency": 0.0, "tool_calls": 0, "llm_errors": 0,
                       "no_tool_replies": 0, "output_truncations": 0, "http_timeouts": 0,
-                      "uncertain_spend_calls": 0, "budget_exhausted": 0, "episodes": 0,
+                      "uncertain_spend_calls": 0, "deadline_cutoffs": 0, "last_chance_calls": 0, "budget_exhausted": 0, "episodes": 0,
                       "served": {}}
         self.unavailable = False
         self._oa_tools = []
@@ -170,10 +171,10 @@ class SeatDriver:
             k = f"{resp.served_model or '?'}@{resp.provider or '?'}"
             u["served"][k] = u["served"].get(k, 0) + 1
 
-    async def _call_llm(self, messages, tools, key, sent, deadline=None):
+    async def _call_llm(self, messages, tools, key, sent, deadline=None, hurry=False):
         """One model call, fully recorded in the transcript. ``sent`` = messages already logged."""
         try:
-            resp = await self.llm.chat(messages, tools, deadline=deadline)
+            resp = await self.llm.chat(messages, tools, deadline=deadline, **({"hurry": True} if hurry else {}))
         except LLMError as e:
             if e.timeout:
                 self.usage["http_timeouts"] += 1
@@ -209,6 +210,7 @@ class SeatDriver:
         calls = 0
         illegal_streak = 0
         truncation_streak = 0
+        hurry = False   # set once a reply ran into the last-chance reserve: short replies only from then on
         while not self._episode_over(key):
             reason = None
             if calls >= self.limits.max_tool_calls_per_turn:
@@ -233,27 +235,50 @@ class SeatDriver:
                     self.seat.force_episode(key)
                 return
             try:
-                resp = await self._call_llm(messages, oa_tools, key, sent, deadline=t0 + self.limits.turn_time_limit)
+                # until the model is hurried, its replies must finish before the last-chance reserve starts
+                reserve = 0.0 if hurry else self.limits.last_chance_seconds
+                resp = await self._call_llm(messages, oa_tools, key, sent, hurry=hurry,
+                                            deadline=t0 + self.limits.turn_time_limit - reserve)
                 self.consecutive_llm_errors = 0
             except LLMError as e:
+                if e.deadline and not hurry and self.limits.last_chance_seconds > 0:
+                    # The reply ran into the reserve. Cancel it and give the model one short call to act itself
+                    # before the default policy takes over.
+                    hurry = True
+                    self.usage["deadline_cutoffs"] += int(e.uncertain_spend)   # a call was actually cancelled
+                    self.usage["last_chance_calls"] += 1
+                    self.session.log_event(self.seat.side, "system", {"text": (
+                        f"{int(self.limits.last_chance_seconds)}s of the turn left"
+                        f"{' and the reply was still running (cancelled)' if e.uncertain_spend else ''}: "
+                        f"asking for a short reply.")})
+                    self.session.transcript.write("llm_cutoff", self.seat.side, episode=key, error=str(e)[:2000],
+                                                  waited=round(time.time() - t0, 1), last_chance=True)
+                    note = (f"Time is almost up: about {int(self.limits.last_chance_seconds)} seconds are left in "
+                            "this turn. Think briefly and reply now with a tool call: your best action, or end_turn.")
+                    messages.append({"role": "user", "content": note})
+                    continue
+                if e.deadline:
+                    # The turn's time ran out while the model was still replying. That is the time limit doing its
+                    # job, not a provider fault: report it like the time-limit check above, not as an error, and
+                    # don't count it towards marking the model unavailable.
+                    self.usage["deadline_cutoffs"] += int(e.uncertain_spend)
+                    self.seat.counters["budget_exhausted"] += 1
+                    self.usage["budget_exhausted"] += 1
+                    reason = (f"time limit ({int(self.limits.turn_time_limit)}s) reached while waiting for the "
+                              f"model's reply")
+                    self.session.log_event(self.seat.side, "system", {"text": f"Auto-finishing: {reason}."})
+                    self.session.transcript.write("llm_cutoff", self.seat.side, episode=key, error=str(e)[:2000],
+                                                  waited=round(time.time() - t0, 1))
+                    self.session.transcript.write("system", self.seat.side, episode=key,
+                                                  text=f"auto-finish: {reason}")
+                    self.seat.force_episode(key)
+                    return
                 self.usage["llm_errors"] += 1
                 self.consecutive_llm_errors += 1
                 self.session.log_event(self.seat.side, "error", {"text": str(e)[:500]})
                 self.session.transcript.write("llm_error", self.seat.side, episode=key, error=str(e)[:2000],
                                               infra=e.infra, fatal=e.fatal, timeout=e.timeout,
                                               uncertain_spend=e.uncertain_spend)
-                if e.deadline:
-                    # the call ran into the turn deadline: auto-finish like the time-limit check above, and don't
-                    # count it towards marking the model unavailable for the rest of the game
-                    self.consecutive_llm_errors = 0
-                    reason = f"time limit ({int(self.limits.turn_time_limit)}s) exceeded"
-                    self.seat.counters["budget_exhausted"] += 1
-                    self.usage["budget_exhausted"] += 1
-                    self.session.log_event(self.seat.side, "system", {"text": f"Auto-finishing: {reason}."})
-                    self.session.transcript.write("system", self.seat.side, episode=key,
-                                                  text=f"auto-finish: {reason}")
-                    self.seat.force_episode(key)
-                    return
                 if e.infra:
                     self.session.infra_error = str(e)[:300]
                     self.session.abort()

@@ -27,7 +27,10 @@ def make_llm(model_cfg: dict, seat, api_key: Optional[str]):
                          temperature=model_cfg.get("temperature"),
                          max_tokens=model_cfg.get("max_tokens"),
                          extra=model_cfg.get("extra") or {},
-                         prompt_cache=model_cfg.get("prompt_cache"))
+                         prompt_cache=model_cfg.get("prompt_cache"),
+                         reasoning_max_tokens=model_cfg.get("reasoning_max_tokens"),
+                         tool_choice=model_cfg.get("tool_choice") or "auto",
+                         hurry_max_tokens=int(model_cfg.get("last_chance_max_tokens") or 2048))
 
 
 CHECKPOINT_VERSION = 1
@@ -51,6 +54,7 @@ def limits_for(model_cfg: dict, settings: dict) -> DriverLimits:
     return DriverLimits(
         max_tool_calls_per_turn=int(model_cfg.get("max_tool_calls_per_turn", settings.get("max_tool_calls_per_turn", 40))),
         turn_time_limit=float(model_cfg.get("turn_time_limit", settings.get("turn_time_limit", 300))),
+        last_chance_seconds=float(model_cfg.get("last_chance_seconds", settings.get("last_chance_seconds", 0)) or 0),
         max_illegal_streak=max_illegal,
         max_truncation_streak=max_trunc,
         budget_usd=model_cfg.get("budget_usd_per_game", settings.get("budget_usd_per_game")),
@@ -92,6 +96,11 @@ class MatchRunner:
             seat = self.session.seat(side)
             cfg = dict(cfg)
             cfg.setdefault("seed", self.seed + i)   # baselines are reproducible from the match seed
+            # the same output ceiling, thinking budget and tool_choice for everyone; a model's own value (or null) wins
+            for key, setting in (("max_tokens", "max_output_tokens"), ("reasoning_max_tokens", "reasoning_max_tokens"),
+                                 ("tool_choice", "tool_choice"), ("last_chance_max_tokens", "last_chance_max_tokens")):
+                if key not in cfg:
+                    cfg[key] = settings.get(setting)
             llm = make_llm(cfg, seat, api_key)
             opp = away_cfg if side == "home" else home_cfg
             self.drivers[side] = SeatDriver(self.session, seat, llm, cfg["name"], limits_for(cfg, settings),

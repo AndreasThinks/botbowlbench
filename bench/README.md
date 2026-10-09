@@ -147,21 +147,32 @@ their frames on first view.
 * An HTTP 401/402 from OpenRouter (bad key, no credit) puts the game back in the queue instead of scoring it.
   Bugs in the bench's own tools are reported to the model as "not your fault", never counted as invalid moves, and
   make the game inadmissible.
-* The ending reflection is part of the protocol (`PROTOCOL_VERSION` 1.1). It changes behaviour a little, as any
+* The ending reflection is part of the protocol (`PROTOCOL_VERSION` 1.2). It changes behaviour a little, as any
   scaffold does, but it is identical for every model. It is what makes plan follow-through and forecast accuracy
   measurable.
-* **Output length:** the harness no longer imposes a default response-token cap on any model. When
-  `max_tokens` is absent or null, requests omit the field entirely; no `max_completion_tokens` cap is substituted.
-  Provider defaults and model/context limits still apply, so this is not unlimited generation. An explicit
-  per-model `max_tokens` remains available for opt-in experiments, but no shipped model uses it. Dollar, HTTP,
-  turn/game-time and bounded retry guards remain; the dollar cap is checked between calls and one response can
-  overshoot it. The HTTP client is non-streaming with a 180 s timeout; an HTTP **read timeout is never retried**
-  (the provider may still generate and bill the reply), so that call fails, is counted in `http_timeouts` and
-  `uncertain_spend_calls` (cost unknown, not in `cost` or the dollar cap), and retries of other transient failures stop
-  once the turn's time limit would be exceeded. A call can still run up to the timeout past `turn_time_limit`.
-  Removing the cap is not yet validated as a gameplay improvement. Leaderboard, ratings, tournament standings and
-  placement use only games whose `meta.harness.protocol_version` equals the current version (missing = legacy 1.0);
-  older games stay available as archives, replays and transcripts. No paid API calls were made for this change.
+* **Turn time limit:** `turn_time_limit` is a hard deadline. The last `last_chance_seconds` (45) are held back: a
+  reply still running when they start is cancelled and the model gets one short call ("Time is almost up… reply now
+  with a tool call") with `last_chance_max_tokens` (2048) and a 1024-token thinking budget, and keeps those short
+  settings for the rest of the turn. A reply still running at the deadline itself is cancelled and the turn
+  auto-finishes, exactly like the between-calls time check. Cut-offs are logged as time-limit events, not errors,
+  counted in `deadline_cutoffs` (and `last_chance_calls`, `uncertain_spend_calls`), and never count towards marking
+  the model unavailable. httpx's timeout is per socket read and OpenRouter keeps slow requests alive, so the HTTP
+  timeout alone never bounded a long generation.
+* **Tool calls are required:** requests send `tool_choice: required` (setting `tool_choice`), so a reply must be a
+  tool call rather than prose. If a provider rejects it (for example Anthropic with extended thinking), the request is
+  re-sent with `auto` and that model stays on `auto` for the rest of the game.
+* **Thinking budget:** every model gets `reasoning: {max_tokens: reasoning_max_tokens}` (12000; OpenRouter maps it to
+  an effort level for effort-only models, and kept below `max_tokens`), so a reasoning model is told to stop thinking
+  and answer rather than being cut off. A model's own `extra.reasoning`, or `reasoning_max_tokens: null`, overrides it.
+  On hybrid models where thinking is optional, sending a budget switches thinking on.
+* **Output length:** every model gets the same default ceiling, `max_output_tokens` (16384), sent as `max_tokens`. It
+  is far above the old 2048 cap that starved reasoning models, and exists to turn runaway or looping generations into
+  classified `output_truncations` instead of turns lost to the clock. A per-model `max_tokens` overrides it, and
+  `max_tokens: null` removes it for that model. The dollar cap is checked between calls and one response can overshoot
+  it. A cancelled or timed-out call is never retried (the provider may still generate and bill it) and its cost is
+  unknown, so it is counted in `uncertain_spend_calls`, not in `cost` or the dollar cap. Leaderboard, ratings,
+  tournament standings and placement use only games whose `meta.harness.protocol_version` equals the current version
+  (missing = legacy 1.0); older games stay available as archives, replays and transcripts.
 
 ### Cost
 

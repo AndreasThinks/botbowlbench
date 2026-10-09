@@ -50,7 +50,7 @@ class LLMError(Exception):
         super().__init__(msg)
         self.fatal = fatal
         self.infra = infra  # our problem (bad key / no credits), not the model's
-        self.timeout = timeout  # HTTP read timeout: the request was sent and never answered
+        self.timeout = timeout  # HTTP timeout: the request was sent and never answered
         self.uncertain_spend = uncertain_spend  # the provider may have generated (and billed) a reply we never saw
         self.deadline = deadline  # cut off at the turn deadline: the turn's time ran out, not a model fault
 
@@ -70,7 +70,9 @@ def with_cache_breakpoints(messages: List[dict]) -> List[dict]:
 class OpenRouterLLM:
     def __init__(self, model: str, api_key: str, temperature: Optional[float] = None,
                  max_tokens: Optional[int] = None, extra: Optional[dict] = None, timeout: float = 180.0,
-                 max_retries: int = 4, prompt_cache: Optional[bool] = None):
+                 max_retries: int = 4, prompt_cache: Optional[bool] = None,
+                 reasoning_max_tokens: Optional[int] = None, tool_choice: str = "auto",
+                 hurry_max_tokens: int = 2048):
         self.model = model
         # OpenAI, DeepSeek, Gemini... cache prompt prefixes automatically; Anthropic needs explicit breakpoints
         self.prompt_cache = model.startswith("anthropic/") if prompt_cache is None else prompt_cache
@@ -78,6 +80,15 @@ class OpenRouterLLM:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.extra = extra or {}
+        # Thinking budget sent as reasoning.max_tokens (OpenRouter maps it to effort for effort-only models). It
+        # must stay below max_tokens so the model has room left to answer. A model's own extra.reasoning wins.
+        if reasoning_max_tokens is not None and max_tokens is not None:
+            reasoning_max_tokens = min(reasoning_max_tokens, max_tokens * 3 // 4)
+        self.reasoning_max_tokens = None if "reasoning" in self.extra else reasoning_max_tokens
+        # "required" makes every reply a tool call. Some providers reject it (Anthropic with extended thinking,
+        # for one); the first such rejection drops this client back to "auto" for the rest of the game.
+        self.tool_choice = tool_choice
+        self.hurry_max_tokens = hurry_max_tokens
         self.timeout = timeout
         self.max_retries = max_retries
         self.client = httpx.AsyncClient(timeout=timeout)
@@ -85,19 +96,27 @@ class OpenRouterLLM:
     async def aclose(self):
         await self.client.aclose()
 
-    async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None) -> LLMResponse:
+    async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None,
+                   hurry: bool = False) -> LLMResponse:
+        """``hurry``: the turn is nearly out of time; ask for a short reply with minimal thinking."""
         body = {
             "model": self.model,
             "messages": with_cache_breakpoints(messages) if self.prompt_cache else messages,
             "tools": tools,
-            "tool_choice": "auto",
+            "tool_choice": self.tool_choice,
             "usage": {"include": True},
         }
         if self.max_tokens is not None:
             body["max_tokens"] = self.max_tokens
+        if self.reasoning_max_tokens is not None:
+            body["reasoning"] = {"max_tokens": self.reasoning_max_tokens}
         if self.temperature is not None:
             body["temperature"] = self.temperature
         body.update(self.extra)
+        if hurry:
+            body["max_tokens"] = min(self.hurry_max_tokens, body.get("max_tokens") or self.hurry_max_tokens)
+            if "reasoning" in body:
+                body["reasoning"] = {"max_tokens": max(1024, body["max_tokens"] // 2)}
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "HTTP-Referer": os.environ.get("PUBLIC_URL", "https://github.com/andreasthinks/botbowlbench"),
@@ -117,8 +136,11 @@ class OpenRouterLLM:
                 r = await asyncio.wait_for(self.client.post(OPENROUTER_URL, json=body, headers=headers), budget)
             except asyncio.TimeoutError:
                 # like a read timeout, the provider may still be generating (and billing) after we hang up
+                if deadline is not None:
+                    raise LLMError(f"turn time limit reached after {budget:.0f}s without a reply (request cancelled)",
+                                   uncertain_spend=True, deadline=True)
                 raise LLMError(f"no reply within {budget:.0f}s, request cancelled", timeout=True,
-                               uncertain_spend=True, deadline=deadline is not None)
+                               uncertain_spend=True)
             except httpx.ReadTimeout as e:
                 # The request went out and the reply never came: the provider may still be generating (and billing)
                 # it. Retrying would stack up unseen spend, so fail this call instead.
@@ -136,7 +158,14 @@ class OpenRouterLLM:
                         if "error" in data and not data.get("choices"):
                             last_err = f"provider error: {data['error']}"
                         else:
+                            self.tool_choice = body["tool_choice"]
                             return self._parse(data, time.time() - t0)
+                elif r.status_code in (400, 404) and body.get("tool_choice") == "required":
+                    # most likely the provider can't force tool use: try again at once with "auto", and keep
+                    # "auto" for this client if that works
+                    body["tool_choice"] = "auto"
+                    last_err = f"OpenRouter HTTP {r.status_code} with tool_choice=required: {r.text[:300]}"
+                    continue
                 elif r.status_code in (400, 401, 402, 403, 404):
                     raise LLMError(f"OpenRouter HTTP {r.status_code}: {r.text[:500]}",
                                    fatal=r.status_code in (401, 402, 403, 404),
@@ -222,7 +251,8 @@ class RandomPolicy:
             return self._single("reflect", {"plan": self.PLAN, "prediction": self.PREDICTION})
         return None
 
-    async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None) -> LLMResponse:
+    async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None,
+                   hurry: bool = False) -> LLMResponse:
         from botbowl.core.table import ActionType
         from bench import render
         self._n += 1
@@ -269,7 +299,8 @@ class ScriptedPolicy(RandomPolicy):
     BLOCK_PREF = ["SELECT_DEFENDER_DOWN", "SELECT_DEFENDER_STUMBLES", "SELECT_PUSH", "SELECT_BOTH_DOWN",
                   "SELECT_ATTACKER_DOWN"]
 
-    async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None) -> LLMResponse:
+    async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None,
+                   hurry: bool = False) -> LLMResponse:
         from botbowl.core.table import ActionType
         from bench import render
         from bench.session import fallback_action
@@ -372,7 +403,8 @@ class BotbowlAgentPolicy(RandomPolicy):
         self.agent = botbowl.make_bot(bot)
         self._started = False
 
-    async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None) -> LLMResponse:
+    async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None,
+                   hurry: bool = False) -> LLMResponse:
         from botbowl.core.table import ActionType
         from bench import render
         from bench.session import fallback_action

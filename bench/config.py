@@ -11,7 +11,12 @@ DEFAULT_SETTINGS = {
     "max_tool_calls_per_turn": 40,
     "turn_time_limit": 300,           # seconds of wall time per team turn
     "max_illegal_streak": 3,
-    "max_truncation_streak": 3,  # finish_reason=length with no tool call; defaults same as illegal cap
+    "max_truncation_streak": 3,
+    "max_output_tokens": 16384,       # default max_tokens per reply for every model; per-model max_tokens overrides
+    "reasoning_max_tokens": 12000,    # thinking budget (reasoning.max_tokens) per reply; per-model value or null overrides
+    "tool_choice": "required",        # every reply must be a tool call; falls back to auto where a provider rejects it
+    "last_chance_seconds": 45,        # held back from each turn for one short "act now" call if a reply runs long
+    "last_chance_max_tokens": 2048,   # output ceiling for that last-chance call  # finish_reason=length with no tool call; defaults same as illegal cap
     "max_messages_per_turn": 2,
     "max_message_len": 280,
     "decision_timeout": 900,          # hard safety net per decision, seconds
