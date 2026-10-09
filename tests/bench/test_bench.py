@@ -1122,3 +1122,107 @@ def test_last_chance_call_lets_the_model_act_after_a_long_reply(monkeypatch):
     texts = [e[3].get("text", "") for e in events if e[2] == "system"]
     assert not any("time limit" in t for t in texts), texts
     assert any("Time is almost up" in p for p in made[0].hurried_prompts)
+
+
+def test_turn_clock_pauses_while_a_tool_call_waits_on_the_opponent(monkeypatch):
+    """Time spent inside a tool call (the game waiting for the opponent's block dice choice, say) is not the
+    model's: it must not run down the turn clock or shorten the next call's deadline."""
+    import anyio
+    import types
+    from bench.driver import DriverLimits, SeatDriver
+    from bench.llm import LLMResponse, ToolCall
+    from bench.session import Decision, GameSession
+
+    s = GameSession("t-clock-pause", "A", "B", seed=1)
+    s.home.team = s.game.state.home_team
+    s.home.decision = Decision(1, "turn-1-1", "Turn", False)
+    deadlines = []
+
+    class QuickLLM:
+        async def chat(self, messages, tools, deadline=None):
+            deadlines.append(deadline - time.time())
+            return LLMResponse(tool_calls=[ToolCall(id="c", name="move", arguments={})],
+                               raw_message={"role": "assistant", "content": ""})
+
+        async def aclose(self):
+            pass
+
+    class WaitingClient:
+        calls = 0
+
+        async def call_tool(self, name, args):
+            WaitingClient.calls += 1
+            await anyio.sleep(0.4)   # the opponent is deciding
+            if WaitingClient.calls == 4:
+                s.home.decision = None   # the turn is over
+            return types.SimpleNamespace(content=[types.SimpleNamespace(text="ok")], is_error=False)
+
+    d = SeatDriver(s, s.home, QuickLLM(), "A", DriverLimits(turn_time_limit=1.0), opponent_name="B")
+    monkeypatch.setattr(d, "_intro", lambda dec: "situation")
+    forced = []
+    monkeypatch.setattr(s.home, "force_episode", lambda key: forced.append(key))
+    anyio.run(d.play_episode, WaitingClient(), [], s.home.decision)
+    assert WaitingClient.calls == 4          # 1.6s of waiting on the opponent inside a 1s turn
+    assert not forced and d.usage["budget_exhausted"] == 0
+    assert min(deadlines) > 0.8              # every call still had (nearly) the whole turn
+
+
+def test_driver_does_not_replay_an_episode_handed_to_the_fallback():
+    """After an auto-finish the seat's decision stays set until the game thread takes the fallback action;
+    the driver must not start a second (empty) episode for it."""
+    import anyio
+    from bench.driver import DriverLimits, SeatDriver
+    from bench.session import Decision, GameSession
+
+    s = GameSession("t-stale-decision", "A", "B", seed=1)
+    d = SeatDriver(s, s.home, None, "A", DriverLimits(), opponent_name="B")
+    s.home.decision = Decision(1, "turn-1-1", "Turn", True)
+    s.home.autopilot_key = "turn-1-1"
+    episodes = []
+
+    async def fake_episode(client, tools, dec):
+        episodes.append(dec.key)
+
+    d.play_episode = fake_episode
+
+    def clear_later():
+        time.sleep(0.3)
+        with s.home.cond:
+            s.home.decision = None
+            s.finished = True
+            s.home.cond.notify_all()
+
+    class NoLLM:
+        async def aclose(self):
+            pass
+
+    d.llm = NoLLM()
+    t = threading.Thread(target=clear_later)
+    t.start()
+    anyio.run(d.run)
+    t.join()
+    assert episodes == []
+
+
+def test_missed_reflection_is_a_short_bounded_call():
+    """The reflection after a turnover runs while the opponent plays, so it is kept as short as a last-chance
+    call instead of getting the full thinking budget and no deadline."""
+    import anyio
+    from bench.driver import DriverLimits, SeatDriver
+    from bench.llm import LLMResponse
+
+    seen = {}
+
+    class RecordingLLM:
+        async def chat(self, messages, tools, deadline=None, hurry=False):
+            seen.update(deadline=None if deadline is None else deadline - time.time(), hurry=hurry)
+            return LLMResponse(raw_message={"role": "assistant", "content": ""})
+
+        async def aclose(self):
+            pass
+
+    s = GameSession("t-reflect-bound", "A", "B", seed=1)
+    d = SeatDriver(s, s.home, RecordingLLM(), "A", DriverLimits(last_chance_seconds=45), opponent_name="B")
+    d._oa_tools = [{"type": "function", "function": {"name": "reflect", "description": "", "parameters": {}}}]
+    anyio.run(d._missed_reflection, [{"role": "user", "content": "turn over"}], None, "turn-1-1", 0)
+    assert seen["hurry"] is True and 40 < seen["deadline"] <= 45

@@ -157,7 +157,9 @@ their frames on first view.
   auto-finishes, exactly like the between-calls time check. Cut-offs are logged as time-limit events, not errors,
   counted in `deadline_cutoffs` (and `last_chance_calls`, `uncertain_spend_calls`), and never count towards marking
   the model unavailable. httpx's timeout is per socket read and OpenRouter keeps slow requests alive, so the HTTP
-  timeout alone never bounded a long generation.
+  timeout alone never bounded a long generation. The clock only counts the model's own time: it pauses while a tool
+  call waits for the opponent (for example when the defender picks the block die). The one-shot `reflect` call after
+  a turnover runs during the opponent's turn, so it gets the same short settings and `last_chance_seconds` limit.
 * **Tool calls are required:** requests send `tool_choice: required` (setting `tool_choice`), so a reply must be a
   tool call rather than prose. If a provider rejects it (for example Anthropic with extended thinking), the request is
   re-sent with `auto` and that model stays on `auto` for the rest of the game.

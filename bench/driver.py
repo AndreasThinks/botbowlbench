@@ -125,6 +125,10 @@ class SeatDriver:
                         break
                     if self.seat.autopilot:
                         break
+                    if d.key == self.seat.autopilot_key:
+                        # the episode we just handed to the fallback policy, not yet cleared by the game thread
+                        await anyio.sleep(0.05)
+                        continue
                     trivial = is_trivial(self.session.game)
                     if trivial is not None:
                         self.seat.counters["auto_resolved"] += 1
@@ -341,9 +345,13 @@ class SeatDriver:
                 self.seat.counters["tool:" + tc.name] += 1
                 self.session.log_event(self.seat.side, "tool", {
                     "name": tc.name, "args": tc.arguments, "ok": not bad, "result": text[:800]})
+                waited = time.time() - t_tool
+                # A tool call only takes long while the game waits for the opponent (block dice they choose,
+                # a re-roll that ends the turn...). That is not this model's time: pause the turn clock.
+                t0 += waited
                 self.session.transcript.write("tool", self.seat.side, episode=key, call_id=tc.id, name=tc.name,
                                               args=tc.arguments, raw_args=tc.raw_arguments, ok=not bad, result=text,
-                                              duration=round(time.time() - t_tool, 3))
+                                              duration=round(waited, 3))
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": text})
         # The turn ended without end_turn (turnover / touchdown): ask once for the reflection we missed.
         if d.our_turn and not self.session.finished and not self.seat.autopilot \
@@ -359,8 +367,12 @@ class SeatDriver:
                          "Your turn is over (a turnover or touchdown ended it before you called end_turn). Call "
                          "reflect(plan, prediction) now: your plan for your next turn and what you expect the "
                          "opponent to do."})
+        # The opponent's turn is already under way and may need us (block dice, re-rolls): keep this call as
+        # short as a last-chance call so it can't hold up the game.
+        bound = self.limits.last_chance_seconds
         try:
-            resp = await self._call_llm(messages, reflect_tool, key + "#reflect", sent)
+            resp = await self._call_llm(messages, reflect_tool, key + "#reflect", sent, hurry=bound > 0,
+                                        deadline=time.time() + bound if bound > 0 else None)
         except LLMError as e:
             self.session.transcript.write("llm_error", self.seat.side, episode=key + "#reflect", error=str(e)[:500])
             return
