@@ -242,6 +242,18 @@ class SeatDriver:
                 self.session.transcript.write("llm_error", self.seat.side, episode=key, error=str(e)[:2000],
                                               infra=e.infra, fatal=e.fatal, timeout=e.timeout,
                                               uncertain_spend=e.uncertain_spend)
+                if e.deadline:
+                    # the call ran into the turn deadline: auto-finish like the time-limit check above, and don't
+                    # count it towards marking the model unavailable for the rest of the game
+                    self.consecutive_llm_errors = 0
+                    reason = f"time limit ({int(self.limits.turn_time_limit)}s) exceeded"
+                    self.seat.counters["budget_exhausted"] += 1
+                    self.usage["budget_exhausted"] += 1
+                    self.session.log_event(self.seat.side, "system", {"text": f"Auto-finishing: {reason}."})
+                    self.session.transcript.write("system", self.seat.side, episode=key,
+                                                  text=f"auto-finish: {reason}")
+                    self.seat.force_episode(key)
+                    return
                 if e.infra:
                     self.session.infra_error = str(e)[:300]
                     self.session.abort()
