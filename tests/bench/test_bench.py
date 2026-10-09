@@ -1226,3 +1226,93 @@ def test_missed_reflection_is_a_short_bounded_call():
     d._oa_tools = [{"type": "function", "function": {"name": "reflect", "description": "", "parameters": {}}}]
     anyio.run(d._missed_reflection, [{"role": "user", "content": "turn over"}], None, "turn-1-1", 0)
     assert seen["hurry"] is True and 40 < seen["deadline"] <= 45
+
+
+def test_claude_models_keep_auto_tool_choice_so_they_can_think():
+    from bench.llm import OpenRouterLLM
+    assert OpenRouterLLM("anthropic/claude-haiku-5.5", "k", tool_choice="required").tool_choice == "auto"
+    assert OpenRouterLLM("openai/gpt-5-mini", "k", tool_choice="required").tool_choice == "required"
+
+
+def test_deepseek_tool_call_markup_in_content_is_recovered():
+    from bench.llm import OpenRouterLLM
+    content = ('Receive.\n<｜DSML｜invoke name="take_action">\n'
+               '<｜DSML｜parameter name="action_type" string="true">RECEIVE</｜DSML｜parameter>\n'
+               '<｜DSML｜parameter name="x" string="false">4</｜DSML｜parameter>\n'
+               '</｜DSML｜invoke>\n</｜DSML｜function_calls>')
+    resp = OpenRouterLLM._parse({"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}, 1.0)
+    assert [(t.name, t.arguments) for t in resp.tool_calls] == [("take_action", {"action_type": "RECEIVE", "x": 4})]
+    assert resp.content == "Receive."
+    assert resp.raw_message["tool_calls"][0]["function"]["name"] == "take_action"
+    # an empty invoke (no parameters) works too
+    resp = OpenRouterLLM._parse({"choices": [{"message": {
+        "content": '<｜DSML｜invoke name="get_legal_actions">\n\n</｜DSML｜invoke>'}}]}, 1.0)
+    assert [(t.name, t.arguments) for t in resp.tool_calls] == [("get_legal_actions", {})]
+
+
+def test_setup_decision_shows_the_half_and_what_a_formation_placed():
+    s = GameSession("t-setup", "A", "B", seed=11)
+    ready = {}
+    ev = threading.Event()
+
+    def other(seat):
+        while True:
+            d = seat.wait_for_decision()
+            if d is None:
+                return
+            if d.proc == "Setup" and not ev.is_set():
+                ready["seat"] = seat
+                ev.set()
+                return
+            seat.submit(fallback_action(s.game, seat.team))
+
+    threads = [threading.Thread(target=other, args=(x,), daemon=True) for x in (s.home, s.away)]
+    s.start()
+    for t in threads:
+        t.start()
+    try:
+        assert ev.wait(30)
+        tools = SeatTools(s, ready["seat"])
+        before = tools.get_legal_actions()
+        assert "Your half is columns x=" in before and "Players on the pitch: 0" in before
+        assert "Not a legal setup yet" in before
+        formation = [a.action_type.name for a in s.game.state.available_actions
+                     if a.action_type.name.startswith("SETUP_FORMATION_")][0]
+        after = tools.take_action(formation)
+        assert "This setup is legal: END_SETUP" in after and "Players on the pitch: 5" in after
+    finally:
+        s.abort()
+
+
+def test_hurried_call_uses_the_lowest_effort_openrouter_lists(monkeypatch):
+    import anyio
+    import httpx
+    import bench.llm
+    monkeypatch.setattr(bench.llm, "_LOWEST_EFFORT", {})
+    efforts = {"maker/high-or-none": {"supported_efforts": ["high", "none"]},
+               "maker/mandatory": {"mandatory": True, "supported_efforts": ["high", "medium", "low", "minimal", "none"]},
+               "maker/budget-only": {"supports_max_tokens": True}}
+    bodies, gets = [], []
+
+    def handler(request):
+        if request.method == "GET":
+            gets.append(1)
+            return httpx.Response(200, json={"data": [{"id": k, "reasoning": v} for k, v in efforts.items()]})
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                                         "usage": {}})
+
+    async def go(model, hurry):
+        llm = bench.llm.OpenRouterLLM(model, "k", max_tokens=16384, reasoning_max_tokens=12000)
+        llm.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            await llm.chat([{"role": "system", "content": "x"}], _TOOLS, hurry=hurry)
+        finally:
+            await llm.aclose()
+        return bodies[-1]["reasoning"]
+
+    assert anyio.run(go, "maker/high-or-none", False) == {"max_tokens": 12000}   # normal calls keep the budget
+    assert anyio.run(go, "maker/high-or-none", True) == {"effort": "none"}
+    assert anyio.run(go, "maker/mandatory", True) == {"effort": "minimal"}
+    assert anyio.run(go, "maker/budget-only", True) == {"max_tokens": 1024}
+    assert len(gets) == 3   # one lookup per model

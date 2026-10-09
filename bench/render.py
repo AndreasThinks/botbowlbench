@@ -308,6 +308,20 @@ def adjacent_block_targets(game, player, team):
     return out
 
 
+def setup_status_text(game, team) -> str:
+    """Where a team may set up and how far it has got, so a formation's effect is visible in the reply."""
+    xs = [p.x for p in game.get_team_side(team)]
+    on = game.get_players_on_pitch(team)
+    cfg = game.config
+    text = (f"Your half is columns x={min(xs)}-{max(xs)}. Players on the pitch: {len(on)} (at most {cfg.pitch_max}"
+            f"{', the rest stay in reserve' if game.get_reserves(team) else ''}).")
+    if on:
+        text += " " + ", ".join(f"{pid(p)} {sq(p.position)}" for p in sorted(on, key=lambda p: p.nr)) + "."
+    if game.is_setup_legal(team):
+        return text + " This setup is legal: END_SETUP to confirm it."
+    return text + " Not a legal setup yet (a SETUP_FORMATION_* option makes one)."
+
+
 def legal_actions_text(game, team) -> str:
     """Describe the pending decision and every legal option, grouped for readability."""
     actions = game.state.available_actions
@@ -351,6 +365,8 @@ def legal_actions_text(game, team) -> str:
                      f"at {sq(active.position)} (moves used {active.state.moves}/{active.get_ma()}+2 GFI).")
     else:
         lines.append(f"Decision ({proc_name}):")
+    if proc_name == "Setup":
+        lines.append("  " + setup_status_text(game, team))
     for a in actions:
         name = a.action_type.name
         if name == "PLACE_PLAYER":
