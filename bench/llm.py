@@ -93,6 +93,10 @@ def parse_dsml_tool_calls(text: str) -> List[dict]:
     return calls
 
 
+EFFORT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")   # least thinking first
+_LOWEST_EFFORT: Dict[str, Optional[str]] = {}
+
+
 class OpenRouterLLM:
     def __init__(self, model: str, api_key: str, temperature: Optional[float] = None,
                  max_tokens: Optional[int] = None, extra: Optional[dict] = None, timeout: float = 180.0,
@@ -125,6 +129,24 @@ class OpenRouterLLM:
     async def aclose(self):
         await self.client.aclose()
 
+    async def _lowest_effort(self) -> Optional[str]:
+        """The lowest reasoning effort OpenRouter lists for this model (``none`` unless reasoning is mandatory),
+        or None when it lists none (or the lookup fails). Looked up once per model per process."""
+        if self.model not in _LOWEST_EFFORT:
+            lowest = None
+            try:
+                r = await self.client.get(OPENROUTER_URL.rsplit("/chat/completions", 1)[0] + "/models", timeout=5)
+                info = next((m.get("reasoning") or {} for m in r.json().get("data", []) if m.get("id") == self.model),
+                            {})
+                offered = set(info.get("supported_efforts") or [])
+                if info.get("mandatory"):
+                    offered.discard("none")
+                lowest = next((e for e in EFFORT_LEVELS if e in offered), None)
+            except Exception:
+                pass   # fall back to the token budget
+            _LOWEST_EFFORT[self.model] = lowest
+        return _LOWEST_EFFORT[self.model]
+
     async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None,
                    hurry: bool = False) -> LLMResponse:
         """``hurry``: the turn is nearly out of time; ask for a short reply with minimal thinking."""
@@ -142,9 +164,14 @@ class OpenRouterLLM:
         if self.temperature is not None:
             body["temperature"] = self.temperature
         body.update(self.extra)
+        lowest_effort = await self._lowest_effort()
         if hurry:
             body["max_tokens"] = min(self.hurry_max_tokens, body.get("max_tokens") or self.hurry_max_tokens)
-            if "reasoning" in body:
+            if lowest_effort:
+                # A token budget is only a hint for effort-level models (Mistral Large 4 has just high/none, so any
+                # budget means "high"): ask for the least thinking the model offers instead.
+                body["reasoning"] = {"effort": lowest_effort}
+            elif "reasoning" in body:
                 body["reasoning"] = {"max_tokens": max(1024, body["max_tokens"] // 2)}
         headers = {
             "Authorization": f"Bearer {self.api_key}",

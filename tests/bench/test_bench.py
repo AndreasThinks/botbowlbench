@@ -1282,3 +1282,37 @@ def test_setup_decision_shows_the_half_and_what_a_formation_placed():
         assert "This setup is legal: END_SETUP" in after and "Players on the pitch: 5" in after
     finally:
         s.abort()
+
+
+def test_hurried_call_uses_the_lowest_effort_openrouter_lists(monkeypatch):
+    import anyio
+    import httpx
+    import bench.llm
+    monkeypatch.setattr(bench.llm, "_LOWEST_EFFORT", {})
+    efforts = {"maker/high-or-none": {"supported_efforts": ["high", "none"]},
+               "maker/mandatory": {"mandatory": True, "supported_efforts": ["high", "medium", "low", "minimal", "none"]},
+               "maker/budget-only": {"supports_max_tokens": True}}
+    bodies, gets = [], []
+
+    def handler(request):
+        if request.method == "GET":
+            gets.append(1)
+            return httpx.Response(200, json={"data": [{"id": k, "reasoning": v} for k, v in efforts.items()]})
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                                         "usage": {}})
+
+    async def go(model, hurry):
+        llm = bench.llm.OpenRouterLLM(model, "k", max_tokens=16384, reasoning_max_tokens=12000)
+        llm.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            await llm.chat([{"role": "system", "content": "x"}], _TOOLS, hurry=hurry)
+        finally:
+            await llm.aclose()
+        return bodies[-1]["reasoning"]
+
+    assert anyio.run(go, "maker/high-or-none", False) == {"max_tokens": 12000}   # normal calls keep the budget
+    assert anyio.run(go, "maker/high-or-none", True) == {"effort": "none"}
+    assert anyio.run(go, "maker/mandatory", True) == {"effort": "minimal"}
+    assert anyio.run(go, "maker/budget-only", True) == {"max_tokens": 1024}
+    assert len(gets) == 3   # one lookup per model
