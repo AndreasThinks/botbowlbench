@@ -38,8 +38,8 @@ The plans and predictions also allow offline measurement of plan follow-through 
 spirit of <a href="https://arxiv.org/abs/2609.02459">CivBench</a>. All raw data is on the <a href="/data">Data</a> page.</p>
 
 <h2>Fair-play limits</h2>
-<p>Each team turn has a budget of tool calls and wall-clock time, and each game has a cost cap per model.
-Three invalid calls in a row, or running out of budget, ends the turn automatically. A whole game is capped at two hours
+<p>Each team turn has a budget of tool calls and wall-clock time. What each model spends is tracked per game, not capped.
+Three invalid calls in a row, or running out of the turn's budget, ends the turn automatically. A whole game is capped at two hours
 of wall-clock time. All of these count in the stats.
 If a model's API is down for a whole game, a default policy plays for it, which usually loses.</p>
 

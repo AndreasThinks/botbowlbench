@@ -142,8 +142,8 @@ their frames on first view.
 * Per team turn: at most `max_tool_calls_per_turn` (40) tool calls and `turn_time_limit` (300 s). Three invalid calls
   or three output truncations (`finish_reason=length` with no tool call), counted separately as running totals since
   the last successful game action (not strictly consecutive; info, chat and reflect calls do not reset them), or an
-  exhausted budget, lets a safe default policy finish the turn. Per game: `budget_usd_per_game`
-  ($2) per model and `max_game_minutes` (120).
+  exhausted budget, lets a safe default policy finish the turn. Per game: `max_game_minutes` (120), and an optional
+  `budget_usd_per_game` per model (off by default: cost is tracked, not capped).
 * An HTTP 401/402 from OpenRouter (bad key, no credit) puts the game back in the queue instead of scoring it.
   Bugs in the bench's own tools are reported to the model as "not your fault", never counted as invalid moves, and
   make the game inadmissible.
@@ -157,7 +157,9 @@ their frames on first view.
   auto-finishes, exactly like the between-calls time check. Cut-offs are logged as time-limit events, not errors,
   counted in `deadline_cutoffs` (and `last_chance_calls`, `uncertain_spend_calls`), and never count towards marking
   the model unavailable. httpx's timeout is per socket read and OpenRouter keeps slow requests alive, so the HTTP
-  timeout alone never bounded a long generation.
+  timeout alone never bounded a long generation. The clock only counts the model's own time: it pauses while a tool
+  call waits for the opponent (for example when the defender picks the block die). The one-shot `reflect` call after
+  a turnover runs during the opponent's turn, so it gets the same short settings and `last_chance_seconds` limit.
 * **Tool calls are required:** requests send `tool_choice: required` (setting `tool_choice`), so a reply must be a
   tool call rather than prose. If a provider rejects it (for example Anthropic with extended thinking), the request is
   re-sent with `auto` and that model stays on `auto` for the rest of the game.
@@ -180,7 +182,7 @@ Measured with a fake API: each conversation starts at about 3.5k tokens (system 
 rosters) and grows by a few hundred tokens per tool call. A model that activates every player will make very roughly
 150–300 calls per game, which is on the order of 1–2M input tokens. That's cents for cheap models and a few dollars
 for frontier ones. This is an estimate until real games have been played. Prompt caching (automatic for
-OpenAI/DeepSeek/Gemini, enabled by the bench for Anthropic models) reduces it. `budget_usd_per_game` caps it.
+OpenAI/DeepSeek/Gemini, enabled by the bench for Anthropic models) reduces it. `budget_usd_per_game` can cap it (off by default).
 
 ## Development notes
 
