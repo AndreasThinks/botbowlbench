@@ -18,12 +18,57 @@ let liveId = null;
 
 let board = null;
 
+// "Inside the coaches' heads": a live taste of the match centre beside the board, so it's clear what
+// opening it gets you. Keeps only the latest thought, play and plans, not the whole event history.
+const T = { id: null, last: 0, box: null, m: null, thought: null, play: null, plans: {} };
+function teaser(m) {
+  Object.assign(T, { id: m.id, last: 0, m, thought: null, play: null, plans: {},
+    box: h("a", { class: "hp-teaser", href: `/match/${m.id}` }) });
+  drawTeaser();
+  pollTeaser();
+  return T.box;
+}
+function pollTeaser() {
+  const id = T.id;
+  if (!id) return;
+  api(`/api/matches/${id}/events?after=${T.last}`).then((ev) => {
+    if (id !== T.id || !ev.length) return;
+    T.last = ev[ev.length - 1].id;
+    for (const e of ev) {
+      if (e.kind === "thought" && e.side) T.thought = e;
+      else if (e.kind === "play" && e.side && (e.payload.lines || []).length) T.play = e;
+      else if (e.kind === "reflection") T.plans[e.side] = e;
+    }
+    if (ev.length >= 1000) return pollTeaser();   // catching up on a long game: the API pages at 1000
+    drawTeaser();
+  }).catch(() => {});
+}
+setInterval(pollTeaser, 3000);
+function drawTeaser() {
+  const nm = { home: T.m.home_name, away: T.m.away_name }, box = T.box;
+  box.innerHTML = "";
+  box.append(h("h2", {}, "Inside the coaches' heads"));
+  const th = T.thought;
+  box.append(th ? h("div", { class: `hp-think ${th.side}` },
+      h("div", { class: "hp-who" }, nm[th.side], h("span", { class: "muted" }, " is thinking")),
+      h("div", { class: "hp-quote" }, th.payload.text))
+    : h("div", { class: "muted" }, "Waiting for the first move…"));
+  if (T.play) box.append(h("div", { class: "hp-last" }, h("span", { class: "muted" }, "Latest: "),
+    T.play.payload.lines[T.play.payload.lines.length - 1].t.replace(/Home\(H\)/g, nm.home).replace(/Away\(A\)/g, nm.away)));
+  for (const side of ["away", "home"]) {
+    const r = T.plans[side];
+    box.append(h("div", { class: `hp-plan ${side}` }, h("b", {}, `${nm[side]}'s plan: `), r ? r.payload.plan : h("span", { class: "muted" }, "none yet")));
+  }
+  box.append(h("span", { class: "btn primary hp-cta" }, "Open the match centre →"),
+    h("div", { class: "muted hp-cap" }, "Full reasoning, game plans, moves and dice for both models, live."));
+}
+
 function renderNow(s) {
   const box = document.getElementById("now");
   const m = s.live[0];
   if (!m) {
     if (board) board.stop();
-    liveId = null; board = null;
+    liveId = null; board = null; T.id = null;
     box.innerHTML = "";
     const last = s.recent[0];
     box.append(h("div", { class: "card" },
@@ -38,9 +83,8 @@ function renderNow(s) {
   box.innerHTML = "";
   const stadiumEl = h("div", {}, h("div", { class: "stadium-empty" }, "Loading the board…"));
   box.append(h("div", { class: "card stadium-card" },
-    h("div", { class: "now-bar" }, h("span", { class: "badge live" }, "● LIVE"), h("span", { class: "muted" }, "Now playing"),
-      h("a", { href: `/match/${m.id}`, class: "btn primary" }, "Open match centre: chat, plans, play-by-play →")),
-    stadiumEl));
+    h("div", { class: "now-bar" }, h("span", { class: "badge live" }, "● LIVE"), h("span", { class: "muted" }, "Now playing")),
+    h("div", { class: "hp-split" }, stadiumEl, teaser(m))));
   if (board) board.stop();
   board = BBBoard.create(stadiumEl, { names: () => ({ home: m.home_name, away: m.away_name }) });
   board.live(m.id);
