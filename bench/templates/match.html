@@ -5,7 +5,7 @@
   <div id="crumb" class="secondary"></div>
   <div id="links" class="match-links"></div>
 </div>
-<div class="live-layout">
+<div class="live-layout mc-layout" id="layout">
   <div class="card stadium-card" id="stadium-card">
     <div id="stadium"><div class="stadium-empty">Loading…</div></div>
     <div class="player" id="player" hidden>
@@ -29,17 +29,24 @@
       <div class="muted player-final" id="p-final"></div>
     </div>
   </div>
-  <div class="card feed" id="feed-card">
-    <div class="feed-tabs" role="tablist">
-      <button data-tab="log" class="active">Game log</button>
-      <button data-tab="chat">Chat</button>
-      <button data-tab="plans">Plans</button>
-      <button data-tab="all">Model reasoning</button>
-      <button data-tab="home">Home only</button>
-      <button data-tab="away">Away only</button>
-      <label class="player-opt" id="sync-wrap" hidden title="Only show what had happened at this point of the replay"><input type="checkbox" id="p-sync" checked> Sync with replay</label>
+  <div class="card feed mc-feed" id="feed-card">
+    <div class="mc-toolbar" id="toolbar" role="group" aria-label="What the feed shows">
+      <span class="mc-toolbar-label">Show</span>
+      <div class="seg" id="f-side" role="group" aria-label="Which coach">
+        <button type="button" data-v="both" class="on">Both coaches</button>
+        <button type="button" data-v="away" class="side-a" id="f-away">Away</button>
+        <button type="button" data-v="home" class="side-h" id="f-home">Home</button>
+      </div>
+      <label class="chip"><input type="checkbox" id="f-think" checked> Reasoning</label>
+      <label class="chip"><input type="checkbox" id="f-dice" checked> Dice rolls</label>
+      <label class="chip"><input type="checkbox" id="f-look"> Look-ups</label>
+      <label class="chip" id="sync-wrap" hidden title="Only show what had happened at this point of the replay"><input type="checkbox" id="p-sync" checked> Sync with replay</label>
     </div>
-    <div class="feed-body" id="feed" aria-live="polite"></div>
+    <div class="mc-plans" id="plans">
+      <div class="mc-plan away" id="plan-away"></div>
+      <div class="mc-plan home" id="plan-home"></div>
+    </div>
+    <div class="feed-body mc-stream" id="feed" aria-live="polite"></div>
   </div>
 </div>
 <div class="muted" id="board-note" style="font-size:.8rem;margin-top:6px"></div>
@@ -54,7 +61,7 @@
 <script>
 const { h, api, fmt } = BB;
 const MATCH_ID = {{ match_id|tojson }};
-let match = null, events = [], lastId = 0, tab = "log", boardMode = null;
+let match = null, events = [], lastId = 0, boardMode = null;
 const FRAME_SPEED_DEFAULT = 2;
 
 const names = () => ({ home: match ? match.home_name : "Home", away: match ? match.away_name : "Away" });
@@ -65,9 +72,10 @@ const stadium = BBBoard.create(document.getElementById("stadium"), {
     home: h("a", { href: `/models/${match.home_model}` }, match.home_name),
     away: h("a", { href: `/models/${match.away_model}` }, match.away_name),
   }),
+  onLog: () => toLatest(),
   badge: () => boardMode === "live" ? h("span", { class: "badge live" }, "● LIVE")
     : boardMode === "replay" ? h("span", { class: "badge" }, "REPLAY") : null,
-  onLog: () => showTab("log"),
+  
 });
 
 function setBoard(mode) {
@@ -127,7 +135,7 @@ function initReplay() {
     document.getElementById("p-hide").checked = R.hide;
     const m = /f=(\d+)/.exec(location.hash);
     seek(m ? Math.min(last, parseInt(m[1])) : 0, true);
-    renderFeed(true);   // log lines rendered before the timeline loaded become clickable
+    renderFeed(true);   // apply the replay cut-off to what was built before the timeline loaded
   });
 }
 
@@ -154,7 +162,6 @@ function seek(i, quiet) {
   const shown = postFrame();
   renderReplayState();
   renderFeed(false);
-  markCurrent();
   if (!quiet && !R.playing) history.replaceState(null, "", `#f=${R.idx}`);
   return shown;
 }
@@ -227,7 +234,7 @@ document.addEventListener("keyup", (e) => {
 for (const type of ["click", "change"]) {
   document.addEventListener(type, (e) => {
     const el = e.target;
-    if (el.closest && el.closest("#player, .feed-tabs") && (el.tagName === "BUTTON" || el.type === "checkbox" ||
+    if (el.closest && el.closest("#player, .mc-toolbar") && (el.tagName === "BUTTON" || el.type === "checkbox" ||
         (type === "change" && el.tagName === "SELECT"))) el.blur();
   });
 }
@@ -299,98 +306,168 @@ function logText(t) {
   return parts.map((x, i) => (i % 2 ? h("span", { class: `pid ${x[0] === "H" ? "home" : "away"}` }, x) : x));
 }
 
-// the game log is a list of turn groups (header + lines), so each sticky header stays within its turn
-let logGroup = null;
-function playNodes(e) {
-  const p = e.payload || {};
-  const turn = e.side === "home" ? p.ht : p.at, side = e.side && turn ? e.side : null;   // turn 0: pre-game / kick-off
-  const key = side ? `${p.half}-${side}-${turn}` : `${p.half}-kickoff`;
-  let fresh = null;
-  if (!logGroup || logGroup.dataset.turn !== key || logGroup !== document.getElementById("feed").lastElementChild) {
-    fresh = logGroup = h("div", { class: "log-group", "data-turn": key },
-      h("div", { class: `log-turn ${side || ""}` }, turnLabel({ side, half: p.half || 1, ht: p.ht, at: p.at })));
-  }
-  const seekable = R.active && p.frame != null;
-  (p.lines || []).forEach((l) => logGroup.append(h("div", {
-    class: `log-line ${l.k ? "k-" + l.k : ""} ${seekable ? "seek" : ""}`, "data-frame": p.frame, "data-turn": key,
-    title: seekable ? "Show this moment on the board" : null,
-    onclick: seekable ? () => { play(false); seek(p.frame); } : null,
-  }, ...logText(l.t))));
-  return fresh;
-}
-
-function evNode(e) {
-  const p = e.payload || {}, who = e.side ? names()[e.side] : "";
-  const head = (kind) => h("div", {}, h("span", { class: "who" }, who), h("span", { class: "kind" }, kind));
-  switch (e.kind) {
-    case "play": return playNodes(e);
-    case "message": return h("div", { class: `bubble ${e.side}` }, h("span", { class: "who" }, who), p.text);
-    case "thought": return h("div", { class: `ev thought ${e.side}` }, head("thinking"), h("div", { class: "body" }, p.text));
-    case "tool": return h("div", { class: `ev tool ${e.side} ${p.ok ? "" : "bad"} ${INFO_TOOLS.has(p.name) ? "info" : ""}` },
-        head(p.ok ? (INFO_TOOLS.has(p.name) ? "look" : "action") : "invalid"),
-        h("div", { class: "call" }, toolText(p.name, p.args)),
-        h("details", {}, h("summary", {}, "details"), h("pre", {}, `${p.name}(${argStr(p.args)})` + (p.result ? "\n\n" + p.result : ""))));
-    case "episode": return h("div", { class: `ev episode ${e.side}` }, `${who} · ${p.our_turn ? "turn " + p.key.split("-").slice(1).join("-") : p.proc}`);
-    case "reflection": return h("div", { class: `ev reflection ${e.side}` }, head(`plan · turn ${p.turn}${p.trigger === "reflect" ? " (after turnover)" : ""}`),
-        h("div", {}, h("b", {}, "Plan: "), p.plan), h("div", { class: "secondary" }, h("b", {}, "Expects: "), p.prediction));
-    case "illegal": return null;
-    default: return h("div", { class: `ev ${e.kind} ${e.side || ""}` }, e.side ? head(e.kind) : null, p.text || JSON.stringify(p));
-  }
-}
+// ---- match feed ------------------------------------------------------------------------------------
+// One chronological stream instead of tabs. Per turn, each "beat" is the model's reasoning, the action it
+// took (in words) and what the dice did; plans, chat and harness notes sit inline. Filters are classes on
+// the layout, so toggling one never rebuilds the stream. Replays hide what hadn't happened yet.
 const INFO_TOOLS = new Set(["get_state", "get_legal_actions", "get_player"]);
+const SILENT_TOOLS = new Set(["end_turn", "reflect", "send_message"]);   // shown as the log line, plan or bubble
+const feed = document.getElementById("feed");
+const F = { built: 0, beat: {}, header: null, nodes: [], shown: 0, plans: { home: [], away: [] }, now: null };
 
-// replay: highlight what just happened, i.e. the lines of the latest turn up to the frame on the board
-// (sync off: also bring them into view)
-function markCurrent() {
-  if (!R.active || tab !== "log") return;
-  const box = document.getElementById("feed"), nodes = [...box.querySelectorAll(".log-line[data-frame]")];
-  const past = nodes.filter((n) => +n.dataset.frame <= R.idx), turn = past.length ? past[past.length - 1].dataset.turn : null;
-  let first = null;
-  nodes.forEach((n) => {
-    const on = turn !== null && n.dataset.turn === turn && +n.dataset.frame <= R.idx;
-    n.classList.toggle("now", on);
-    if (on && !first) first = n;
+function track(node, ts) { node.dataset.ts = ts; F.nodes.push(node); return node; }
+function put(node, ts) { feed.append(track(node, ts)); return node; }
+
+// decision episodes mark the turns ("turn-1-5", "turn-2-0b" for a kick-off blitz) and the kick-off procedures
+const PROC_LABEL = { Setup: "Setup", PlaceBall: "Kick-off", Touchback: "Kick-off", HighKick: "Kick-off",
+  CoinTossFlip: "Coin toss", CoinTossKickReceive: "Coin toss" };
+function addHeader(e) {
+  const [prefix, half, turn] = ((e.payload || {}).key || "").split("-");
+  let key, side = null, text;
+  if (prefix === "turn") {
+    key = `${half}-${e.side}-${turn}`; side = e.side;
+    text = `Half ${half} · ${names()[e.side]} · ${/b$/i.test(turn) ? "kick-off blitz" : "turn " + turn}`;
+  } else if (PROC_LABEL[prefix]) {
+    key = `${half}-${PROC_LABEL[prefix]}`; text = `Half ${half} · ${PROC_LABEL[prefix]}`;
+  } else return;
+  if (F.header === key) return;
+  F.header = key; F.beat = {};
+  put(h("div", { class: `log-turn mc-turn ${side || ""}` }, text), e.ts);
+}
+
+function newBeat(side, ts) {
+  const b = { el: h("div", { class: `beat ${side}` }), side, closed: false, frame: null };
+  b.el.onclick = (ev) => {
+    if (ev.target.closest("details, .thought")) return;
+    if (R.active && b.frame != null) { play(false); seek(b.frame); }
+  };
+  put(b.el, ts);
+  return (F.beat[side] = b);
+}
+// a thought opens a new beat once the current one has acted; anything after an action starts a new beat
+function beatFor(side, ts, opening) {
+  const b = F.beat[side];
+  return !b || b.closed || (opening && b.acted) ? newBeat(side, ts) : b;
+}
+function row(b, node, ts) { b.el.append(track(node, ts)); return node; }
+
+// "H3 starts a block action." repeats the action line; the dice roll gets its own muted span
+const ROUTINE = /starts an? .* action\.$/;
+function outcomeLines(lines) {
+  return (lines || []).filter((l) => !ROUTINE.test(l.t)).map((l) => {
+    const m = /^(.*?)\s*(\[roll [^\]]*\])\s*$/.exec(l.t);
+    return h("div", { class: `log-line out ${l.k ? "k-" + l.k : ""} ${m && !l.k ? "dice" : ""}` },
+      ...logText(m ? m[1] : l.t), m ? h("span", { class: "roll" }, " " + m[2]) : null);
   });
-  if (first && !R.sync) {
-    const b = box.getBoundingClientRect(), r = first.getBoundingClientRect();
-    if (r.top < b.top + 30 || r.bottom > b.bottom) box.scrollTop += r.top - b.top - 40;
+}
+
+function addEvent(e) {
+  const p = e.payload || {}, side = e.side, ts = e.ts;
+  switch (e.kind) {
+    case "episode": addHeader(e); return;
+    case "thought": {
+      const t = row(beatFor(side, ts, true), h("div", { class: "thought", title: "Click to expand" }, p.text), ts);
+      t.onclick = () => t.classList.toggle("open");
+      return;
+    }
+    case "play": {
+      const lines = outcomeLines(p.lines);
+      if (!lines.length) return;
+      if (!side) { put(h("div", { class: "neutral" }, ...lines), ts); return; }
+      const b = beatFor(side, ts, false);
+      if (b.frame == null && p.frame != null) { b.frame = p.frame; b.el.classList.add("seek"); }
+      lines.forEach((l) => { l.classList.add("pending"); row(b, l, ts); });
+      return;
+    }
+    case "tool": {
+      if (SILENT_TOOLS.has(p.name) || !side) return;
+      const b = beatFor(side, ts, false);
+      const raw = h("details", { class: "raw" }, h("summary", {}, "call"),
+        h("pre", {}, `${p.name}(${argStr(p.args)})` + (p.result ? "\n\n" + p.result : "")));
+      if (INFO_TOOLS.has(p.name)) { row(b, h("div", { class: "look" }, "↳ ", toolText(p.name, p.args), raw), ts); return; }
+      // the log lines land just before the tool result, so the action goes above its own outcome
+      const act = track(h("div", { class: `act ${p.ok ? "" : "bad"}` }, p.ok ? "" : "Rejected: ", ...logText(toolText(p.name, p.args)), raw), ts);
+      const first = b.el.querySelector(".out.pending");
+      b.el.insertBefore(act, first);
+      b.el.querySelectorAll(".out.pending").forEach((n) => n.classList.remove("pending"));
+      if (p.ok) b.acted = b.closed = true;
+      return;
+    }
+    case "reflection":
+      F.plans[side].push(e);
+      F.beat[side] = null;
+      put(h("div", { class: `ev reflection ${side}` },
+        h("div", { class: "plan-tag" }, names()[side], h("span", { class: "plan-turn" }, ` plan · turn ${p.turn}${p.trigger === "reflect" ? " (after turnover)" : ""}`)),
+        h("div", {}, p.plan), p.prediction ? h("div", { class: "secondary expects" }, h("b", {}, "Expects: "), p.prediction) : null), ts);
+      return;
+    case "message":
+      put(h("div", { class: `bubble ${side}` }, h("span", { class: "who" }, names()[side]), p.text), ts);
+      return;
+    case "illegal": return;
+    default:
+      put(h("div", { class: `note ${e.kind} ${side || ""}` }, side ? h("b", {}, names()[side] + ": ") : null, p.text || JSON.stringify(p)), ts);
   }
 }
 
-function visible(e) {
-  if (tab === "log") return e.kind === "play" || e.kind === "error" || (e.kind === "system" && !e.side);
-  if (e.kind === "play") return false;
-  if (tab === "chat") return e.kind === "message" || (e.kind === "system" && !e.side);
-  if (tab === "plans") return e.kind === "reflection";
-  if (tab === "home" || tab === "away") return e.side === tab;
-  return true;
+// each side's latest plan stays pinned above the stream
+function renderPlans(cut) {
+  for (const side of ["away", "home"]) {
+    const box = document.getElementById(`plan-${side}`);
+    const list = F.plans[side].filter((r) => r.ts <= cut), r = list[list.length - 1];
+    const key = String(r ? r.id : "none");
+    if (box.dataset.key === key) continue;
+    box.dataset.key = key; box.innerHTML = "";
+    box.append(h("div", { class: "plan-tag" }, names()[side], h("span", { class: "plan-turn" }, r ? ` plan · turn ${r.payload.turn}` : " plan")),
+      h("div", { class: "plan-text" }, r ? r.payload.plan : "No plan written yet."),
+      r && r.payload.prediction ? h("div", { class: "plan-exp secondary" }, h("b", {}, "Expects: "), r.payload.prediction) : null);
+  }
+}
+for (const side of ["away", "home"]) {
+  const box = document.getElementById(`plan-${side}`);
+  box.onclick = () => box.classList.toggle("open");
 }
 
-let shown = 0;   // events[0:shown] are rendered (filtered by tab)
-
-function feedLimit() {
-  if (!(R.active && R.sync)) return events.length;
-  const cut = cutoffTs();
-  let lo = 0, hi = events.length;   // events are in id (= time) order: binary search the cutoff
-  while (lo < hi) { const mid = (lo + hi) >> 1; if (events[mid].ts <= cut) lo = mid + 1; else hi = mid; }
-  return lo;
+// replay sync: nodes are in time order, so only the ones between the old and new cut-off change
+function applyCutoff() {
+  const cut = R.active && R.sync ? cutoffTs() : Infinity;
+  let lo = 0, hi = F.nodes.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (+F.nodes[mid].dataset.ts <= cut) lo = mid + 1; else hi = mid; }
+  for (let i = Math.min(lo, F.shown); i < Math.max(lo, F.shown); i++) F.nodes[i].hidden = i >= lo;
+  F.shown = lo;
+  renderPlans(cut);
+  // in a replay the latest beat shown is the moment on the board
+  if (F.now) F.now.classList.remove("now");
+  F.now = null;
+  if (R.active) for (let i = lo - 1; i >= 0; i--) { const n = F.nodes[i].closest(".beat"); if (n) { (F.now = n).classList.add("now"); break; } }
 }
 
+const nearBottom = () => feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
 function renderFeed(reset) {
-  const box = document.getElementById("feed");
-  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
-  const lim = feedLimit();
-  if (reset || lim < shown) { box.innerHTML = ""; shown = 0; reset = true; logGroup = null; }
-  const empty = box.querySelector(".empty");
-  if (empty && lim > shown) empty.remove();
-  events.slice(shown, lim).filter(visible).forEach((e) => { const n = evNode(e); if (n) box.append(n); });
-  shown = lim;
-  if (!box.children.length) box.append(h("div", { class: "empty" }, R.active && R.sync && lim < events.length ? "Nothing yet at this point of the replay." : tab === "chat" ? "No messages yet. Models can trash-talk with the send_message tool."
-    : tab === "log" && match && match.status !== "running" && match.status !== "queued" && !events.some((e) => e.kind === "play")
-      ? "No game log was recorded for this match (it was played before the log existed). Model reasoning has the moves."
-    : "Nothing here yet."));
-  if (atBottom || reset || R.playing) box.scrollTop = box.scrollHeight;
-  if (reset) markCurrent();
+  const atBottom = nearBottom(), before = F.nodes.length;
+  for (; F.built < events.length; F.built++) addEvent(events[F.built]);
+  for (let i = before; i < F.nodes.length; i++) F.nodes[i].hidden = true;
+  applyCutoff();
+  const any = F.shown > 0;
+  feed.querySelectorAll(":scope > .empty").forEach((n) => any && n.remove());
+  if (!any && !feed.querySelector(":scope > .empty")) feed.append(h("div", { class: "empty" },
+    R.active && R.sync && events.length ? "Nothing yet at this point of the replay." : "Nothing here yet."));
+  if (reset || atBottom || (R.active && R.sync)) feed.scrollTop = feed.scrollHeight;
+}
+function toLatest() { feed.scrollTop = feed.scrollHeight; }
+
+const layoutEl = document.getElementById("layout");
+const setFlag = (cls, on) => { layoutEl.classList.toggle(cls, on); toLatest(); };
+document.getElementById("f-think").onchange = (e) => setFlag("no-think", !e.target.checked);
+document.getElementById("f-dice").onchange = (e) => setFlag("no-dice", !e.target.checked);
+document.getElementById("f-look").onchange = (e) => setFlag("show-look", e.target.checked);
+document.querySelectorAll("#f-side button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll("#f-side button").forEach((x) => x.classList.toggle("on", x === b));
+  layoutEl.classList.remove("only-home", "only-away");
+  if (b.dataset.v !== "both") layoutEl.classList.add("only-" + b.dataset.v);
+  toLatest();
+});
+function setNames() {
+  for (const s of ["home", "away"]) document.getElementById("f-" + s).textContent = match[s + "_name"];
 }
 
 function renderStats() {
@@ -458,22 +535,17 @@ function poll() {
     return true;
   });
 }
-function showTab(name) {
-  document.querySelectorAll(".feed-tabs button").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
-  if (tab !== name) { tab = name; renderFeed(true); }
-  else { const box = document.getElementById("feed"); box.scrollTop = box.scrollHeight; markCurrent(); }
-}
-document.querySelectorAll(".feed-tabs button").forEach((b) => b.onclick = () => showTab(b.dataset.tab));
 const wide = window.matchMedia("(min-width: 1001px)");
 const fitFeed = () => {
-  const card = document.getElementById("stadium-card"), feed = document.getElementById("feed-card");
-  feed.style.height = wide.matches ? card.offsetHeight + "px" : "";
+  const card = document.getElementById("stadium-card"), feedCard = document.getElementById("feed-card");
+  feedCard.style.height = wide.matches ? card.offsetHeight + "px" : "";
 };
 new ResizeObserver(fitFeed).observe(document.getElementById("stadium-card"));
 wide.addEventListener("change", fitFeed);
 
 let timer = null;
 poll().then((more) => {
+  setNames();
   renderFeed(true);
   if (more) timer = setInterval(() => poll().then((go) => { if (!go) clearInterval(timer); }), 1500);
 });
