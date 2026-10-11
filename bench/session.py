@@ -23,7 +23,7 @@ from botbowl.core.game import Game
 from botbowl.core.load import load_config, load_rule_set, load_team_by_filename
 from botbowl.core.model import Action, Agent
 from botbowl.core.procedure import Setup
-from botbowl.core.table import ActionType
+from botbowl.core.table import ActionType, OutcomeType
 
 
 @dataclass
@@ -78,6 +78,19 @@ def timeline_point(data: dict, ts: Optional[float]) -> dict:
     return {"ts": round(ts, 3) if ts else None, "half": st.get("half"), "ht": home["state"]["turn"],
             "at": away["state"]["turn"], "hs": home["state"]["score"], "as": away["state"]["score"], "side": side,
             "over": bool(st.get("game_over"))}
+
+
+class BenchGame(Game):
+    """botbowl's Game, plus a spectator frame at the moment of a touchdown.
+
+    Frames are otherwise taken only when a seat has a decision to make, and the next decision after a
+    touchdown is the kick-off setup, by which time the board has been cleared: the scoring move would
+    never be seen. Defined at module level so checkpoints still pickle."""
+
+    def report(self, outcome) -> None:
+        super().report(outcome)
+        if outcome.outcome_type == OutcomeType.TOUCHDOWN and isinstance(self.home_agent, Seat):
+            self.home_agent.session.on_touchdown(outcome.team)
 
 
 class Seat(Agent):
@@ -223,7 +236,7 @@ class GameSession:
         away_team.bench_side = "away"
         self.home = Seat(self, "home", home_name)
         self.away = Seat(self, "away", away_name)
-        self.game = Game(match_id, home_team, away_team, self.home, self.away, config, record=False)
+        self.game = BenchGame(match_id, home_team, away_team, self.home, self.away, config, record=False)
         if seed is not None:
             self.game.set_seed(seed)
         self.thread: Optional[threading.Thread] = None
@@ -331,9 +344,16 @@ class GameSession:
     def on_decision(self, seat: Seat):
         self._snapshot()
 
-    def _snapshot(self):
+    def on_touchdown(self, team):
+        # botbowl reports the touchdown just before adding it to the score
+        self._snapshot(scorer=team)
+
+    def _snapshot(self, scorer=None):
         try:
             data = self.game.to_json()
+            if scorer is not None:
+                key = "home_team" if scorer == self.game.state.home_team else "away_team"
+                data["state"][key]["state"]["score"] += 1
             reports = data["state"]["reports"]
             if len(reports) > 60:
                 data["state"]["reports"] = reports[-60:]
