@@ -153,16 +153,17 @@ function cutoffTs() {
 }
 
 function postFrame() {
-  stadium.frame(MATCH_ID, R.idx, R.points.length);
+  return stadium.frame(MATCH_ID, R.idx, R.points.length, R.speed);
 }
 
 function seek(i, quiet) {
   R.idx = Math.max(0, Math.min(R.points.length - 1, i));
   document.getElementById("p-range").value = R.idx;
-  postFrame();
+  const shown = postFrame();
   renderReplayState();
   renderFeed(false);
   if (!quiet && !R.playing) history.replaceState(null, "", `#f=${R.idx}`);
+  return shown;
 }
 
 function renderReplayState() {
@@ -190,8 +191,10 @@ function play(on) {
   const tick = () => {
     if (!R.playing) return;
     if (R.idx >= R.points.length - 1) { play(false); history.replaceState(null, "", `#f=${R.idx}`); return; }
-    seek(R.idx + 1, true);
-    R.timer = setTimeout(tick, FRAME_MS / R.speed);
+    // wait for the board to finish animating the move before stepping on
+    seek(R.idx + 1, true).catch(() => 0).then((animMs) => {
+      if (R.playing) R.timer = setTimeout(tick, Math.max(FRAME_MS / R.speed, (animMs || 0) + 200 / R.speed));
+    });
   };
   if (on) R.timer = setTimeout(tick, FRAME_MS / R.speed);
   else history.replaceState(null, "", `#f=${R.idx}`);

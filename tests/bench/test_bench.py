@@ -1319,3 +1319,21 @@ def test_hurried_call_uses_the_lowest_effort_openrouter_lists(monkeypatch):
     assert anyio.run(go, "maker/mandatory", True) == {"effort": "minimal"}
     assert anyio.run(go, "maker/budget-only", True) == {"max_tokens": 1024}
     assert len(gets) == 3   # one lookup per model
+
+
+def test_touchdown_frame_recorded(tmp_path, monkeypatch):
+    """Each touchdown gets its own frame: the scorer still on the pitch with the ball, and the new score."""
+    import zlib
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    runner = MatchRunner("t-td", SCRIPTED, RANDOM, {})
+    result = runner.run()
+    assert result["error"] is None
+    frames = [json.loads(zlib.decompress(f)) for f in runner.session.frames]
+    scores = [(f["state"]["home_team"]["state"]["score"], f["state"]["away_team"]["state"]["score"]) for f in frames]
+    goals = [i for i in range(1, len(frames)) if scores[i] != scores[i - 1]]
+    assert len(goals) == result["home_score"] + result["away_score"] > 0
+    for i in goals:
+        f = frames[i]
+        assert any("scored a Touchdown" in t for t in f["bench"]["log"])
+        ball = f["state"]["pitch"]["balls"][0]
+        assert ball["is_carried"] and ball["position"]   # the board still shows the scorer, not the next kick-off

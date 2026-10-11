@@ -22,6 +22,7 @@
   --good: #15803d;
   --warning: #ca8a04;
   --critical: #dc2626;
+  --ball: #f5b700;            /* ball halo and flight on the pitch (same in both themes: the pitch is always green) */
   --bar: #111111;
   --grid: #efedeb;
   --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
@@ -309,12 +310,49 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
              text-shadow: 0 0 3px #000; pointer-events: none; }
 .st-ball { width: 38%; height: 30%; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #c8864a, #6b3a14);
            border: 1px solid #2b1606; box-shadow: 0 1px 2px rgba(0,0,0,.6); display: block; }
-.st-ball.carried { position: absolute; right: 2%; bottom: 4%; width: 34%; height: 26%; }
+.st-ballsq { pointer-events: none; z-index: 3; }
+.st-ballsq.carried { place-items: end end; }
+.st-ballsq.carried .st-ball { width: 40%; height: 31%; margin: 0 2% 4% 0; }
+.st-ball { outline: 2px solid var(--ball); outline-offset: 0; }
 .st-ball.air { box-shadow: 0 6px 6px rgba(0,0,0,.35); transform: translateY(-20%); }
-.st-step { pointer-events: none; }
-.st-step::after { content: ""; width: 22%; height: 22%; border-radius: 50%; opacity: .85; }
-.st-step.home::after { background: var(--home); }
-.st-step.away::after { background: var(--away); }
+/* overlays drawn in square units: routes, pushes, blocks, the ball's flight */
+.st-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.st-svg.over { z-index: 4; }
+.st-halo { fill: var(--ball); fill-opacity: .22; stroke: var(--ball); stroke-width: .09; }
+.st-loose { fill: none; stroke: var(--ball); stroke-width: .08; stroke-dasharray: .18 .12; animation: st-spin 6s linear infinite; transform-box: fill-box; transform-origin: center; }
+.st-loose-tx { font: 700 .3px var(--mono); fill: var(--ball); stroke: #111; stroke-width: .06; paint-order: stroke; text-anchor: middle; }
+.st-route, .st-route-shadow { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.st-route { stroke-width: .11; }
+.st-route-shadow { stroke: rgba(0,0,0,.45); stroke-width: .2; }
+.st-route-start { fill: none; stroke-width: .06; stroke-dasharray: .1 .08; }
+.st-push { fill: none; stroke: #fff; stroke-width: .08; stroke-dasharray: .12 .09; }
+.st-ballpath { fill: none; stroke: var(--ball); stroke-width: .08; stroke-dasharray: .15 .1; }
+.st-block { stroke-width: .16; }
+.st-block-shadow { stroke: #111; stroke-width: .26; stroke-linecap: round; }
+.st-hit { fill: none; stroke-width: .07; }
+.st-chip-bg { fill: #111; }
+.st-chip-tx { font: 600 .27px var(--mono); fill: #fff; text-anchor: middle; dominant-baseline: middle; }
+@keyframes st-spin { to { transform: rotate(360deg); } }
+.st-banner { position: absolute; left: 50%; top: 50%; z-index: 6; pointer-events: none; text-align: center; padding: 10px 22px;
+             background: var(--ink); color: var(--ink-text); opacity: 0; transform: translate(-50%, -50%) scale(.9); transition: opacity .25s, transform .25s; }
+.st-banner.on { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.st-banner b { display: block; font-family: var(--mono); font-size: clamp(1rem, 4cqw, 2rem); letter-spacing: .12em; color: var(--ball); }
+.st-banner span { font-size: .82rem; }
+/* who has the ball, and how far from scoring */
+.st-possess { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; padding: 0 16px 8px; font-size: .82rem; }
+.st-pos-lbl { font-weight: 600; white-space: nowrap; }
+.st-pos-lbl.home { color: var(--home); } .st-pos-lbl.away { color: var(--away); }
+.st-pos-sub { color: var(--text-muted); font-family: var(--mono); font-size: .74rem; min-width: 0; }
+.st-pos-meter { flex: 1 1 80px; height: 5px; background: var(--surface-2); position: relative; min-width: 60px; }
+.st-pos-meter i { position: absolute; top: 0; bottom: 0; }
+.st-pos-meter.home i { background: var(--home); } .st-pos-meter.away i { background: var(--away); }
+/* what just happened, in plain English */
+.st-caption { display: flex; gap: 10px; align-items: flex-start; margin: 8px 16px 0; padding: 6px 10px; background: var(--surface-2); border-left: 4px solid var(--text-muted); min-height: 2.6em; }
+.st-caption.home { border-left-color: var(--home); } .st-caption.away { border-left-color: var(--away); }
+.st-cap-who { font-family: var(--mono); font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); padding-top: 3px; white-space: nowrap; }
+.st-cap-what { font-weight: 600; min-width: 0; font-size: .9rem; }
+.st-cap-what small { display: block; font-weight: 400; color: var(--text-secondary); font-size: .78rem; }
+.st-dice { font-family: var(--mono); font-size: .7rem; font-weight: 500; background: var(--bg); border: 1px solid var(--border); padding: 0 5px; margin-left: 4px; white-space: nowrap; }
 
 .st-player, .st-dg img { cursor: pointer; }
 .st-player:hover img { transform: scale(1.12); }
@@ -372,11 +410,14 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
   .st-dg img { width: 16px; height: 16px; }
   .st-ticker { padding: 6px 8px 10px; }
   .st-now { margin: 6px 8px 0; }
+  .st-caption { margin: 6px 8px 0; }
+  .st-possess { padding: 0 8px 6px; }
 }
 .match-bar { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; justify-content: space-between; margin-bottom: 12px; font-size: .9rem; }
 .match-links { display: flex; gap: 14px; font-size: .85rem; }
 .now-bar { display: flex; align-items: center; gap: 10px; padding: 12px 16px 0; }
 .now-bar .btn { margin-left: auto; text-decoration: none; }
+@media (prefers-reduced-motion: reduce) { .st-loose { animation: none; } .st-banner { transition: none; } }
 
 /* match feed: one stream of reasoning, actions and dice, grouped by turn */
 .mc-layout { grid-template-columns: minmax(0, 1fr) 440px; }
