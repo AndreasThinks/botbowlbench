@@ -152,3 +152,31 @@ const BB = (() => {
   return { api, h, fmt, matchRow, statusPill, cellbar, lineChart, setModelOrder, modelColor };
 })();
 document.addEventListener("DOMContentLoaded", BB.statusPill);
+
+// Light/dark toggle. No stored choice = follow the system; a click stores the opposite of what's showing.
+(() => {
+  const root = document.documentElement;
+  const sysDark = window.matchMedia ? matchMedia("(prefers-color-scheme: dark)") : null;
+  const isDark = () => root.dataset.theme ? root.dataset.theme === "dark" : !!(sysDark && sysDark.matches);
+  function label(btn) {
+    const next = isDark() ? "light" : "dark";
+    btn.setAttribute("aria-label", "Switch to " + next + " mode");
+    btn.title = "Switch to " + next + " mode";
+  }
+  document.addEventListener("DOMContentLoaded", () => {
+    const btn = document.getElementById("theme-toggle");
+    if (!btn) return;
+    label(btn);
+    btn.addEventListener("click", () => {
+      const next = isDark() ? "light" : "dark";
+      root.dataset.theme = next;
+      try {
+        // Matching the system again clears the override, so later system changes are followed.
+        if (sysDark && (next === "dark") === sysDark.matches) { localStorage.removeItem("bb-theme"); delete root.dataset.theme; }
+        else localStorage.setItem("bb-theme", next);
+      } catch (e) {}
+      label(btn);
+    });
+    if (sysDark && sysDark.addEventListener) sysDark.addEventListener("change", () => label(btn));
+  });
+})();
