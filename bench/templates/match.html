@@ -525,11 +525,14 @@ function poll() {
   const before = events.length;
   return Promise.all([api(`/api/matches/${MATCH_ID}`), fetchEvents()]).then(([m]) => {
     const wasRunning = match && match.status === "running";
+    const justEnded = wasRunning && (m.status === "completed" || m.status === "error");
+    // the replay opens parked on the final whistle, not rewound to the kick-off
+    if (justEnded) history.replaceState(null, "", `#f=${Math.max(0, (m.frames || 1) - 1)}`);
     match = m; renderHeader();
     if (events.length > before) renderFeed(false);
     if (m.status === "completed" || m.status === "error") {
       renderStats();
-      if (wasRunning) setTimeout(() => location.reload(), 1500);
+      if (justEnded) setTimeout(() => location.reload(), 1500);
       return false;
     }
     return true;
