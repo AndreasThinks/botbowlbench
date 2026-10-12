@@ -554,9 +554,9 @@ const BBBoard = (() => {
       const zside = run && A && A.after ? (runSide === "H" ? "A" : "H") : def;
       shownZside = zside && f.cur ? zside : null;
       if (!zside || !f.cur) return;
-      // after a move, show the zones as they stood when the run started, so the dodges line up with them
-      const zf = run && run.steps.length && A ? hist[Math.max(0, A.s - 1)] : f;
-      const z = zones(zf, zside, W, H);
+      // zones as they stand now: a player knocked down, sent off or scored on during this activation loses theirs
+      // (each dodge badge was already worked out from the zones at the moment of that step)
+      const z = zones(f, zside, W, H);
       const col = zside === "H" ? "var(--home)" : "var(--away)";
       const g = svg("g", { class: "tz" }, under);
       for (const [k, e] of z) {
