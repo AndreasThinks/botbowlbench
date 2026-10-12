@@ -107,11 +107,16 @@ const BBBoard = (() => {
   const dieName = (d) => d.replace(/_/g, " ").toLowerCase().replace(/^./, (c) => c.toUpperCase());
 
   function slim(game, prev) {
-    const st = game.state, p = {}, ids = {};
+    const st = game.state, p = {}, ids = {}, info = {};
     for (const [s, team] of [["H", st.home_team], ["A", st.away_team]]) {
       for (const pl of Object.values(team.players_by_id)) {
         ids[pl.player_id] = s + pl.nr;
-        if (pl.position) p[s + pl.nr] = [pl.position.x, pl.position.y];
+        if (!pl.position) continue;
+        p[s + pl.nr] = [pl.position.x, pl.position.y];
+        const ps = pl.state || {}, sk = [...(pl.role_skills || []), ...(pl.extra_skills || [])];
+        // botbowl's Player.has_tackle_zone: standing, not distracted, not Titchy
+        info[s + pl.nr] = { ag: pl.ag, ma: pl.ma, mv: ps.moves || 0, sk,
+          tz: !!ps.up && !ps.bone_headed && !ps.hypnotized && !ps.really_stupid && !sk.includes("TITCHY") };
       }
     }
     const balls = (st.pitch && st.pitch.balls) || st.balls || [];
@@ -138,7 +143,7 @@ const BBBoard = (() => {
       act: ids[st.active_player_id] || null, at: st.player_action_type,
       sm: (game.squares_moved || []).map((q) => [q.x, q.y]),
       ball: b0 ? [b0.position.x, b0.position.y, b0.is_carried ? "c" : b0.on_ground ? "g" : "a"] : null,
-      p, log, full, over: !!st.game_over,
+      p, info, log, full, over: !!st.game_over, blizzard: st.weather === "BLIZZARD",
     };
   }
   const turnKey = (f) => `${f.half}-${f.cur}-${f.cur === "H" ? f.turns[0] : f.turns[1]}`;
@@ -227,6 +232,112 @@ const BBBoard = (() => {
     return blk;
   }
 
+  // ---- tackle zones and the rolls a move needed ------------------------------------------------------
+  // A standing player "marks" the 8 squares around them. Leaving a marked square needs a dodge roll; every
+  // marking player around the square being entered makes it harder. Rules as botbowl applies them (BB2016).
+  const sqKey = (q) => `${q[0]},${q[1]}`;
+  function zones(f, side, W, H) {
+    const z = new Map();
+    for (const id in f.p) {
+      if (id[0] !== side || !(f.info[id] && f.info[id].tz)) continue;
+      const [x, y] = f.p[id];
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+        if (!dx && !dy) continue;
+        const q = [x + dx, y + dy];
+        if (q[0] < 1 || q[1] < 1 || q[0] > W || q[1] > H) continue;
+        const k = sqKey(q), e = z.get(k) || { n: 0, by: [] };
+        e.n++; e.by.push(id); z.set(k, e);
+      }
+    }
+    return z;
+  }
+  const clampRoll = (n) => Math.max(2, Math.min(6, n));
+  function dodgeNeed(pi, tzTo) {
+    let mod = 1;
+    const stunty = pi.sk.includes("STUNTY") || pi.sk.includes("TITCHY");
+    if (pi.sk.includes("TITCHY")) mod++;
+    if (pi.sk.includes("TWO_HEADS")) mod++;
+    if (!stunty) mod -= tzTo;
+    return clampRoll(7 - pi.ag - mod);
+  }
+  // the dice in the activation's log lines, grouped into one entry per roll attempt (a failure and its re-roll together)
+  function rollGroups(act, lines) {
+    const out = [];
+    let cur = null, rr = null;
+    for (const t of lines) {
+      if (/uses a team re-roll/.test(t)) { rr = "team re-roll"; if (cur && !cur.done) cur.rr = rr; continue; }
+      const sk = t.match(new RegExp(`^${act} uses the (.+) skill\\.`));
+      if (sk) { rr = `${sk[1]} skill`; if (cur && !cur.done) cur.rr = rr; else { cur = { kind: /sure feet/i.test(sk[1]) ? "gfi" : "dodge", rolls: [{ r: "", ok: false }], rr, done: false, cut: true }; out.push(cur); } continue; }
+      let m = t.match(new RegExp(`^${act} (successfully dodged|failed to dodge)\\. \\[roll (\\d)\\]`)), kind = "dodge";
+      if (!m) { m = t.match(new RegExp(`^${act} GFI (was successful|failed)\\. \\[roll (\\d)\\]`)); kind = "gfi"; }
+      if (m) {
+        const ok = /success/.test(m[1]);
+        if (!cur || cur.done || cur.kind !== kind) { cur = { kind, rolls: [], rr: null, done: false }; out.push(cur); }
+        cur.rolls.push({ r: m[2], ok, rr: cur.rolls.length ? rr : null });
+        cur.done = ok; rr = null;
+        continue;
+      }
+      if (cur && t.startsWith(act) && /goes to the ground|falls|knocked down/.test(t)) { cur.fell = true; cur.done = true; }
+    }
+    return out;
+  }
+  // every square the acting player stepped through this activation, with the dodges and GFIs it took
+  function runSteps(hist, A, W, H) {
+    const act = A.act, opp = act[0] === "H" ? "A" : "H", steps = [];
+    let lines = [];
+    for (let k = A.s; k <= A.e; k++) lines.push(...hist[k].log);
+    const st = lines.reduce((j, t, n) => (t.startsWith(`${act} starts a`) ? n : j), -1);
+    const cut = st < 0;   // the server sends only the last few log lines, so a long run can lose its first rolls
+    lines = cut ? lines : lines.slice(st);
+    let moves = null;
+    for (let k = Math.max(1, A.s); k <= A.e; k++) {
+      const a = hist[k - 1], b = hist[k];
+      if (!a.info[act]) continue;
+      const m = stepMoves(a, b).find((x) => x.id === act && x.kind === "walk");
+      let pts = m ? m.pts : [];
+      // a roll that failed and waits on a re-roll: the path already names the square being tried
+      const p1 = b.p[act], j = b.act === act && p1 ? b.sm.findIndex((q) => sameSq(q, p1)) : -1;
+      const pend = j >= 0 && j < b.sm.length - 1 ? b.sm.slice(j) : [];
+      if (!pts.length && !pend.length) continue;
+      const z = zones(a, opp, W, H), pi = a.info[act];
+      if (moves === null) moves = pi.mv;
+      const add = (from, to, pending) => {
+        const last = steps[steps.length - 1];
+        if (last && last.pending && sameSq(last.from, from) && sameSq(last.to, to)) { last.pending = pending; return; }
+        moves++;
+        const zf = z.get(sqKey(from)), zt = z.get(sqKey(to));
+        const dodge = !!zf;
+        steps.push({ from, to, dodge, pending, gfi: moves > pi.ma, markers: zf ? zf.by : [], tzTo: zt ? zt.n : 0,
+          need: dodge ? dodgeNeed(pi, zt ? zt.n : 0) : null, gfiNeed: b.blizzard ? 3 : 2 });
+      };
+      for (let i = 0; i + 1 < pts.length; i++) add(pts[i], pts[i + 1], false);
+      for (let i = 0; i + 1 < pend.length; i++) add(pend[i], pend[i + 1], true);
+    }
+    // attach the dice: in order when the whole activation is in the log, otherwise from the end
+    const groups = rollGroups(act, lines);
+    for (const kind of ["dodge", "gfi"]) {
+      const gs = groups.filter((g) => g.kind === kind), ss = steps.filter((s) => s[kind]);
+      if (cut) { const off = ss.length - gs.length; gs.forEach((g, i) => { if (ss[off + i]) ss[off + i][kind + "Roll"] = g; }); }
+      else gs.forEach((g, i) => { if (ss[i]) ss[i][kind + "Roll"] = g; });
+    }
+    steps.forEach((s, i) => {
+      for (const kind of ["dodge", "gfi"]) if (s[kind] && !s[kind + "Roll"] && i < steps.length - 1) s[kind + "Roll"] = { rolls: [{ r: "", ok: true }], inferred: true };
+    });
+    return { act, steps };
+  }
+  // the latest activation, kept on screen after a turnover until somebody else is activated
+  function lastActivation(hist) {
+    const A = activation(hist);
+    if (A) return A;
+    let j = hist.length - 1;
+    while (j >= 0 && !hist[j].act) j--;
+    if (j < 0) return null;
+    const act = hist[j].act;
+    let s = j;
+    while (s > 0 && hist[s - 1].act === act) s--;
+    return { act, s, e: hist.length - 1, after: true };
+  }
+
   function create(root, opts = {}) {
     root.classList.add("stadium");
     root.innerHTML = "";
@@ -240,6 +351,10 @@ const BBBoard = (() => {
     pitch.append(layer, banner);
     pitchWrap.append(pitch);
     const caption = h("div", "st-caption");
+    const rolls = h("div", "st-rolls");
+    let dims = null, lastRun = null, shownZside = null;
+    const hz = document.createElementNS(SVGNS, "svg");
+    hz.setAttribute("class", "st-svg hz");
     caption.setAttribute("aria-live", "polite");
     const dugouts = h("div", "st-dugouts");
     const now = h("div", "st-now");
@@ -252,7 +367,7 @@ const BBBoard = (() => {
     }
     const card = h("div", "st-card");
     card.hidden = true;
-    root.append(head, possess, pitchWrap, caption, now, dugouts, ticker, card);
+    root.append(head, possess, pitchWrap, caption, rolls, now, dugouts, ticker, card);
     let lastKey = null;
     let lastGame = null;
     let hist = [];          // recent frames in order, for movement and trails
@@ -352,8 +467,19 @@ const BBBoard = (() => {
         pinnedId === id ? h("div", "st-card-hint", touch ? "Pinned · tap the player again to close" : "Pinned · click again or press Esc to close") : null);
     }
 
+    function drawHoverZone(id) {
+      hz.innerHTML = "";
+      const sid = id && lastGame && hist.length ? (() => { const f = findPlayer(lastGame, id); return f ? (f.side === "home" ? "H" : "A") + f.p.nr : null; })() : null;
+      const f = hist[hist.length - 1];
+      if (!sid || !dims || !f || !f.p[sid] || !(f.info[sid] && f.info[sid].tz)) return;
+      hz.setAttribute("viewBox", `0 0 ${dims.W} ${dims.H}`); hz.setAttribute("preserveAspectRatio", "none");
+      const [x, y] = f.p[sid];
+      svg("rect", { x: x - 2 + 0.06, y: y - 2 + 0.06, width: 2.88, height: 2.88, rx: 0.18, class: "tz-hover", style: `stroke:${teamVar(sid)}` }, hz);
+      svg("text", { x: x - 0.5, y: y + 1.12 > dims.H ? y - 2.2 : y + 1.25, class: "tz-hover-tx" }, hz).textContent = "TACKLE ZONE";
+    }
     function showCard() {
       const id = hoverId || pinnedId;
+      drawHoverZone(id);
       const body = id && lastGame ? cardBody(lastGame, id) : null;
       const anchor = id && root.querySelector(`[data-pid="${CSS.escape(id)}"]:not(.st-now)`);
       if (!body || !anchor) { card.hidden = true; card.innerHTML = ""; return; }
@@ -411,8 +537,73 @@ const BBBoard = (() => {
       svg("text", { x, y: y + 0.01, class: "st-chip-tx" }, parent).textContent = text;
     }
 
-    function drawOverlays(under, over, f, H) {
+    function rollText(g, need) {
+      if (!g) return need ? `${need}+` : "";
+      const rs = g.rolls.map((r, i) => `${i ? "↻ " : ""}${r.r}${r.ok ? "✓" : "✗"}`).join(" ");
+      return need ? `${need}+: ${rs}` : rs;
+    }
+    function badge(parent, x, y, text, cls, step) {
+      const w = 0.155 * [...text].length + 0.26;
+      if (step) parent = svg("g", { class: "tz-b", "data-step": `${sqKey(step.from)}>${sqKey(step.to)}` }, parent);
+      svg("rect", { x: x - w / 2, y: y - 0.2, width: w, height: 0.4, rx: 0.08, class: `tz-badge ${cls}` }, parent);
+      svg("text", { x, y: y + 0.015, class: `tz-badge-tx ${cls}` }, parent).textContent = text;
+    }
+    function drawZones(under, f, W, H, A, run) {
+      const def = f.cur === "H" ? "A" : f.cur === "A" ? "H" : null;
+      const runSide = run && run.act[0];
+      const zside = run && A && A.after ? (runSide === "H" ? "A" : "H") : def;
+      shownZside = zside && f.cur ? zside : null;
+      if (!zside || !f.cur) return;
+      // after a move, show the zones as they stood when the run started, so the dodges line up with them
+      const zf = run && run.steps.length && A ? hist[Math.max(0, A.s - 1)] : f;
+      const z = zones(zf, zside, W, H);
+      const col = zside === "H" ? "var(--home)" : "var(--away)";
+      const g = svg("g", { class: "tz" }, under);
+      for (const [k, e] of z) {
+        const [x, y] = k.split(",").map(Number);
+        svg("rect", { x: x - 1 + 0.04, y: y - 1 + 0.04, width: 0.92, height: 0.92, class: `tz-sq n${Math.min(e.n, 3)}`, style: `fill:${col};stroke:${col}` }, g);
+        if (e.n > 1) svg("text", { x: x - 0.9, y: y - 0.08, class: "tz-n" }, g).textContent = `×${e.n}`;
+      }
+    }
+    function drawRun(under, over, f, H, A, run) {
+      if (!run || !run.steps.length) return;
+      const colA = teamVar(run.act);
+      const own = A && !A.after ? routes(hist, A.s, A.e)[run.act] : null;
+      if (!own) {   // the board drops trails on a touchdown or turnover; keep this move's route up
+        const pts = [run.steps[0].from, ...run.steps.map((s) => s.to)];
+        svg("path", { d: pathD(pts), class: "st-route-shadow" }, under);
+        svg("path", { d: pathD(pts), class: "st-route", style: `stroke:${colA}` }, under);
+      }
+      for (const s of run.steps) {
+        if (s.dodge) {
+          // the dodge step: a bright dashed jump out of the zone
+          const seg = { x1: cx(s.from[0]), y1: cy(s.from[1]), x2: cx(s.to[0]), y2: cy(s.to[1]) };
+          svg("line", { ...seg, class: "tz-jump" }, under);
+        }
+      }
+      for (const s of run.steps) {
+        const ok = (g) => !g || g.rolls[g.rolls.length - 1].ok;
+        const lift = s.to[1] <= 1 ? 0.78 : -0.72;
+        if (s.dodge) {
+          const g = s.dodgeRoll;
+          badge(over, cx(s.to[0]), cy(s.to[1]) + lift, rollText(g, s.need) + (g && !ok(g) && s.pending && !g.fell ? " ↻?" : ""), g ? (ok(g) ? "ok" : "bad") : "", s);
+          if (s.pending) svg("rect", { x: s.to[0] - 1 + 0.06, y: s.to[1] - 1 + 0.06, width: 0.88, height: 0.88, rx: 0.1, class: "tz-try" }, under);
+        } else if (s.gfi) {
+          const g = s.gfiRoll;
+          badge(over, cx(s.to[0]), cy(s.to[1]) + lift, `GFI ${rollText(g, s.gfiNeed)}`, `gfi ${g ? (ok(g) ? "ok" : "bad") : ""}`, s);
+        }
+        if ((s.dodgeRoll && s.dodgeRoll.fell) || (s.gfiRoll && s.gfiRoll.fell)) {
+          const x = cx(s.to[0]), y = cy(s.to[1]);
+          svg("path", { "data-step": `${sqKey(s.from)}>${sqKey(s.to)}`, d: `M${x - 0.32} ${y - 0.32}L${x + 0.32} ${y + 0.32}M${x + 0.32} ${y - 0.32}L${x - 0.32} ${y + 0.32}`, class: "tz-fell" }, over);
+        }
+      }
+    }
+
+    function drawOverlays(under, over, f, H, W) {
       const carrier = carrierOf(f);
+      const RA = lastActivation(hist);
+      const run = lastRun = RA ? runSteps(hist, RA, W, H) : null;
+      drawZones(under, f, W, H, RA, run);
       if (f.ball) {
         const [bx, by] = f.ball;
         if (carrier) {
@@ -429,6 +620,7 @@ const BBBoard = (() => {
       if (sb && sb.kind !== "carried" && !(A && A.e === n && n >= Math.max(1, A.s))) {
         svg("path", { d: arcD(sb.from, sb.to, sb.kind === "flight" ? 1.2 : 0.4), class: "st-ballpath", "marker-end": marker("over", "ball") }, over);
       }
+      drawRun(under, over, f, H, RA, run);
       if (!A) return;
       const rs = routes(hist, A.s, A.e);
       for (const id in rs) for (const m of rs[id]) {
@@ -483,8 +675,12 @@ const BBBoard = (() => {
       let main = null, sub = [];
       const run = n > 0 ? stepMoves(hist[n - 1], f).find((m) => m.kind === "walk" && m.pts.length > 2) : null;
       if (run) {
-        const sq = run.pts.length - 1, dodges = f.log.filter((t) => /dodge/.test(t)).length;
-        main = { text: `${longName(run.id)} runs ${sq} squares${dodges ? `, dodging ${dodges === 1 ? "once" : dodges + " times"}` : ""}`, roll: "" };
+        const sq = run.pts.length - 1;
+        let dodges = f.log.filter((t) => /dodge/.test(t)).length, gfis = 0;
+        if (lastRun && lastRun.act === run.id) { dodges = lastRun.steps.filter((s) => s.dodge).length; gfis = lastRun.steps.filter((s) => s.gfi).length; }
+        const times = (n) => (n === 1 ? "once" : n === 2 ? "twice" : `${n} times`);
+        const bits = [dodges ? `dodging ${times(dodges)}` : null, gfis ? `going for it ${times(gfis)}` : null].filter(Boolean);
+        main = { text: `${longName(run.id)} runs ${sq} squares${bits.length ? ", " + bits.join(" and ") : ""}`, roll: "" };
         sub = lines.slice(-2);
       } else if (lines.length) {
         let best = lines.length - 1;
@@ -502,6 +698,36 @@ const BBBoard = (() => {
       caption.append(h("span", "st-cap-who", side ? (side === "H" ? "Home" : "Away") : "Game"),
         h("span", "st-cap-what", ...piece(main),
           sub.length ? h("small", null, ...sub.flatMap((l, k) => [k ? " · " : null, ...piece(l)])) : null));
+    }
+    function renderRolls() {
+      rolls.innerHTML = "";
+      const run = lastRun;
+      const shown = run ? run.steps.filter((s) => s.dodge || s.gfi) : [];
+      const f = hist[hist.length - 1];
+      const zs = shownZside;
+      rolls.hidden = !shown.length && !zs;
+      if (rolls.hidden) return;
+      rolls.className = "st-rolls";
+      if (zs) {
+        rolls.append(h("span", "st-rolls-key", h("i", `sw ${zs === "H" ? "home" : "away"}`),
+          `Shaded: ${sideName(zs)} tackle zones. Leaving one takes a dodge roll`));
+      }
+      if (!shown.length) {
+        const act = f && f.act, W = dims && dims.W, H = dims && dims.H;
+        const e = act && f.p[act] && zones(f, act[0] === "H" ? "A" : "H", W, H).get(sqKey(f.p[act]));
+        if (e) rolls.append(h("span", "st-roll bad", h("b", null, `${longName(act)} is marked by ${e.n === 1 ? "1 player" : e.n + " players"}`), " · moving away takes a dodge roll"));
+        return;
+      }
+      rolls.append(h("span", "st-rolls-lbl", "Rolls"));
+      for (const [s, kind] of shown.flatMap((s) => [s.dodge ? [s, "dodge"] : null, s.gfi ? [s, "gfi"] : null].filter(Boolean))) {
+        const g = s[kind + "Roll"], need = kind === "dodge" ? s.need : s.gfiNeed;
+        const last = g && g.rolls[g.rolls.length - 1];
+        const what = kind === "dodge" ? `Dodge out of ${s.markers.length === 1 ? "1 tackle zone" : s.markers.length + " tackle zones"}` : "Go for it (extra square)";
+        const into = kind === "dodge" && s.tzTo ? `, into ${s.tzTo} more` : "";
+        const res = !g ? "" : g.rolls.map((r, i) => `${i ? ` → ${g.rr || "re-roll"}: ` : ""}${r.r === "" ? (r.ok ? "passed" : "failed") : r.r + (r.ok ? " ✓" : " ✗")}`).join("");
+        const cls = !g ? "" : last.ok ? "ok" : "bad";
+        rolls.append(h("span", `st-roll ${cls}`, h("b", null, `${need}+`), ` ${what}${into}`, g ? h("span", "st-roll-res", res + (g.fell ? " · falls" : !last.ok && s.pending ? " · re-roll?" : "")) : null));
+      }
     }
     function renderPossess(f, game) {
       possess.innerHTML = "";
@@ -540,9 +766,33 @@ const BBBoard = (() => {
         const el = els[m.id]; if (!el) continue;
         if (m.kind === "place") { anims.push(el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 250 / speed })); continue; }
         const steps = m.pts.length - 1;
-        const d = m.kind === "push" ? 260 / speed : Math.min(steps * per, 1600 / speed);
-        const kf = m.pts.map((q, k) => ({ ...pos(q[0], q[1]), offset: steps ? k / steps : 1 }));
+        let d = m.kind === "push" ? 260 / speed : Math.min(steps * per, 1600 / speed);
+        let kf = m.pts.map((q, k) => ({ ...pos(q[0], q[1]), offset: steps ? k / steps : 1 }));
         const ease = m.kind === "push" ? "cubic-bezier(.2,.9,.3,1.15)" : "linear";
+        if (m.kind === "walk" && lastRun && lastRun.act === m.id) {
+          const rolled = (q0, q1) => lastRun.steps.some((st) => (st.dodge || st.gfi) && sameSq(st.from, q0) && sameSq(st.to, q1));
+          const step = d / Math.max(1, steps), hold = 420 / Math.min(speed, 2.5);
+          const times = [0], marks = [];
+          for (let k = 1; k <= steps; k++) {
+            const t = times[times.length - 1] + step;
+            times.push(t);
+            if (rolled(m.pts[k - 1], m.pts[k])) { marks.push({ k, t }); times.push(t + hold); }
+          }
+          const total = times[times.length - 1] || 1;
+          kf = []; let ti = 0;
+          for (let k = 0; k <= steps; k++) {
+            kf.push({ ...pos(m.pts[k][0], m.pts[k][1]), offset: times[ti] / total }); ti++;
+            const mk = marks.find((x) => x.k === k);
+            if (mk) { kf.push({ ...pos(m.pts[k][0], m.pts[k][1]), offset: times[ti] / total }); ti++; }
+          }
+          d = total;
+          // the roll's badge (and a fall, if any) appears as the runner lands on its square
+          for (const el2 of layer.querySelectorAll(".tz-b, .tz-fell")) {
+            const [f0, t0] = el2.dataset.step.split(">");
+            const mk = marks.find((x) => sqKey(m.pts[x.k - 1]) === f0 && sqKey(m.pts[x.k]) === t0);
+            if (mk) anims.push(el2.animate([{ opacity: 0, transform: "translateY(.15px)" }, { opacity: 1, transform: "none" }], { duration: 160, delay: mk.t, fill: "backwards" }));
+          }
+        }
         anims.push(el.animate(kf, { duration: d, easing: ease }));
         if (sb && sb.kind === "carried" && sb.by === m.id && ballEl) anims.push(ballEl.animate(kf, { duration: d, easing: ease }));
         dur = Math.max(dur, d);
@@ -605,7 +855,8 @@ const BBBoard = (() => {
       const at = (x, y) => ({ left: `${((x - 1) / W) * 100}%`, top: `${((y - 1) / H) * 100}%`, width: `${100 / W}%`, height: `${100 / H}%` });
       const place = (el, x, y) => { Object.assign(el.style, at(x, y)); return el; };
       const under = svgLayer(W, H, "under"), over = svgLayer(W, H, "over");
-      drawOverlays(under, over, f, H);
+      dims = { W, H };
+      drawOverlays(under, over, f, H, W);
       layer.append(under);
       const activeId = st.active_player_id;
       const balls = (st.pitch && st.pitch.balls) || st.balls || [];
@@ -633,6 +884,7 @@ const BBBoard = (() => {
         layer.append(ballEl);
       });
       layer.append(over);
+      pitch.append(hz);
 
       // dugouts
       dugouts.innerHTML = "";
@@ -655,6 +907,7 @@ const BBBoard = (() => {
 
       // what just happened, in plain English
       renderCaption();
+      renderRolls();
 
       // who is acting right now, always visible (no hover needed)
       now.innerHTML = "";
