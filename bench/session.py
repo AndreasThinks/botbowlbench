@@ -388,7 +388,9 @@ class GameSession:
             now = time.time()
             from bench.render import events_since, log_lines
             reports = self.game.state.reports
-            log = events_since(self.game, max(0, len(reports) - 40), limit=1000)[-6:]
+            # every line since the previous frame (so a long run keeps all its dice), and at least the last 6
+            new = len(events_since(self.game, self.log_cursor, limit=1000))
+            log = events_since(self.game, max(0, min(self.log_cursor, len(reports) - 40)), limit=1000)[-min(60, max(6, new)):]
             data["bench"] = {"match_id": self.match_id, "finished": self.finished, "ts": round(now, 3), "log": log}
             js = json.dumps(data)
             point = timeline_point(data, now)

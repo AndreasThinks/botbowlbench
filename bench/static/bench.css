@@ -528,3 +528,30 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 .hp-cta { margin-top: auto; text-align: center; padding: 10px; font-size: .9rem; flex: none; text-decoration: none; }
 .hp-cta:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .hp-cap { font-size: .76rem; text-align: center; flex: none; }
+
+/* tackle zones: the side not on the move marks the squares around its standing players */
+.st-svg.hz { z-index: 5; }
+.tz-sq { stroke-width: .035; stroke-opacity: .85; }
+.tz-sq.n1 { fill-opacity: .3; } .tz-sq.n2 { fill-opacity: .46; } .tz-sq.n3 { fill-opacity: .6; }
+.tz-n { font: 700 .24px var(--mono); fill: #fff; stroke: rgba(0,0,0,.65); stroke-width: .05; paint-order: stroke; }
+.tz-jump { stroke: #fff; stroke-width: .07; stroke-dasharray: .1 .07; stroke-linecap: round; }
+.tz-badge { fill: #111; }
+.tz-badge.ok { fill: #166534; } .tz-badge.bad { fill: #b91c1c; }
+.tz-badge.gfi { fill-opacity: .82; }
+.tz-badge-tx { font: 600 .25px var(--mono); fill: #fff; text-anchor: middle; dominant-baseline: middle; }
+.tz-fell { stroke: #fff; stroke-width: .1; stroke-linecap: round; filter: drop-shadow(0 0 .04px #000); }
+.tz-try { fill: rgba(255,255,255,.18); stroke: #fff; stroke-width: .05; stroke-dasharray: .12 .08; }
+.tz-hover { fill: rgba(255,255,255,.12); stroke-width: .06; stroke-dasharray: .16 .1; }
+.tz-hover-tx { font: 700 .22px var(--mono); fill: #fff; stroke: #111; stroke-width: .05; paint-order: stroke; text-anchor: middle; }
+.st-rolls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 4px 16px 0; font-size: .78rem; }
+.st-rolls-key { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: .76rem; margin-right: 8px; flex-basis: 100%; }
+.st-rolls-key .sw { width: 14px; height: 14px; display: inline-block; flex: none; }
+.st-rolls-key .sw.home { background: color-mix(in srgb, var(--home) 45%, transparent); outline: 1px solid var(--home); outline-offset: -1px; }
+.st-rolls-key .sw.away { background: color-mix(in srgb, var(--away) 45%, transparent); outline: 1px solid var(--away); outline-offset: -1px; }
+.st-rolls-lbl { font-family: var(--mono); font-size: .66rem; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin-right: 2px; }
+.st-roll { display: inline-flex; gap: 6px; align-items: baseline; border: 1px solid var(--border); padding: 1px 7px; background: var(--bg); color: var(--text-secondary); }
+.st-roll b { font-family: var(--mono); font-weight: 600; color: var(--text-primary); }
+.st-roll-res { font-family: var(--mono); font-weight: 600; }
+.st-roll.ok .st-roll-res { color: var(--good); } .st-roll.bad .st-roll-res { color: var(--critical); }
+.st-roll.bad { border-color: var(--critical); }
+@media (max-width: 640px) { .st-rolls { margin: 4px 8px 0; } }
