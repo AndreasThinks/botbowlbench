@@ -77,3 +77,12 @@ models:
 
   - name: Claude Haiku 5.5
     model: anthropic/claude-haiku-5.5
+
+  - name: GPT-6.1 Sol 
+    model: openai/gpt-6.1-sol
+
+  - name: Claude Opus 5.5
+    model: anthropic/claude-opus-5.5
+
+  - name: DeepSeek V4.1 Flash
+    model: deepseek/deepseek-v4.1-flash
