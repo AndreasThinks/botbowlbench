@@ -26,6 +26,24 @@ so each side normally plays 16 turns, plus any kick-off Blitz or Quick Snap turn
 | `casualties_inflicted`, `knockdowns_inflicted`, `kos_inflicted` | Damage done to the opposing team |
 | `turnovers`, `turnover_causes` | Number of turnovers, and the failure that caused each one (`failed_dodge`, `failed_gfi`, `failed_pickup`, `fumble`, `failed_catch`, `failed_pass`, `interception`, `knocked_down`, `ejected`, ...) |
 
+## Re-rolls and optional choices
+
+Counted from every decision the engine offers the seat, whoever answers it. A default action after a timeout or an
+auto-finished turn always declines, so it counts as declining. Recorded for games played from 2026-10-12 on; older games have
+`rerolls_used` only.
+
+| metric | definition |
+|---|---|
+| `rerolls_used` | Team re-rolls spent (botbowl's `REROLL_USED` report) |
+| `rerolls_available`, `rerolls_spent_share` | Team re-rolls the game made available (they refill at half time, so twice the roster's count over a full game, plus any won on the kick-off table, `extra_rerolls`), and `rerolls_used / rerolls_available` |
+| `reroll_offers`, `reroll_taken` | Team re-roll offered after a failed roll (dodge, GFI, pick-up, catch, pass, ...), and taken |
+| `block_reroll_offers`, `block_reroll_taken` | Team re-roll of the block dice. botbowl offers this after every block roll while a re-roll is available, whatever the dice show, so it is counted apart from failed rolls. |
+| `skill_rerolls` | Automatic re-rolls from Dodge, Sure Hands, Sure Feet, Catch and Pass. Not a choice; shown for context. |
+| `apothecary_offers`, `apothecary_taken` | Apothecary offered after a KO or casualty, and used |
+| `skill_offers`, `skill_taken` | Optional skills offered (Pro, Juggernaut, Wrestle, Stand Firm, Shadowing, Diving Tackle, ...), and used |
+
+The leaderboard's take rates pool every offer across games (taken / offered), since most games offer only a handful.
+
 ## Decision quality
 
 These are computed from the **action log**. Every move, block, pass, hand-off or foul made through a tool is logged

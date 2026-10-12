@@ -22,7 +22,7 @@ from typing import Callable, List, Optional
 from botbowl.core.game import Game
 from botbowl.core.load import load_config, load_rule_set, load_team_by_filename
 from botbowl.core.model import Action, Agent
-from botbowl.core.procedure import Setup
+from botbowl.core.procedure import Block, Reroll, Setup
 from botbowl.core.table import ActionType, OutcomeType
 
 
@@ -41,6 +41,25 @@ def episode_key(game, team) -> (str, bool):
         tag = "b" if turn.blitz else ("q" if turn.quick_snap else "")
         return f"turn-{game.state.half}-{team.state.turn}{tag}", True
     return f"{type(proc).__name__}-{game.state.half}-{game.state.round}", False
+
+
+# optional yes/no decisions the engine offers mid-play: kind -> the action that takes it. A team re-roll is offered
+# after a failed roll, and also after every block roll (whatever the dice show), so the two are counted apart.
+# "skill" covers optional skills such as Pro, Juggernaut or Stand Firm.
+OPTIONAL_CHOICES = {"reroll": ActionType.USE_REROLL, "block_reroll": ActionType.USE_REROLL,
+                    "apothecary": ActionType.USE_APOTHECARY, "skill": ActionType.USE_SKILL}
+
+
+def optional_choice(game) -> Optional[str]:
+    """The kind of optional decision pending, if any (see OPTIONAL_CHOICES)."""
+    offered = {a.action_type for a in game.state.available_actions}
+    if ActionType.USE_REROLL in offered:
+        proc = game.state.stack.peek()
+        return "block_reroll" if isinstance(proc, Reroll) and isinstance(proc.context, Block) else "reroll"
+    for kind in ("apothecary", "skill"):
+        if OPTIONAL_CHOICES[kind] in offered:
+            return kind
+    return None
 
 
 def fallback_action(game, team) -> Action:
@@ -120,6 +139,15 @@ class Seat(Agent):
             self.cond.notify_all()
 
     def act(self, game):
+        kind = optional_choice(game)
+        action = self._act(game)
+        if kind is not None:   # a forced/default action declines, and counts as declining
+            self.counters["offers:" + kind] += 1
+            if action is not None and action.action_type == OPTIONAL_CHOICES[kind]:
+                self.counters["taken:" + kind] += 1
+        return action
+
+    def _act(self, game):
         key, our_turn = episode_key(game, self.team)
         self.session.on_decision(self)
         if our_turn:

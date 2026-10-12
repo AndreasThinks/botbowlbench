@@ -35,6 +35,20 @@
     <tbody></tbody>
   </table></div>
 </div>
+<div class="card section">
+  <h2>Re-rolls and optional choices</h2>
+  <p class="secondary" style="margin-top:0">
+    <b>Re-rolls / game</b>: team re-rolls spent. <b>Spent</b>: share of the team's re-rolls used (they refill at half time).
+    <b>After a failed roll</b>: how often it spent a team re-roll when offered one after a failed dodge, GFI, pick-up, catch or pass.
+    <b>Block dice</b>: how often it re-rolled block dice when it could (offered after every block, whatever the dice show).
+    <b>Skill re-rolls</b>: free re-rolls from skills such as Dodge and Sure Hands (automatic, not a choice).
+    <b>Apothecary</b> and <b>optional skills</b> (Pro, Juggernaut, Stand Firm...): share taken when offered.
+    A decision the harness made after a timeout counts as declined. Rates pool every offer since tracking began, with the count in brackets.</p>
+  <div class="table-wrap"><table id="choices">
+    <thead><tr><th>Model</th><th class="num">Re-rolls / game</th><th class="num">Spent</th><th class="num">After a failed roll</th><th class="num">Block dice</th><th class="num">Skill re-rolls / game</th><th class="num">Apothecary</th><th class="num">Optional skills</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+</div>
 {% endblock %}
 {% block scripts %}
 <script>
@@ -100,6 +114,21 @@ api("/api/leaderboard").then((lb) => {
       h("td", { class: "num" }, pctOr(st.reflection_coverage)),
       h("td", { class: "num" }, pctOr(st.illegal_rate)),
       h("td", { class: "num" }, m.provider === "openrouter" ? pctOr(st.cache_hit_rate) : "–")));
+  });
+
+  const ch = document.querySelector("#choices tbody");
+  if (!played.length) ch.append(h("tr", {}, h("td", { colspan: 8, class: "empty" }, "No games yet.")));
+  played.forEach((m) => {
+    const st = m.style, su = m.sums, n = Math.max(1, m.played);
+    ch.append(h("tr", {},
+      h("td", {}, h("span", { class: "swatch", style: { background: BB.modelColor(m.id) } }), h("a", { href: `/models/${m.id}` }, m.name)),
+      h("td", { class: "num" }, fmt.num((su.rerolls_used || 0) / n, 1)),
+      h("td", { class: "num" }, pctOr(st.rerolls_spent_share)),
+      h("td", { class: "num" }, BB.takeRate(su.reroll_taken, su.reroll_offers)),
+      h("td", { class: "num" }, BB.takeRate(su.block_reroll_taken, su.block_reroll_offers)),
+      h("td", { class: "num" }, st.skill_rerolls == null ? "–" : fmt.num(st.skill_rerolls, 1)),
+      h("td", { class: "num" }, BB.takeRate(su.apothecary_taken, su.apothecary_offers)),
+      h("td", { class: "num" }, BB.takeRate(su.skill_taken, su.skill_offers))));
   });
 });
 </script>

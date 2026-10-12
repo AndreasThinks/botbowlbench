@@ -477,7 +477,11 @@ function renderStats() {
   const rows = [
     ["Touchdowns", "touchdowns"], ["Blocks", "blocks"], ["Blitzes", "blitzes"], ["Fouls", "fouls"],
     ["Passes", "passes"], ["Hand-offs", "handoffs"], ["Knock-downs inflicted", "knockdowns_inflicted"],
-    ["Casualties inflicted", "casualties_inflicted"], ["Turnovers", "turnovers"], ["Re-rolls used", "rerolls_used"],
+    ["Casualties inflicted", "casualties_inflicted"], ["Turnovers", "turnovers"], ["Team re-rolls used", "rerolls_used"],
+    ["Re-roll taken after a failed roll", (s) => BB.takeRate(s.reroll_taken, s.reroll_offers), String],
+    ["Block dice re-rolled", (s) => BB.takeRate(s.block_reroll_taken, s.block_reroll_offers), String],
+    ["Skill re-rolls (Dodge, Sure Hands...)", "skill_rerolls"],
+    ["Apothecary used", (s) => BB.takeRate(s.apothecary_taken, s.apothecary_offers), String],
     ["Dodges / GFIs", (s) => (s.dodges || 0) + (s.gfis || 0)], ["Messages sent", "messages_sent"],
     ["Tool calls", "tool_calls"], ["Invalid tool calls", "invalid_tool_calls"], ["Auto/forced actions", "forced_actions"],
     ["Tokens", (s) => (s.prompt_tokens || 0) + (s.completion_tokens || 0), fmt.tokens],
@@ -495,7 +499,8 @@ function renderStats() {
   rows.forEach(([label, key, f]) => {
     const get = typeof key === "function" ? key : (s) => (s[key] === null ? null : s[key] || 0);
     const a = get(as), b = get(hs), F = f || ((v) => fmt.num(v));
-    tb.append(h("tr", {}, h("td", { class: a > b ? "lead" : "" }, F(a)), h("td", {}, label), h("td", { class: b > a ? "lead" : "" }, F(b))));
+    const num = typeof a === "number" && typeof b === "number";
+    tb.append(h("tr", {}, h("td", { class: num && a > b ? "lead" : "" }, F(a)), h("td", {}, label), h("td", { class: num && b > a ? "lead" : "" }, F(b))));
   });
   t.append(tb);
   const meta = match.meta || {};

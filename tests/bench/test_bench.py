@@ -31,6 +31,26 @@ def test_random_vs_scripted_match_completes():
         assert sum(st["turnover_causes"].values()) == st.get("turnovers", 0)
         assert st["turnovers_logged"] == st.get("turnovers", 0)   # every turnover attributed to an action
     assert result["meta"]["admissible"] and not result["meta"]["harness_errors"]
+    for st in (hs, as_):   # re-roll and other optional choices are counted for every seat
+        assert st["rerolls_available"] > 0 and st["rerolls_spent_share"] <= 1 and st["rerolls_spent_share"] is not None
+        for kind in ("reroll", "block_reroll", "apothecary", "skill"):
+            assert 0 <= st[f"{kind}_taken"] <= st[f"{kind}_offers"]
+        assert st["reroll_taken"] + st["block_reroll_taken"] == st.get("rerolls_used", 0)
+    assert hs["reroll_offers"] + hs["block_reroll_offers"] + as_["reroll_offers"] + as_["block_reroll_offers"] > 0
+
+
+def test_choice_take_rates_pool_offers_across_games():
+    ms = [{"home_model": "a", "away_model": "b", "winner": "home", "home_score": 1, "away_score": 0,
+           "home_stats": {"reroll_offers": 1, "reroll_taken": 1, "rerolls_spent_share": 0.5, "skill_rerolls": 2},
+           "away_stats": {}},
+          {"home_model": "a", "away_model": "b", "winner": "home", "home_score": 1, "away_score": 0,
+           "home_stats": {"reroll_offers": 3, "reroll_taken": 0, "rerolls_spent_share": 0.0, "skill_rerolls": 0},
+           "away_stats": {}}]
+    a = ratings.aggregate(ms)["a"]
+    assert a["style"]["reroll_take_rate"] == 0.25          # 1 of 4 offers, not the mean of 100% and 0%
+    assert a["style"]["block_reroll_take_rate"] is None     # never offered
+    assert a["style"]["rerolls_spent_share"] == 0.25 and a["style"]["skill_rerolls"] == 1
+    assert ratings.aggregate(ms)["b"]["style"]["reroll_take_rate"] is None   # games from before tracking
 
 
 

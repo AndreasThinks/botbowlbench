@@ -84,6 +84,11 @@ const BB = (() => {
       h("span", { class: "track" }, h("span", { class: "fill", style: { width: w + "%", display: "block" } })));
   }
 
+  // "62% (5 of 8)" for an optional decision taken `taken` times out of `offers`; "–" when never offered
+  function takeRate(taken, offers) {
+    return offers ? `${fmt.pct((taken || 0) / offers)} (${taken || 0} of ${offers})` : "–";
+  }
+
   // Multi-series line chart (Elo over matches) with legend toggles and a crosshair tooltip.
   function lineChart(container, series, opts = {}) {
     container.innerHTML = "";
@@ -149,7 +154,7 @@ const BB = (() => {
     hit.addEventListener("mouseleave", () => { tip.style.display = "none"; cross.setAttribute("visibility", "hidden"); });
   }
 
-  return { api, h, fmt, matchRow, statusPill, cellbar, lineChart, setModelOrder, modelColor };
+  return { api, h, fmt, matchRow, statusPill, cellbar, takeRate, lineChart, setModelOrder, modelColor };
 })();
 document.addEventListener("DOMContentLoaded", BB.statusPill);
 
