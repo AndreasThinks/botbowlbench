@@ -1,5 +1,5 @@
 """Per-side match statistics: what happened on the pitch, how the model played, and what it cost."""
-from botbowl.core.table import OutcomeType
+from botbowl.core.table import OutcomeType, Skill
 
 # outcome -> (stat name, attributed to: "player" team of report.player, "opp" team of report.opp_player, "team")
 _OUTCOME_STATS = {
@@ -25,6 +25,7 @@ _OUTCOME_STATS = {
     OutcomeType.PLAYER_EJECTED: ("ejections", "player"),
     OutcomeType.TURNOVER: ("turnovers", "team"),
     OutcomeType.REROLL_USED: ("rerolls_used", "team"),
+    OutcomeType.EXTRA_REROLL: ("extra_rerolls", "team"),   # Brilliant Coaching / Leader kick-off results
     # damage *suffered* by report.player -> credited to the other side as "inflicted"
     OutcomeType.KNOCKED_DOWN: ("knockdowns_inflicted", "victim"),
     OutcomeType.KNOCKED_OUT: ("kos_inflicted", "victim"),
@@ -38,9 +39,18 @@ def _side_of_team(game, team):
     return "home" if team == game.state.home_team else "away"
 
 
+# skills that re-roll a failed roll on their own (no decision involved)
+_REROLL_SKILLS = {Skill.DODGE, Skill.SURE_HANDS, Skill.SURE_FEET, Skill.CATCH, Skill.PASS}
+
+
 def outcome_counts(game):
     counts = {"home": {}, "away": {}}
     for r in game.state.reports:
+        if r.outcome_type == OutcomeType.SKILL_USED and r.skill in _REROLL_SKILLS and r.player is not None:
+            side = _side_of_team(game, r.player.team)
+            if side is not None:
+                counts[side]["skill_rerolls"] = counts[side].get("skill_rerolls", 0) + 1
+            continue
         spec = _OUTCOME_STATS.get(r.outcome_type)
         if spec is None:
             continue
@@ -133,6 +143,15 @@ def side_stats(session, side: str, driver) -> dict:
     for k in ("messages_sent", "message_chars", "messages_rejected", "illegal_actions", "invalid_tool_calls",
               "forced_actions", "timeouts", "auto_resolved", "budget_exhausted", "actions"):
         s[k] = seat.counters.get(k, 0)
+    # optional decisions (team re-rolls, apothecary, optional skills): how often offered, how often taken
+    for kind in ("reroll", "block_reroll", "apothecary", "skill"):
+        s[f"{kind}_offers"] = seat.counters.get(f"offers:{kind}", 0)
+        s[f"{kind}_taken"] = seat.counters.get(f"taken:{kind}", 0)
+    # team re-rolls refill at half time, so a full game makes the team's re-rolls available twice; kick-off
+    # results (Brilliant Coaching) can add more
+    s["rerolls_available"] = team.state.rerolls_start * max(1, min(2, game.state.half)) + s.get("extra_rerolls", 0)
+    s["rerolls_spent_share"] = round(s.get("rerolls_used", 0) / s["rerolls_available"], 3) \
+        if s["rerolls_available"] else None
     s.update({k: v for k, v in driver.usage.items()})
     s["cost"] = round(s.get("cost", 0.0), 6)
     s["crashed"] = driver.crashed

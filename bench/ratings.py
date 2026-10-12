@@ -8,14 +8,15 @@ START_ELO = 1000.0
 STYLE_KEYS = ["aggression", "risk_taking", "passing_game", "dirty_play", "chattiness", "illegal_rate",
               # decision quality / research metrics (averaged over the games where they are defined)
               "safe_first_rate", "avg_risky_success", "unactivated_at_turnover", "monitoring_rate",
-              "reflection_coverage", "cache_hit_rate"]
+              "reflection_coverage", "cache_hit_rate", "rerolls_spent_share", "skill_rerolls"]
 SUM_KEYS = ["touchdowns", "blocks", "blitzes", "fouls", "passes", "handoffs", "casualties_inflicted",
             "knockdowns_inflicted", "turnovers", "messages_sent", "message_chars", "invalid_tool_calls",
             "tool_calls", "llm_calls", "prompt_tokens", "completion_tokens", "cost", "forced_actions",
             "budget_exhausted", "turns", "latency", "rerolls_used", "dodges", "failed_dodges", "gfis", "failed_gfis",
             "cached_tokens", "reasoning_tokens", "reflections", "risky_actions", "long_shots",
             "no_tool_replies", "output_truncations", "llm_errors", "http_timeouts", "uncertain_spend_calls", "deadline_cutoffs",
-            "last_chance_calls"]
+            "last_chance_calls", "reroll_offers", "reroll_taken", "block_reroll_offers",
+            "block_reroll_taken", "apothecary_offers", "apothecary_taken", "skill_offers", "skill_taken"]
 
 
 def expected(ra: float, rb: float) -> float:
@@ -144,6 +145,10 @@ def aggregate(matches: Iterable[dict]) -> Dict[str, dict]:
         style = {k: round(v / a["style_n"][k], 3) for k, v in a["style"].items()}
         msgs = sums.get("messages_sent", 0)
         style["avg_message_len"] = round(sums.get("message_chars", 0) / msgs, 1) if msgs else 0
+        # take rates pooled over every offer (not averaged per game: most games offer only a handful)
+        for kind in ("reroll", "block_reroll", "apothecary", "skill"):
+            offers = sums.get(f"{kind}_offers", 0)
+            style[f"{kind}_take_rate"] = round(sums.get(f"{kind}_taken", 0) / offers, 3) if offers else None
         out[model] = {
             "played": a["played"], "wins": a["wins"], "draws": a["draws"], "losses": a["losses"],
             "td_for": a["td_for"], "td_against": a["td_against"], "td_diff": a["td_for"] - a["td_against"],
