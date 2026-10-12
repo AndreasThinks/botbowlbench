@@ -1398,3 +1398,51 @@ def test_touchdown_frame_recorded(tmp_path, monkeypatch):
         assert any("scored a Touchdown" in t for t in f["bench"]["log"])
         ball = f["state"]["pitch"]["balls"][0]
         assert ball["is_carried"] and ball["position"]   # the board still shows the scorer, not the next kick-off
+
+
+def test_key_spending_limit_403_is_infra_error():
+    """Hitting our OpenRouter key's spending limit pauses the game (like running out of credits) instead of marking
+    both models unavailable; other 403s, such as moderation, stay model-specific."""
+    import anyio
+    import httpx
+    from bench.llm import LLMError
+    bodies = {
+        "limit": {"error": {"message": "Key limit exceeded (monthly limit).", "code": 403,
+                            "metadata": {"limit_source": "openrouter_key_limit", "scope": "key_limit"}}},
+        "moderation": {"error": {"message": "Input was flagged by moderation", "code": 403,
+                                 "metadata": {"reasons": ["violence"]}}},
+    }
+    for kind, infra in (("limit", True), ("moderation", False)):
+        async def go():
+            llm = _mock_llm(lambda request: httpx.Response(403, json=bodies[kind]))
+            try:
+                await llm.chat([{"role": "system", "content": "x"}], _TOOLS)
+            finally:
+                await llm.aclose()
+
+        with pytest.raises(LLMError) as ei:
+            anyio.run(go)
+        assert ei.value.fatal and ei.value.infra is infra, kind
+
+
+def test_games_played_past_the_key_limit_are_requeued_on_startup(bench_env, monkeypatch):
+    """Games finished on default actions after the key limit was hit go back in the queue as fresh games, once."""
+    import bench.scheduler as sch
+    b = sch.Bench()
+    b.sync_models(force=True)
+    bad, good = db.rows("SELECT * FROM matches WHERE status='queued' ORDER BY seq LIMIT 2")
+    for m in (bad, good):
+        db.execute("UPDATE matches SET status='completed', home_score=1, away_score=0, winner='home', "
+                   "finished_at=1, frames=5, admissible=0 WHERE id=?", (m["id"],))
+        sch.save_frames(m["id"], [b"x"])
+    db.execute("UPDATE tournaments SET status='completed', finished_at=1")
+    db.add_event(bad["id"], "away", "error", {"text": 'OpenRouter HTTP 403: {"error":{"message":"Key limit exceeded"'})
+    db.add_event(good["id"], "away", "error", {"text": "OpenRouter HTTP 403: flagged by moderation"})
+
+    monkeypatch.setattr(sch, "_bench", None)
+    sch.Bench()
+    row = db.row("SELECT * FROM matches WHERE id=?", (bad["id"],))
+    assert row["status"] == "queued" and row["home_score"] is None and row["frames"] == 0
+    assert not db.get_events(bad["id"], limit=10) and not os.path.exists(sch.frames_path(bad["id"]))
+    assert db.row("SELECT status FROM tournaments WHERE id=?", (bad["tournament_id"],))["status"] == "queued"
+    assert db.row("SELECT status FROM matches WHERE id=?", (good["id"],))["status"] == "completed"

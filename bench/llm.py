@@ -46,6 +46,20 @@ class LLMResponse:
     raw_message: Dict[str, Any] = field(default_factory=dict)
 
 
+def is_account_limit(body: str) -> bool:
+    """A 403 from a spending limit on our OpenRouter key ("Key limit exceeded"): our problem, like running out of
+    credits, not the model's. Other 403s (e.g. moderation) stay model-specific."""
+    try:
+        err = json.loads(body).get("error") or {}
+    except (ValueError, AttributeError):
+        err = {}
+    meta = err.get("metadata") if isinstance(err, dict) else None
+    if isinstance(meta, dict) and (meta.get("scope") == "key_limit" or
+                                   str(meta.get("limit_source", "")).startswith("openrouter_")):
+        return True
+    return "key limit exceeded" in body.lower()
+
+
 class LLMError(Exception):
     def __init__(self, msg, fatal=False, infra=False, timeout=False, uncertain_spend=False, deadline=False):
         super().__init__(msg)
@@ -225,7 +239,8 @@ class OpenRouterLLM:
                 elif r.status_code in (400, 401, 402, 403, 404):
                     raise LLMError(f"OpenRouter HTTP {r.status_code}: {r.text[:500]}",
                                    fatal=r.status_code in (401, 402, 403, 404),
-                                   infra=r.status_code in (401, 402))
+                                   infra=r.status_code in (401, 402) or (r.status_code == 403
+                                                                         and is_account_limit(r.text)))
                 else:
                     last_err = f"OpenRouter HTTP {r.status_code}: {r.text[:300]}"
             if attempt < self.max_retries:
