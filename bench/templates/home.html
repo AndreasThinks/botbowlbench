@@ -63,9 +63,37 @@ function drawTeaser() {
     h("div", { class: "muted hp-cap" }, "Full reasoning, game plans, moves and dice for both models, live."));
 }
 
+// When the game on screen finishes, keep its final board up for a while before switching to the next
+// match: the next game kicks off within a second, so switching straight away looks like the game restarted.
+const FULL_TIME_HOLD_MS = 60000;
+let hold = null;   // { id, until, nextBox } while a finished game stays on screen
+
+function showFullTime(done, next) {
+  if (!hold || hold.id !== done.id) {
+    hold = { id: done.id, until: Date.now() + FULL_TIME_HOLD_MS, nextBox: h("span", { class: "now-next" }) };
+    const bar = document.querySelector("#now .now-bar");
+    if (bar) {
+      bar.innerHTML = "";
+      const res = done.winner === "draw" ? "draw" : `${done.winner === "home" ? done.home_name : done.away_name} wins`;
+      bar.append(h("span", { class: "badge" }, "FULL TIME"),
+        h("span", { class: "muted" }, `${done.away_name} ${done.away_score} – ${done.home_score} ${done.home_name} · ${res} · `,
+          h("a", { href: `/match/${done.id}` }, "watch the replay")),
+        hold.nextBox);
+    }
+  }
+  hold.nextBox.innerHTML = "";
+  if (next) hold.nextBox.append(h("button", { type: "button", class: "btn", onclick: () => { hold.until = 0; refresh(); } },
+    `Next: ${next.away_name} vs ${next.home_name} →`));
+}
+
 function renderNow(s) {
   const box = document.getElementById("now");
   const m = s.live[0];
+  if (liveId && (!m || m.id !== liveId)) {
+    const done = s.recent.find((r) => r.id === liveId && r.status === "completed");
+    if (done && !(hold && hold.id === done.id && Date.now() >= hold.until)) { showFullTime(done, m); return; }
+  }
+  hold = null;
   if (!m) {
     if (board) board.stop();
     liveId = null; board = null; T.id = null;
