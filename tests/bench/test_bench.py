@@ -414,6 +414,47 @@ def test_web_endpoints(bench_env):
     assert c.get("/match/nope").status_code == 404
 
 
+def test_model_about(bench_env, monkeypatch):
+    from bench import model_info
+    monkeypatch.setattr(model_info, "_catalog", None)
+    monkeypatch.setattr(model_info, "_fetched_at", 0.0)
+    monkeypatch.setattr(model_info, "_failed_at", 0.0)
+    fetches = []
+
+    def fetch():
+        fetches.append(1)
+        entry = {"name": "OpenAI: GPT-5 Mini", "description": "A compact GPT-5.", "context_length": 400000,
+                 "created": 1, "knowledge_cutoff": "2024-05-31", "prompt_price": "0.00000025",
+                 "completion_price": "0.000002"}
+        return {"openai/gpt-5-mini": entry, "openai/gpt-5-mini-2025-08-07": entry}
+    monkeypatch.setattr(model_info, "_fetch", fetch)
+    a = model_info.about({"provider": "openrouter", "model": "openai/gpt-5-mini"})
+    assert a["description"] == "A compact GPT-5." and a["source"] == "openrouter"
+    assert a["url"] == "https://openrouter.ai/openai/gpt-5-mini" and a["context_length"] == 400000
+    assert model_info.about({"model": "openai/gpt-5-mini-2025-08-07"})["description"] == "A compact GPT-5."
+    # a description in models.yaml wins; unknown models still get their OpenRouter link
+    own = model_info.about({"model": "openai/gpt-5-mini", "description": "Ours."})
+    assert own["description"] == "Ours." and own["source"] == "bench"
+    unknown = model_info.about({"model": "acme/nope"})
+    assert unknown["description"] == "" and unknown["url"] == "https://openrouter.ai/acme/nope"
+    assert len(fetches) == 1  # cached
+    # baselines describe themselves, offline
+    assert "random" in model_info.about({"provider": "random"})["description"]
+    assert model_info.about({"provider": "botbowl", "description": "Bot."})["description"] == "Bot."
+    # the cache survives a restart without a refetch, and a failed refresh keeps serving it
+    monkeypatch.setattr(model_info, "_catalog", None)
+    monkeypatch.setattr(model_info, "_fetched_at", 0.0)
+    assert "openai/gpt-5-mini" in model_info.catalog() and len(fetches) == 1
+
+    def down():
+        fetches.append(1)
+        raise model_info.httpx.ConnectError("down")
+    monkeypatch.setattr(model_info, "_fetch", down)
+    monkeypatch.setattr(model_info, "_fetched_at", 0.0)
+    assert "openai/gpt-5-mini" in model_info.catalog() and len(fetches) == 2
+    assert "openai/gpt-5-mini" in model_info.catalog() and len(fetches) == 2  # no retry storm
+
+
 def test_reasoning_passthrough_and_cache_breakpoints(fake_openrouter):
     cfg = {"name": "Claude-ish", "provider": "openrouter", "model": "anthropic/fake", "max_tool_calls_per_turn": 6}
     MatchRunner("t6", cfg, RANDOM, {"max_game_minutes": 5}, api_key="k").run()

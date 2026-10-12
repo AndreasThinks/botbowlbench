@@ -6,11 +6,12 @@ import gzip
 import hmac
 import json
 import os
+import threading
 
 from flask import (Flask, Response, abort, jsonify, render_template, request, send_file, send_from_directory,
                    stream_with_context)
 
-from bench import db, export, ratings, version
+from bench import db, export, model_info, ratings, version
 from bench.transcript import transcript_path
 from bench.scheduler import delete_checkpoint, frame_json, get_bench, load_frames, load_timeline
 
@@ -25,6 +26,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
     bench.sync_models(force=True)
     if start_scheduler:
         bench.start()
+        threading.Thread(target=model_info.catalog, daemon=True).start()  # warm the OpenRouter descriptions
 
     # ---- helpers -------------------------------------------------------------------------------
     def models_by_id():
@@ -358,7 +360,10 @@ def create_app(start_scheduler: bool = True) -> Flask:
             opp = e["away_model"] if e["side"] == "home" else e["home_model"]
             p = json.loads(e["payload"])
             refl.append({**p, "match_id": e["match_id"], "opponent": names.get(opp, {}).get("name", opp)})
-        return jsonify({"model": info, "elo": elo, "elo_ci": rating_range(fit), "stats": agg,
+        row = db.row("SELECT config FROM models WHERE id=?", (model_id,))
+        cfg = json.loads(row["config"]) if row and row["config"] else dict(info)
+        return jsonify({"model": info, "about": model_info.about(cfg), "elo": elo, "elo_ci": rating_range(fit),
+                        "stats": agg,
                         "reflections": refl, "head_to_head": sorted(h2h.values(), key=lambda r: r["name"]),
                         "recent": recent, "messages": msgs})
 

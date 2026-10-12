@@ -26,7 +26,25 @@ Promise.all([api(`/api/models/${MODEL_ID}`), api("/api/leaderboard")]).then(([d,
   document.getElementById("head").append(h("div", { class: "card" },
     h("h1", {}, h("span", { class: "swatch", style: { background: BB.modelColor(m.id), width: "14px", height: "14px" } }), m.name),
     h("div", { class: "secondary" }, m.provider === "openrouter" ? h("span", { class: "mono" }, m.model) : `${m.provider} baseline (no LLM)`,
-      m.enabled ? "" : " · retired")));
+      m.enabled ? "" : " · retired"),
+    about(d.about || {})));
+  function about(a) {
+    // OpenRouter's list cuts long descriptions with "..."; the full text is on the linked page
+    const text = (a.description || "").replace(/\s*\.{3,}$/, "…");
+    const perM = (p) => (p == null || p === "" ? null : "$" + (Number(p) * 1e6).toFixed(2).replace(/\.00$/, ""));
+    const facts = [
+      a.url ? h("a", { href: a.url, target: "_blank", rel: "noopener" }, "OpenRouter page ↗") : null,
+      a.context_length ? `${fmt.tokens(a.context_length)} context` : null,
+      perM(a.prompt_price) ? `${perM(a.prompt_price)} in / ${perM(a.completion_price)} out per M tokens` : null,
+      a.knowledge_cutoff ? `knowledge to ${a.knowledge_cutoff}` : null,
+    ].filter(Boolean);
+    if (!text && !facts.length) return null;
+    return h("div", { class: "about" },
+      text ? h("p", { style: { margin: "12px 0 6px", maxWidth: "70ch" } }, text) : null,
+      facts.length ? h("div", { class: "muted", style: { fontSize: ".82rem" } },
+        ...facts.flatMap((f, i) => (i ? [" · ", f] : [f])),
+        a.source === "openrouter" ? " · description from OpenRouter" : null) : null);
+  }
   const tile = (label, value) => h("div", { class: "tile" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value));
   document.getElementById("tiles").append(
     tile("Elo", fmt.num(d.elo.elo)), tile("95% range", d.elo_ci ? `${d.elo_ci.lo}–${d.elo_ci.hi}` : "–"), tile("Rank", rank ? `#${rank}` : "–"), tile("Record", `${s.wins}-${s.draws}-${s.losses}`),
