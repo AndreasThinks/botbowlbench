@@ -43,6 +43,30 @@ def create_app(start_scheduler: bool = True) -> Flask:
         m["away_name"] = names.get(m["away_model"], {}).get("name", m["away_model"])
         return m
 
+    def placement_base(t):
+        return json.loads(t["settings"] or "{}").get("placement_base") if t["kind"] == "placement" else None
+
+    def tbc_row(t, names, games):
+        """Stands in for a placement's top-up games, which aren't scheduled until its queued games are done."""
+        return {"tbc": True, "tournament_id": t["id"], "games": games, "home_model": t["focus_model"],
+                "home_name": names.get(t["focus_model"], {}).get("name", t["focus_model"])}
+
+    def upcoming(names, limit=12):
+        """The next queued games in play order, with top-ups marked, plus a row for top-ups not yet scheduled."""
+        out = []
+        for t in db.rows("SELECT * FROM tournaments WHERE status IN ('queued','running') ORDER BY created_at, id"):
+            if len(out) >= limit:
+                break
+            rows = db.rows("SELECT * FROM matches WHERE tournament_id=? AND status='queued' ORDER BY seq",
+                           (t["id"],))
+            base = placement_base(t)
+            for m in rows[:limit - len(out)]:
+                out.append({**match_summary(m, names), "top_up": base is not None and m["seq"] >= base})
+            maybe = bench.possible_top_ups(t)
+            if maybe and (not rows or out[-1]["id"] == rows[-1]["id"]):
+                out.append(tbc_row(t, names, maybe))
+        return out
+
     def completed_matches(where="", args=(), all_protocols=False):
         """Completed games for rankings: current protocol only unless ``all_protocols`` (archives keep the rest)."""
         ms = db.rows(f"SELECT * FROM matches WHERE status='completed' {where} ORDER BY finished_at", args)
@@ -127,9 +151,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
                 m["away_score"] = g.state.away_team.state.score
                 m["half"] = g.state.half
                 m["turn"] = max(g.state.home_team.state.turn, g.state.away_team.state.turn)
-        queued = [match_summary(m, names) for m in db.rows(
-            "SELECT m.* FROM matches m JOIN tournaments t ON t.id=m.tournament_id WHERE m.status='queued' "
-            "ORDER BY t.created_at, t.id, m.seq LIMIT 12")]
+        queued = upcoming(names)
         recent = [match_summary(m, names) for m in db.rows(
             "SELECT * FROM matches WHERE status IN ('completed','error') ORDER BY finished_at DESC LIMIT 12")]
         counts = db.row("SELECT SUM(status='queued') AS queued, SUM(status='completed') AS completed, "
@@ -388,12 +410,15 @@ def create_app(start_scheduler: bool = True) -> Flask:
         if t is None:
             abort(404)
         names = models_by_id()
+        base, maybe = placement_base(t), bench.possible_top_ups(t)
         t["settings"] = json.loads(t["settings"] or "{}")
         table = ratings.standings(completed_matches("AND tournament_id=?", (tid,)))
         for r in table:
             r["name"] = names.get(r["model"], {}).get("name", r["model"])
-        matches = [match_summary(m, names) for m in db.rows(
+        matches = [{**match_summary(m, names), "top_up": base is not None and m["seq"] >= base} for m in db.rows(
             "SELECT * FROM matches WHERE tournament_id=? ORDER BY seq", (tid,))]
+        if maybe:
+            matches.append(tbc_row(t, names, maybe))
         return jsonify({"tournament": t, "standings": table, "matches": matches})
 
     # ---- API: dataset export --------------------------------------------------------------------------

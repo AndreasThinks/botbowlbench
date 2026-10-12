@@ -370,6 +370,7 @@ def test_placement_anchors_and_top_ups(bench_env):
     fixtures = db.rows("SELECT home_model, away_model FROM matches WHERE tournament_id=? ORDER BY seq", (t["id"],))
     opponents = [f["away_model"] for f in fixtures if f["home_model"] == "newcomer"]
     assert opponents == ["m0", "m4", "m7"] and len(fixtures) == 6     # top, middle, bottom; home and away
+    assert b.possible_top_ups(t) == 4     # not scheduled yet: shown as unconfirmed in the upcoming list
 
     def finish_queued():
         for m in db.rows("SELECT id FROM matches WHERE tournament_id=? AND status='queued'", (t["id"],)):
@@ -383,7 +384,9 @@ def test_placement_anchors_and_top_ups(bench_env):
     assert len(top_up) == 2 and {top_up[0]["home_model"], top_up[1]["away_model"]} == {"newcomer"}
     assert top_up[0]["away_model"] not in ("m0", "m4", "m7")
     assert db.row("SELECT status FROM tournaments WHERE id=?", (t["id"],))["status"] != "completed"
+    assert b.possible_top_ups(t) == 2
     assert len(finish_queued()) == 2      # the allowance of 4 extra games is now used up
+    assert b.possible_top_ups(t) == 0
     assert finish_queued() == []
     assert db.row("SELECT status FROM tournaments WHERE id=?", (t["id"],))["status"] == "completed"
     assert db.row("SELECT COUNT(*) n FROM matches WHERE tournament_id=?", (t["id"],))["n"] == 10
