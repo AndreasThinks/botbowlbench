@@ -497,17 +497,21 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 /* homepage: live preview of the coaches' reasoning beside the board */
 .hp-split { display: grid; grid-template-columns: minmax(0, 1fr) 340px; }
 @media (max-width: 1000px) { .hp-split { grid-template-columns: 1fr; } }
-.hp-teaser { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-left: 1px solid var(--border); color: inherit; text-decoration: none; font-size: .86rem; min-width: 0; }
+.hp-teaser { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-left: 1px solid var(--border); font-size: .86rem; min-width: 0; }
+/* beside the board, the board sets the height and the thoughts grow into whatever it leaves free */
+@media (min-width: 1001px) { .hp-teaser { contain: size; overflow: hidden; } }
 @media (max-width: 1000px) { .hp-teaser { border-left: 0; border-top: 1px solid var(--border); } }
-.hp-teaser:hover .hp-cta { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .hp-teaser h2 { margin: 0; }
-.hp-think { border-left: 3px solid var(--border); padding: 4px 0 4px 10px; }
+.hp-think { border-left: 3px solid var(--border); padding: 4px 0 4px 10px; display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; }
 .hp-think.home { border-color: var(--home); } .hp-think.away { border-color: var(--away); }
 .hp-who { font-weight: 700; font-size: .8rem; }
 .hp-think.home .hp-who { color: var(--home); } .hp-think.away .hp-who { color: var(--away); }
-.hp-quote { font-style: italic; color: var(--text-secondary); white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
-.hp-last { font-family: var(--mono); font-size: .76rem; overflow-wrap: anywhere; }
-.hp-plan { font-size: .82rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.hp-quote { font-style: italic; color: var(--text-secondary); white-space: pre-wrap; overflow: hidden; min-height: 3em;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.2em), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 2.2em), transparent); }
+@media (max-width: 1000px) { .hp-quote { max-height: 9em; } }
+.hp-last { font-family: var(--mono); font-size: .76rem; overflow-wrap: anywhere; flex: none; }
+.hp-plan { font-size: .82rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; flex: none; }
 .hp-plan.home b { color: var(--home); } .hp-plan.away b { color: var(--away); }
-.hp-cta { margin-top: auto; text-align: center; padding: 10px; font-size: .9rem; }
-.hp-cap { font-size: .76rem; text-align: center; }
+.hp-cta { margin-top: auto; text-align: center; padding: 10px; font-size: .9rem; flex: none; text-decoration: none; }
+.hp-cta:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.hp-cap { font-size: .76rem; text-align: center; flex: none; }
