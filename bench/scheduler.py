@@ -165,10 +165,32 @@ class Bench:
         """Matches interrupted by a restart/redeploy go back to the front of the queue; :meth:`play` resumes them
         from their last checkpoint (the start of the latest team turn)."""
         db.execute("UPDATE matches SET status='queued' WHERE status='running'")
+        self._replay_key_limit_matches()
         queued = {r["id"] for r in db.rows("SELECT id FROM matches WHERE status='queued'")}
         for name in os.listdir(os.path.dirname(checkpoint_path("x"))):
             if name.split(".")[0] not in queued:
                 delete_checkpoint(name.split(".")[0])
+
+    @staticmethod
+    def _replay_key_limit_matches():
+        """Before a 403 "Key limit exceeded" counted as an infra error, hitting the OpenRouter key's spending limit
+        marked both models unavailable and the game was played out on default actions. Those games say nothing
+        about the models: put them back in the queue as fresh games. A no-op once they have been replayed."""
+        rows = db.rows("SELECT DISTINCT m.id FROM matches m JOIN events e ON e.match_id=m.id "
+                       "WHERE m.status='completed' AND e.kind='error' AND e.payload LIKE '%Key limit exceeded%'")
+        for r in rows:
+            db.execute("DELETE FROM events WHERE match_id=?", (r["id"],))
+            delete_checkpoint(r["id"])
+            for path in (frames_path(r["id"]), timeline_path(r["id"])):
+                if os.path.exists(path):
+                    os.remove(path)
+            db.execute("UPDATE matches SET status='queued', started_at=NULL, finished_at=NULL, error=NULL, seed=NULL, "
+                       "home_score=NULL, away_score=NULL, winner=NULL, home_stats=NULL, away_stats=NULL, "
+                       "duration=NULL, frames=0, meta=NULL, admissible=NULL WHERE id=?", (r["id"],))
+            db.execute("UPDATE tournaments SET status='queued', finished_at=NULL WHERE id=(SELECT tournament_id FROM "
+                       "matches WHERE id=?) AND status='completed'", (r["id"],))
+        if rows:
+            print(f"requeued {len(rows)} games played after the OpenRouter key limit was hit", flush=True)
 
     def start(self):
         self.thread = threading.Thread(target=self._loop, name="scheduler", daemon=True)
