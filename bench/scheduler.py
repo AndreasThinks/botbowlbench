@@ -346,21 +346,28 @@ class Bench:
         return self._create("placement", f"Placement: {name}", fixtures, focus=model_id,
                             extra={"placement_base": len(fixtures)})
 
+    def possible_top_ups(self, t: dict) -> int:
+        """How many top-up games a placement may still add. They aren't scheduled yet: the opponents are picked
+        once its queued games are done, and they are skipped if the newcomer's rating is already settled."""
+        if t["kind"] != "placement" or t["status"] == "completed":
+            return 0
+        settings = t.get("settings")
+        base = (json.loads(settings or "{}") if isinstance(settings, str) else settings or {}).get("placement_base")
+        if base is None or not db.row("SELECT 1 AS ok FROM models WHERE id=? AND enabled=1", (t["focus_model"],)):
+            return 0
+        played = db.row("SELECT COUNT(*) AS n FROM matches WHERE tournament_id=?", (t["id"],))["n"]
+        return max(0, int(self.settings.get("placement_extra_games", 6)) - (played - base))
+
     def _top_up(self, t: dict) -> bool:
         """After a placement's games are done: queue one more pairing (home and away) against the opponent whose
         result is least predictable, while the newcomer's 95% interval is wider than settings.placement_target_range
         and settings.placement_extra_games allows. Returns True if games were added."""
         focus = t["focus_model"]
         enabled = [r["id"] for r in db.rows("SELECT id FROM models WHERE enabled=1")]
-        if focus not in enabled:
-            return False
-        base = json.loads(t.get("settings") or "{}").get("placement_base")
-        played = db.row("SELECT COUNT(*) AS n, MAX(seq) AS last FROM matches WHERE tournament_id=?", (t["id"],))
-        if base is None:
-            return False
-        left = int(self.settings.get("placement_extra_games", 6)) - (played["n"] - base)
+        left = self.possible_top_ups(t)
         if left <= 0:
             return False
+        played = db.row("SELECT MAX(seq) AS last FROM matches WHERE tournament_id=?", (t["id"],))
         rated = self._current_ratings()
         me = rated.get(focus)
         if me is None or me["hi"] - me["lo"] <= float(self.settings.get("placement_target_range", 300)):

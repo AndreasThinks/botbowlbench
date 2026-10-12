@@ -496,11 +496,13 @@ const BBBoard = (() => {
       const side = (act && act[0]) || f.cur;
       caption.className = `st-caption ${side === "H" ? "home" : side === "A" ? "away" : ""}`;
       caption.innerHTML = "";
-      caption.hidden = !main;
-      if (!main) return;
+      // always shown at a fixed height (long lines are clipped, the full text is in the tooltip) so the board
+      // and the replay controls below it don't jump between frames
+      caption.title = main ? [main, ...sub].map((l) => l.text + (l.roll ? ` [${l.roll}]` : "")).join("\n") : "";
+      if (!main) { caption.className = "st-caption"; return; }
       const piece = (l) => [l.text, l.roll ? h("span", "st-dice", l.roll) : null];
       caption.append(h("span", "st-cap-who", side ? (side === "H" ? "Home" : "Away") : "Game"),
-        h("span", "st-cap-what", ...piece(main),
+        h("span", "st-cap-what", h("span", "st-cap-main", ...piece(main)),
           sub.length ? h("small", null, ...sub.flatMap((l, k) => [k ? " · " : null, ...piece(l)])) : null));
     }
     function renderPossess(f, game) {
@@ -522,8 +524,9 @@ const BBBoard = (() => {
           h("span", `st-pos-meter ${sideCls}`, fill));
       } else if (f.ball) {
         possess.append(h("span", "st-pos-lbl", "○ The ball is loose"), h("span", "st-pos-sub", f.ball[2] === "a" ? "in the air" : "nobody has it"));
+      } else {
+        possess.append(h("span", "st-pos-lbl idle", "○ Ball not in play"));
       }
-      possess.hidden = !possess.childNodes.length;
     }
 
     // ---- movement between frames ----
@@ -659,7 +662,10 @@ const BBBoard = (() => {
       // who is acting right now, always visible (no hover needed)
       now.innerHTML = "";
       const act = !st.game_over && activeId && findPlayer(game, activeId);
-      now.hidden = !act;
+      // kept on screen when nobody is acting, so the layout below doesn't move
+      now.className = "st-now idle";
+      delete now.dataset.pid;
+      if (!act) now.append(h("span", "st-now-label", "Now"), h("span", null, st.game_over ? "Full time" : "No player acting"));
       if (act) {
         const img = document.createElement("img");
         img.src = sprite(act.team.race, act.p.role, act.side === "home", false); img.alt = "";
@@ -684,10 +690,22 @@ const BBBoard = (() => {
       [...log].reverse().slice(0, 4).forEach((t, i) => ticker.append(h("li", i ? "" : "latest", named(t))));
 
       showCard();
+      holdHeight();
       const n = hist.length - 1;
       if (n > 0 && !how.same && scored(hist[n - 1], f) && f.log.some((t) => /scored a Touchdown/.test(t))) showBanner(f);
       return how.same ? 0 : animate(els, ballEl, W, H, how.speed || 1);
     }
+
+    // The stadium never shrinks while its width stays the same: whatever still varies (a dugout wrapping onto a
+    // second row, say) only ever pushes the controls below down once, instead of up and down every frame.
+    let heldWidth = 0, held = 0;
+    function holdHeight() {
+      const w = root.clientWidth;
+      if (w !== heldWidth) { heldWidth = w; held = 0; root.style.minHeight = ""; }
+      const ht = root.offsetHeight;
+      if (ht > held) { held = ht; root.style.minHeight = ht + "px"; }
+    }
+    window.addEventListener("resize", () => { if (lastGame) holdHeight(); });
 
     // live mode: poll the match's latest state (the server answers 304 when nothing changed)
     let liveTimer = null;

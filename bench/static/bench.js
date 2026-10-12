@@ -52,7 +52,19 @@ const BB = (() => {
   };
 
   function matchRow(m) {
+    // a placement's top-up games before they are scheduled: who plays, and whether they happen at all, is open
+    if (m.tbc) {
+      const games = m.games === 1 ? "1 more game" : `up to ${m.games} more games`;
+      return h("div", { class: "match-row tbc", title: "Top-up games are only scheduled once the placement games are done" },
+        h("span", { class: "home" }, m.home_name),
+        h("span", { class: "score" }, "vs"),
+        h("span", { class: "away" }, "opponents TBC"),
+        h("span", { class: "badge tbc-badge tag" }, "unconfirmed"),
+        h("span", { class: "tbc-note" }, `Not confirmed yet: ${games} to finish its placement, against opponents picked from its results. ` +
+          "Skipped if its rating has already settled."));
+    }
     let score = "vs", tag = h("span", { class: "badge tag" }, m.status);
+    if (m.status === "queued" && m.top_up) tag = h("span", { class: "badge tag", title: "A placement top-up: opponent picked from the placement results" }, "top-up");
     if (m.status === "completed") { score = `${m.home_score} – ${m.away_score}`; tag = h("span", { class: "muted tag" }, fmt.ago(m.finished_at)); }
     else if (m.status === "running") { score = m.home_score != null ? `${m.home_score} – ${m.away_score}` : "vs"; tag = h("span", { class: "badge live tag" }, "LIVE"); }
     const hw = m.winner === "home", aw = m.winner === "away";
