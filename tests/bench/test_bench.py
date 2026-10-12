@@ -1398,3 +1398,28 @@ def test_touchdown_frame_recorded(tmp_path, monkeypatch):
         assert any("scored a Touchdown" in t for t in f["bench"]["log"])
         ball = f["state"]["pitch"]["balls"][0]
         assert ball["is_carried"] and ball["position"]   # the board still shows the scorer, not the next kick-off
+
+
+def test_key_spending_limit_403_is_infra_error():
+    """Hitting our OpenRouter key's spending limit pauses the game (like running out of credits) instead of marking
+    both models unavailable; other 403s, such as moderation, stay model-specific."""
+    import anyio
+    import httpx
+    from bench.llm import LLMError
+    bodies = {
+        "limit": {"error": {"message": "Key limit exceeded (monthly limit).", "code": 403,
+                            "metadata": {"limit_source": "openrouter_key_limit", "scope": "key_limit"}}},
+        "moderation": {"error": {"message": "Input was flagged by moderation", "code": 403,
+                                 "metadata": {"reasons": ["violence"]}}},
+    }
+    for kind, infra in (("limit", True), ("moderation", False)):
+        async def go():
+            llm = _mock_llm(lambda request: httpx.Response(403, json=bodies[kind]))
+            try:
+                await llm.chat([{"role": "system", "content": "x"}], _TOOLS)
+            finally:
+                await llm.aclose()
+
+        with pytest.raises(LLMError) as ei:
+            anyio.run(go)
+        assert ei.value.fatal and ei.value.infra is infra, kind
