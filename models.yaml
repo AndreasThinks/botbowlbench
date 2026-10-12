@@ -86,3 +86,6 @@ models:
 
   - name: DeepSeek V4.1 Flash
     model: deepseek/deepseek-v4.1-flash
+
+  - name: Muse Wonder
+    model: meta/muse-wonder
