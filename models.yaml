@@ -67,6 +67,9 @@ models:
   - name: Gemini 2.5 Flash Lite
     model: google/gemini-2.5-flash-lite
 
+  - name: Gemini 4 Argon
+    model: google/gemini-4-argon
+
   - name: DeepSeek V3.2
     model: deepseek/deepseek-v3.2
 
