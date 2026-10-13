@@ -13,7 +13,7 @@
 #   bot, module  (botbowl only) a bot id from botbowl's registry, and the module to import so it registers
 #   enabled    false = keep history but stop scheduling games
 #   description  shown on the model's page. Optional: LLMs use OpenRouter's description, baselines a built-in one
-#   temperature, max_tokens, reasoning_max_tokens, tool_choice, budget_usd_per_game, max_tool_calls_per_turn,
+#   temperature, max_tokens, reasoning_max_tokens, reasoning_enabled, tool_choice, budget_usd_per_game, max_tool_calls_per_turn,
 #              turn_time_limit, last_chance_seconds (optional; override the settings below)
 #   prompt_cache  true/false: add cache breakpoints (default: on for anthropic/* models; others cache automatically)
 #   extra      dict merged into the OpenRouter request body, e.g. {reasoning: {effort: low}}
@@ -25,7 +25,8 @@ settings:
   max_tool_calls_per_turn: 40
   turn_time_limit: 300          # seconds per team turn, a hard deadline: a reply still running is cancelled
   max_output_tokens: 16384      # same max_tokens ceiling for every model; a model's own max_tokens (or null) overrides
-  reasoning_max_tokens: 12000   # same thinking budget for every model; a model's own value, null or extra.reasoning overrides
+  reasoning_max_tokens: null    # no shared thinking budget: each model thinks at its own default effort...
+  reasoning_enabled: true       # ...with thinking switched on where it is optional. A per-model budget or extra.reasoning overrides
   tool_choice: required         # replies must be tool calls (falls back to auto where a provider rejects it)
   last_chance_seconds: 45       # held back per turn: a reply still running then is cancelled for one short "act now" call
   provider_sort: throughput     # every model goes to its fastest OpenRouter host (null = OpenRouter's default routing)

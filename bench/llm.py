@@ -123,7 +123,8 @@ class OpenRouterLLM:
     def __init__(self, model: str, api_key: str, temperature: Optional[float] = None,
                  max_tokens: Optional[int] = None, extra: Optional[dict] = None, timeout: float = 180.0,
                  max_retries: int = 4, prompt_cache: Optional[bool] = None,
-                 reasoning_max_tokens: Optional[int] = None, tool_choice: str = "auto",
+                 reasoning_max_tokens: Optional[int] = None, reasoning_enabled: bool = False,
+                 tool_choice: str = "auto",
                  hurry_max_tokens: int = 2048, provider_prefs: Optional[dict] = None,
                  session_id: Optional[str] = None):
         self.model = model
@@ -146,6 +147,9 @@ class OpenRouterLLM:
         if reasoning_max_tokens is not None and max_tokens is not None:
             reasoning_max_tokens = min(reasoning_max_tokens, max_tokens * 3 // 4)
         self.reasoning_max_tokens = None if "reasoning" in self.extra else reasoning_max_tokens
+        # Without a budget, reasoning.enabled asks for thinking at the model's own default effort (Opus 5.5: high,
+        # Haiku 5.5: medium...) and switches it on for hybrid models where it is optional (DeepSeek V3.2, Gemini).
+        self.reasoning_enabled = reasoning_enabled and "reasoning" not in self.extra
         # "required" makes every reply a tool call. Some providers reject it; the first such rejection drops this
         # client back to "auto" for the rest of the game. Anthropic can't think while a tool call is forced, and
         # through OpenRouter that doesn't fail: thinking is silently dropped. So Claude models always use "auto".
@@ -192,6 +196,8 @@ class OpenRouterLLM:
             body["max_tokens"] = self.max_tokens
         if self.reasoning_max_tokens is not None:
             body["reasoning"] = {"max_tokens": self.reasoning_max_tokens}
+        elif self.reasoning_enabled:
+            body["reasoning"] = {"enabled": True}
         if self.temperature is not None:
             body["temperature"] = self.temperature
         if self.provider_prefs:

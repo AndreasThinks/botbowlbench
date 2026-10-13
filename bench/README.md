@@ -160,7 +160,7 @@ their frames on first view.
   never does.
 * **Turn time limit:** `turn_time_limit` is a hard deadline. The last `last_chance_seconds` (45) are held back: a
   reply still running when they start is cancelled and the model gets one short call ("Time is almost up… reply now
-  with a tool call") with `last_chance_max_tokens` (2048) and a 1024-token thinking budget, and keeps those short
+  with a tool call") with `last_chance_max_tokens` (2048) and a 1024-token thinking budget (or the lowest effort the model lists), and keeps those short
   settings for the rest of the turn. A reply still running at the deadline itself is cancelled and the turn
   auto-finishes, exactly like the between-calls time check. Cut-offs are logged as time-limit events, not errors,
   counted in `deadline_cutoffs` (and `last_chance_calls`, `uncertain_spend_calls`), and never count towards marking
@@ -171,10 +171,13 @@ their frames on first view.
 * **Tool calls are required:** requests send `tool_choice: required` (setting `tool_choice`), so a reply must be a
   tool call rather than prose. If a provider rejects it (for example Anthropic with extended thinking), the request is
   re-sent with `auto` and that model stays on `auto` for the rest of the game.
-* **Thinking budget:** every model gets `reasoning: {max_tokens: reasoning_max_tokens}` (12000; OpenRouter maps it to
-  an effort level for effort-only models, and kept below `max_tokens`), so a reasoning model is told to stop thinking
-  and answer rather than being cut off. A model's own `extra.reasoning`, or `reasoning_max_tokens: null`, overrides it.
-  On hybrid models where thinking is optional, sending a budget switches thinking on.
+* **Thinking (`PROTOCOL_VERSION` 1.5):** every model is sent `reasoning: {enabled: true}` (setting
+  `reasoning_enabled`), so it thinks at its own default effort as listed by OpenRouter (Opus 5.5 high, GPT-6 Luna
+  medium...), and models where thinking is optional (DeepSeek V3.2, Gemini 2.5 Flash Lite, Haiku 5.5) have it
+  switched on. Protocol 1.2-1.4 sent a shared 12k `reasoning.max_tokens` instead; effort-only models had that mapped to
+  an effort level below their default. A shared budget is still available as `reasoning_max_tokens`, a model's own
+  `extra.reasoning` overrides both, and `reasoning_enabled: false` sends nothing. Runaway thinking is bounded by the
+  output ceiling and the turn clock below, and counts against the model.
 * **Output length:** every model gets the same default ceiling, `max_output_tokens` (16384), sent as `max_tokens`. It
   is far above the old 2048 cap that starved reasoning models, and exists to turn runaway or looping generations into
   classified `output_truncations` instead of turns lost to the clock. A per-model `max_tokens` overrides it, and

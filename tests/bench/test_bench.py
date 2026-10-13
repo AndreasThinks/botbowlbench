@@ -1005,7 +1005,7 @@ def test_settings_output_ceiling_applies_unless_the_model_sets_its_own(fake_open
                              {"budget_usd_per_game": 10, "max_output_tokens": 16384}, api_key="k").run()
         assert fake_openrouter.bodies
         assert all(b.get("max_tokens") == want for b in fake_openrouter.bodies), name
-        assert result["meta"]["harness"]["protocol_version"] == PROTOCOL_VERSION == "1.4"
+        assert result["meta"]["harness"]["protocol_version"] == PROTOCOL_VERSION == "1.5"
 
 
 def test_default_settings_carry_the_output_ceiling():
@@ -1204,16 +1204,17 @@ def test_leaderboard_and_placement_use_current_protocol_only(bench_env):
 
 # ---- making models act within the turn: thinking budget, required tool calls, last-chance call -----------------
 
-_PROD_LIKE = {"budget_usd_per_game": 10, "max_output_tokens": 16384, "reasoning_max_tokens": 12000,
-              "tool_choice": "required", "last_chance_max_tokens": 2048}
+_PROD_LIKE = {"budget_usd_per_game": 10, "max_output_tokens": 16384, "reasoning_max_tokens": None,
+              "reasoning_enabled": True, "tool_choice": "required", "last_chance_max_tokens": 2048}
 
 
 def test_thinking_budget_and_required_tool_choice_reach_the_payload(fake_openrouter):
     base = {"provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 4}
-    cases = (("Default", {}, {"max_tokens": 12000}),
-             ("No budget", {"reasoning_max_tokens": None}, None),
+    cases = (("Default", {}, {"enabled": True}),   # each model's own default effort
+             ("Thinking off", {"reasoning_enabled": False}, None),
              ("Own reasoning", {"extra": {"reasoning": {"effort": "low"}}}, {"effort": "low"}),
-             ("Small cap", {"max_tokens": 4000}, {"max_tokens": 3000}))   # stays below max_tokens
+             ("Budget", {"reasoning_max_tokens": 12000}, {"max_tokens": 12000}),
+             ("Small cap", {"reasoning_max_tokens": 12000, "max_tokens": 4000}, {"max_tokens": 3000}))   # below max_tokens
     for name, extra, want in cases:
         fake_openrouter.bodies = []
         MatchRunner(f"t-reason-{name}", {"name": name, **base, **extra}, RANDOM, _PROD_LIKE, api_key="k").run()
@@ -1514,8 +1515,8 @@ def test_hurried_call_uses_the_lowest_effort_openrouter_lists(monkeypatch):
         return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
                                          "usage": {}})
 
-    async def go(model, hurry):
-        llm = bench.llm.OpenRouterLLM(model, "k", max_tokens=16384, reasoning_max_tokens=12000)
+    async def go(model, hurry, **kw):
+        llm = bench.llm.OpenRouterLLM(model, "k", max_tokens=16384, **(kw or {"reasoning_max_tokens": 12000}))
         llm.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         try:
             await llm.chat([{"role": "system", "content": "x"}], _TOOLS, hurry=hurry)
@@ -1528,6 +1529,10 @@ def test_hurried_call_uses_the_lowest_effort_openrouter_lists(monkeypatch):
     assert anyio.run(go, "maker/mandatory", True) == {"effort": "minimal"}
     assert anyio.run(go, "maker/budget-only", True) == {"max_tokens": 1024}
     assert len(gets) == 3   # one lookup per model
+    # at the model's default effort, a hurried call still gets the small budget (or lowest effort)
+    assert anyio.run(lambda: go("maker/budget-only", False, reasoning_enabled=True)) == {"enabled": True}
+    assert anyio.run(lambda: go("maker/budget-only", True, reasoning_enabled=True)) == {"max_tokens": 1024}
+    assert anyio.run(lambda: go("maker/mandatory", True, reasoning_enabled=True)) == {"effort": "minimal"}
 
 
 def test_touchdown_frame_recorded(tmp_path, monkeypatch):

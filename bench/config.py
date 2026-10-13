@@ -13,7 +13,8 @@ DEFAULT_SETTINGS = {
     "max_illegal_streak": 3,
     "max_truncation_streak": 3,
     "max_output_tokens": 16384,       # default max_tokens per reply for every model; per-model max_tokens overrides
-    "reasoning_max_tokens": 12000,    # thinking budget (reasoning.max_tokens) per reply; per-model value or null overrides
+    "reasoning_max_tokens": None,     # optional thinking budget (reasoning.max_tokens) per reply; per-model value overrides
+    "reasoning_enabled": True,        # with no budget: thinking on at each model's own default effort
     "tool_choice": "required",        # every reply must be a tool call; falls back to auto where a provider rejects it
     "last_chance_seconds": 45,        # held back from each turn for one short "act now" call if a reply runs long
     "provider_sort": "throughput",    # OpenRouter host order for every model: fastest recent throughput first
