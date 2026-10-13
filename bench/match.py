@@ -134,7 +134,7 @@ class MatchRunner:
             opp = away_cfg if side == "home" else home_cfg
             self.drivers[side] = SeatDriver(self.session, seat, llm, cfg["name"], limits_for(cfg, settings),
                                             opponent_name=opp["name"])
-        self.max_game_seconds = float(settings.get("max_game_minutes", 120)) * 60
+        self.max_game_seconds = float(settings.get("max_game_minutes", 180)) * 60
         self.elapsed_before = 0.0      # game time played before a restart
         self.resumes = []
         self._resume_note = None
