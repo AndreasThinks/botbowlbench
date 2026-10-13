@@ -501,7 +501,10 @@ function renderStats() {
     ["Avg success of risky actions", "avg_risky_success", (v) => (v == null ? "–" : fmt.pct(v))],
     ["Players idle at turnover", "unactivated_at_turnover", (v) => (v == null ? "–" : fmt.num(v, 1))],
     ["Monitoring rate", "monitoring_rate", fmt.pct], ["Reflections written", "reflections"],
-    ["Notebook updates", "notes_updates"],
+    // games before protocol 1.3 had no notebook: show a dash rather than 0
+    ["Notebook updates", (s) => s.notes_updates ?? null, (v) => (v == null ? "–" : fmt.num(v))],
+    ["Decisions with notes", (s) => s.notes_shown_rate ?? null, (v) => (v == null ? "–" : fmt.pct(v))],
+    ["Notebook length", (s) => s.notes_chars ?? null, (v) => (v == null ? "–" : fmt.num(v) + " ch")],
     ["Aggression (blocks+blitzes+fouls / turn)", "aggression", (v) => fmt.num(v, 2)],
     ["Risk taking (dodges+GFIs / turn)", "risk_taking", (v) => fmt.num(v, 2)],
   ];

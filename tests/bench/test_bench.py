@@ -187,6 +187,13 @@ def test_openrouter_driver_against_fake_api(fake_openrouter):
     assert hs["reflections"] > 0
     # the notebook written at end_turn comes back in the next decision's prompt
     assert hs["notes_updates"] > 0 and "notes" in kinds
+    assert 0 < hs["notes_shown"] <= hs["episodes"] and 0 < hs["notes_shown_rate"] <= 1
+    assert hs["notes_update_rate"] > 0 and hs["notes_chars"] > 0
+    from bench.ratings import aggregate
+    agg = aggregate([{"home_model": "fake", "away_model": "rnd", "winner": "draw", "home_score": 0, "away_score": 0,
+                      "home_stats": hs, "away_stats": result["away_stats"]}])["fake"]
+    assert agg["sums"]["notes_updates"] == hs["notes_updates"]
+    assert agg["style"]["notes_shown_rate"] == hs["notes_shown_rate"]
     intros = [json.dumps(m["content"]) for b in fake_openrouter.bodies for m in b["messages"] if m["role"] == "user"]
     assert any("YOUR NOTEBOOK:\\nTurn note " in i for i in intros)
     assert result["meta"]["seed"] == runner.seed and result["meta"]["harness"]["prompt_fingerprint"]

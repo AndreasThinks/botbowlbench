@@ -122,6 +122,8 @@ td { border-bottom-color: var(--grid); }
 th.num, td.num { text-align: right; }
 tbody tr:hover { background: var(--accent-soft); }
 tr.disabled td { opacity: .55; }
+/* label / value tables: long labels wrap so the value stays on screen on a phone */
+table.kv td:first-child { white-space: normal; }
 .rank { font-family: var(--mono); font-weight: 500; color: var(--text-muted); width: 2em; }
 #lb tbody tr:first-child td, #top tbody tr:first-child td { font-weight: 600; }
 #lb tbody tr:first-child .rank, #top tbody tr:first-child .rank { color: var(--accent); }

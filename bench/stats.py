@@ -160,7 +160,11 @@ def side_stats(session, side: str, driver) -> dict:
     s["reflections"] = seat.counters.get("reflections", 0)
     s["reflections_after_turnover"] = seat.counters.get("reflections_after_turnover", 0)
     s["reflection_coverage"] = round(min(1.0, s["reflections"] / turns), 3)
+    # the notebook: how often the model rewrote it, and how many of its decisions had notes to work from
     s["notes_updates"] = seat.counters.get("notes_updates", 0)
+    s["notes_update_rate"] = round(s["notes_updates"] / turns, 3)
+    s["notes_shown"] = seat.counters.get("notes_shown", 0)
+    s["notes_shown_rate"] = round(s["notes_shown"] / s["episodes"], 3) if s.get("episodes") else None
     s["notes_chars"] = len(seat.notes)
     s["turnover_causes"] = turnover_causes(game, team)
     s.update(decision_quality(session.action_log.get(side, [])))

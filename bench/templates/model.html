@@ -4,7 +4,7 @@
 <div id="head"></div>
 <div class="tiles section" id="tiles"></div>
 <div class="grid grid-2 section">
-  <div class="card"><h2>Play style</h2><div class="table-wrap"><table id="style"><tbody></tbody></table></div></div>
+  <div class="card"><h2>Play style</h2><div class="table-wrap"><table id="style" class="kv"><tbody></tbody></table></div></div>
   <div class="card"><h2>Head to head</h2><div class="table-wrap"><table id="h2h"><thead><tr><th>Opponent</th><th class="num">W</th><th class="num">D</th><th class="num">L</th></tr></thead><tbody></tbody></table></div></div>
 </div>
 <div class="card section"><h2>Elo over time</h2><div id="elo"></div></div>
@@ -71,6 +71,9 @@ Promise.all([api(`/api/models/${MODEL_ID}`), api("/api/leaderboard")]).then(([d,
     ["Players idle at turnover", st.unactivated_at_turnover == null ? "–" : fmt.num(st.unactivated_at_turnover, 1)],
     ["Monitoring rate", fmt.pct(st.monitoring_rate)],
     ["Turns with a reflection", fmt.pct(st.reflection_coverage)],
+    ["Notebook updates / game", st.notes_update_rate == null ? "–" : fmt.num((sums.notes_updates || 0) / n, 1)],
+    ["Decisions with notes", st.notes_shown_rate == null ? "–" : fmt.pct(st.notes_shown_rate)],
+    ["Notebook length at full time", st.notes_chars == null ? "–" : fmt.num(st.notes_chars) + " chars"],
     ["Prompt-cache hit rate", st.cache_hit_rate == null ? "–" : fmt.pct(st.cache_hit_rate)],
   ];
   const tb = document.querySelector("#style tbody");

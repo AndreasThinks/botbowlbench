@@ -59,7 +59,9 @@ These are computed from the **action log**. Every move, block, pass, hand-off or
 | `blocks_against_odds` | Blocks where the defender picked the die |
 | `monitoring_rate` | Share of non-infrastructure tool calls spent observing rather than acting: (`get_state` + `get_legal_actions` + `get_player`) / (those + action tools). This is the analogue of CivBench's Proactive Monitoring Rate (PMR). `end_turn`, `reflect` and `send_message` are excluded. |
 | `illegal_rate` | `invalid_tool_calls` / `tool_calls`. Invalid means an illegal move, unparseable arguments, or a schema error. Harness bugs are never counted (see below). |
-| `notes_updates`, `notes_chars` | How many times the notebook was rewritten, and its length at the end of the game. |
+| `notes_updates`, `notes_update_rate` | Notebook writes that changed it (`unchanged` and identical rewrites don't count), in total and per team turn. Protocol 1.3+. |
+| `notes_shown`, `notes_shown_rate` | The notebook is put in front of the model at every decision, so a "read" is a decision where it had something in it: the count, and that count / `episodes`. |
+| `notes_chars` | Notebook length at the end of the game. |
 | `reflections`, `reflection_coverage` | Reflections written, and reflections / turns. A reflection is written at `end_turn`, or through the one-shot `reflect` prompt after a turnover. |
 
 ## Budget and cost

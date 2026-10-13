@@ -8,7 +8,8 @@ START_ELO = 1000.0
 STYLE_KEYS = ["aggression", "risk_taking", "passing_game", "dirty_play", "chattiness", "illegal_rate",
               # decision quality / research metrics (averaged over the games where they are defined)
               "safe_first_rate", "avg_risky_success", "unactivated_at_turnover", "monitoring_rate",
-              "reflection_coverage", "cache_hit_rate", "rerolls_spent_share", "skill_rerolls"]
+              "reflection_coverage", "cache_hit_rate", "rerolls_spent_share", "skill_rerolls",
+              "notes_update_rate", "notes_shown_rate", "notes_chars"]
 SUM_KEYS = ["touchdowns", "blocks", "blitzes", "fouls", "passes", "handoffs", "casualties_inflicted",
             "knockdowns_inflicted", "turnovers", "messages_sent", "message_chars", "invalid_tool_calls",
             "tool_calls", "llm_calls", "prompt_tokens", "completion_tokens", "cost", "forced_actions",
@@ -16,7 +17,8 @@ SUM_KEYS = ["touchdowns", "blocks", "blitzes", "fouls", "passes", "handoffs", "c
             "cached_tokens", "reasoning_tokens", "reflections", "risky_actions", "long_shots",
             "no_tool_replies", "output_truncations", "llm_errors", "http_timeouts", "uncertain_spend_calls", "deadline_cutoffs",
             "last_chance_calls", "reroll_offers", "reroll_taken", "block_reroll_offers",
-            "block_reroll_taken", "apothecary_offers", "apothecary_taken", "skill_offers", "skill_taken"]
+            "block_reroll_taken", "apothecary_offers", "apothecary_taken", "skill_offers", "skill_taken",
+            "notes_updates", "notes_shown"]
 
 
 def expected(ra: float, rb: float) -> float:

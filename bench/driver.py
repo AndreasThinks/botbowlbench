@@ -146,6 +146,8 @@ class SeatDriver:
         game = self.session.game
         parts = [f"YOUR NOTEBOOK:\n{self.seat.notes}" if self.seat.notes else
                  "YOUR NOTEBOOK: (empty)"]
+        if self.seat.notes:
+            self.seat.counters["notes_shown"] += 1
         last = self.session.last_reflection(self.seat)
         if last:
             parts.append(f"YOUR LAST PLAN (half {last['half']}, turn {last['turn']}): {last['plan']}\n"
