@@ -4,7 +4,7 @@ import threading
 import time
 from typing import Callable, Optional
 
-from bench import version
+from bench import model_info, version
 from bench.transcript import Transcript
 from bench.driver import DriverLimits, SeatDriver
 from bench.llm import BotbowlAgentPolicy, OpenRouterLLM, RandomPolicy, ScriptedPolicy
@@ -30,7 +30,26 @@ def make_llm(model_cfg: dict, seat, api_key: Optional[str]):
                          prompt_cache=model_cfg.get("prompt_cache"),
                          reasoning_max_tokens=model_cfg.get("reasoning_max_tokens"),
                          tool_choice=model_cfg.get("tool_choice") or "auto",
-                         hurry_max_tokens=int(model_cfg.get("last_chance_max_tokens") or 2048))
+                         hurry_max_tokens=int(model_cfg.get("last_chance_max_tokens") or 2048),
+                         provider_prefs=provider_prefs(model_cfg),
+                         session_id=f"{seat.session.match_id}:{seat.side}"[:256] if seat else None)
+
+
+def provider_prefs(model_cfg: dict) -> dict:
+    """OpenRouter routing for every model: sort hosts by recent throughput, but never pay more than
+    provider_max_price_factor times the model's listed price (premium "fast" tiers can cost 2-6x)."""
+    prefs = {}
+    if model_cfg.get("provider_sort"):
+        prefs["sort"] = model_cfg["provider_sort"]
+    factor = model_cfg.get("provider_max_price_factor")
+    listing = (model_info.catalog().get(model_cfg["model"]) or {}) if factor else {}
+    try:
+        cap = {k: round(float(listing[f"{k}_price"]) * 1e6 * float(factor), 6) for k in ("prompt", "completion")}
+    except (KeyError, TypeError, ValueError):
+        cap = None     # no listing to price against: no cap rather than a wrong one
+    if cap:
+        prefs["max_price"] = cap
+    return prefs
 
 
 CHECKPOINT_VERSION = 1
@@ -98,7 +117,9 @@ class MatchRunner:
             cfg.setdefault("seed", self.seed + i)   # baselines are reproducible from the match seed
             # the same output ceiling, thinking budget and tool_choice for everyone; a model's own value (or null) wins
             for key, setting in (("max_tokens", "max_output_tokens"), ("reasoning_max_tokens", "reasoning_max_tokens"),
-                                 ("tool_choice", "tool_choice"), ("last_chance_max_tokens", "last_chance_max_tokens")):
+                                 ("tool_choice", "tool_choice"), ("last_chance_max_tokens", "last_chance_max_tokens"),
+                                 ("provider_sort", "provider_sort"),
+                                 ("provider_max_price_factor", "provider_max_price_factor")):
                 if key not in cfg:
                     cfg[key] = settings.get(setting)
             llm = make_llm(cfg, seat, api_key)

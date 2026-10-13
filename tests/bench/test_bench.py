@@ -1105,6 +1105,42 @@ def test_content_filter_retries_are_counted_in_match_stats(fake_openrouter, monk
     assert hs["content_filter_retries"] == 3 and hs["llm_errors"] == 0
 
 
+def test_requests_go_to_the_fastest_affordable_host_and_stay_there(fake_openrouter):
+    """Every model: hosts sorted by throughput, capped at 1.5x the listed price, one session per seat per game."""
+    cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 12}
+    result = MatchRunner("t-route", cfg, RANDOM, {"provider_sort": "throughput", "provider_max_price_factor": 1.5}, api_key="k").run()
+    assert result["error"] is None and fake_openrouter.bodies
+    for b in fake_openrouter.bodies:
+        assert b["provider"] == {"sort": "throughput", "max_price": {"prompt": 1.5, "completion": 3.0}}
+        assert b["session_id"] == "t-route:home"
+        assert "cache_control" not in b          # only Claude models need cache breakpoints
+    from bench.match import provider_prefs
+    # no listing to price against: sorted, but no cap rather than a wrong one
+    assert provider_prefs({"model": "acme/unknown", "provider_sort": "throughput",
+                           "provider_max_price_factor": 1.5}) == {"sort": "throughput"}
+    assert provider_prefs({"model": "fake/model", "provider_sort": None, "provider_max_price_factor": None}) == {}
+
+
+def test_claude_requests_cache_the_growing_turn_and_fall_back_if_refused(fake_openrouter):
+    import anyio
+    from bench.llm import OpenRouterLLM
+    llm = OpenRouterLLM("anthropic/claude-haiku-5.5", "k", provider_prefs={"sort": "throughput"})
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "choose a player to activate"}]
+    tools = [{"type": "function", "function": {"name": "end_turn", "parameters": {}}}]
+
+    async def go():
+        return await llm.chat(msgs, tools)
+    anyio.run(go)
+    assert fake_openrouter.bodies[-1]["cache_control"] == {"type": "ephemeral"}
+    # a host that refuses top-level cache_control: the same call goes again without it, and it stays off
+    fake_openrouter.reject_cache_control = True
+    anyio.run(go)
+    anyio.run(go)
+    assert ["cache_control" in b for b in fake_openrouter.bodies[1:]] == [True, False, False]
+    assert llm.auto_cache is False
+    anyio.run(llm.aclose)
+
+
 def test_prompt_wording_is_not_strictly_consecutive():
     from bench.driver import DriverLimits, system_prompt
     p = system_prompt("M", DriverLimits(), "home", "O")
