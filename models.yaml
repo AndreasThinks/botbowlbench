@@ -32,7 +32,8 @@ settings:
   provider_sort: throughput     # every model goes to its fastest OpenRouter host (null = OpenRouter's default routing)
   provider_min_throughput: 50   # ...preferring hosts that recently ran at 50+ tokens/s (null = no preference)
   provider_max_price_factor: 3  # ...that costs at most 3x the model's listed price (the listing is often the slowest host; null = no cap)
-  max_game_minutes: 120         # wall-clock cap per game, so one slow model can't block the queue
+  max_game_minutes: 180         # wall-clock cap per game, so a stuck game can't block the queue. Keep it above
+                                # 32 team turns x turn_time_limit (160 min) or slow pairings get capped mid-game
   max_messages_per_turn: 2
   budget_usd_per_game: null     # no spending cap: cost is tracked per model per game instead. A number caps it, and
                                 # hitting it hands the rest of the game to the fallback policy.

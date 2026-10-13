@@ -25,7 +25,7 @@ DEFAULT_SETTINGS = {
     "max_messages_per_turn": 2,
     "max_message_len": 280,
     "decision_timeout": 900,          # hard safety net per decision, seconds
-    "max_game_minutes": 120,          # wall-clock cap per game; afterwards default actions finish it
+    "max_game_minutes": 180,          # wall-clock cap per game; afterwards default actions finish it. Above 32 turns x 300s
     "budget_usd_per_game": None,      # per model per game; None = unlimited (cost is still tracked)
     "legs": 2,                        # 2 = every pairing is played home and away
     "pause_between_matches": 5,       # seconds

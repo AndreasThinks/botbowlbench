@@ -143,7 +143,7 @@ their frames on first view.
 * Per team turn: at most `max_tool_calls_per_turn` (40) tool calls and `turn_time_limit` (300 s). Three invalid calls
   or three output truncations (`finish_reason=length` with no tool call), counted separately as running totals since
   the last successful game action (not strictly consecutive; info, chat, reflect and notebook calls do not reset them), or an
-  exhausted budget, lets a safe default policy finish the turn. Per game: `max_game_minutes` (120), and an optional
+  exhausted budget, lets a safe default policy finish the turn. Per game: `max_game_minutes` (180, above the 160 minutes of turn clocks), and an optional
   `budget_usd_per_game` per model (off by default: cost is tracked, not capped).
 * An HTTP 401/402 from OpenRouter (bad key, no credit) puts the game back in the queue instead of scoring it.
   Bugs in the bench's own tools are reported to the model as "not your fault", never counted as invalid moves, and
