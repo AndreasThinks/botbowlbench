@@ -129,7 +129,8 @@ class OpenRouterLLM:
                  session_id: Optional[str] = None):
         self.model = model
         # OpenRouter routing (e.g. {sort: throughput, max_price: ...}), the same rule for every model; a model's own
-        # extra.provider wins. session_id keeps a seat's calls on one host for the game, so its prompt cache stays warm.
+        # extra.provider wins. session_id keeps a seat's calls on one host for the game so its prompt cache stays warm;
+        # only sent where caching needs explicit breakpoints (Claude), since pinning can lock a seat onto a slow host.
         self.provider_prefs = provider_prefs or {}
         self.session_id = session_id
         # OpenAI, DeepSeek, Gemini... cache prompt prefixes automatically; Anthropic needs explicit breakpoints
@@ -202,7 +203,7 @@ class OpenRouterLLM:
             body["temperature"] = self.temperature
         if self.provider_prefs:
             body["provider"] = dict(self.provider_prefs)
-        if self.session_id:
+        if self.session_id and self.prompt_cache:
             body["session_id"] = self.session_id
         if self.auto_cache:
             body["cache_control"] = {"type": "ephemeral"}

@@ -30,7 +30,8 @@ settings:
   tool_choice: required         # replies must be tool calls (falls back to auto where a provider rejects it)
   last_chance_seconds: 45       # held back per turn: a reply still running then is cancelled for one short "act now" call
   provider_sort: throughput     # every model goes to its fastest OpenRouter host (null = OpenRouter's default routing)
-  provider_max_price_factor: 1.5  # ...that costs at most 1.5x the model's listed price (null = no cap)
+  provider_min_throughput: 50   # ...preferring hosts that recently ran at 50+ tokens/s (null = no preference)
+  provider_max_price_factor: 3  # ...that costs at most 3x the model's listed price (the listing is often the slowest host; null = no cap)
   max_game_minutes: 120         # wall-clock cap per game, so one slow model can't block the queue
   max_messages_per_turn: 2
   budget_usd_per_game: null     # no spending cap: cost is tracked per model per game instead. A number caps it, and

@@ -37,11 +37,15 @@ def make_llm(model_cfg: dict, seat, api_key: Optional[str]):
 
 
 def provider_prefs(model_cfg: dict) -> dict:
-    """OpenRouter routing for every model: sort hosts by recent throughput, but never pay more than
-    provider_max_price_factor times the model's listed price (premium "fast" tiers can cost 2-6x)."""
+    """OpenRouter routing for every model: sort hosts by recent throughput, prefer ones at least
+    provider_min_throughput tokens/s, and never pay more than provider_max_price_factor times the model's listed
+    price (the listing is often the cheapest, slowest host; premium "fast" tiers can cost 2-6x)."""
     prefs = {}
     if model_cfg.get("provider_sort"):
         prefs["sort"] = model_cfg["provider_sort"]
+    if model_cfg.get("provider_min_throughput"):
+        # soft: hosts slower than this (tokens/s, recent median) go to the back of the queue, not out of it
+        prefs["preferred_min_throughput"] = float(model_cfg["provider_min_throughput"])
     factor = model_cfg.get("provider_max_price_factor")
     listing = (model_info.catalog().get(model_cfg["model"]) or {}) if factor else {}
     try:
@@ -121,7 +125,8 @@ class MatchRunner:
                                  ("reasoning_enabled", "reasoning_enabled"),
                                  ("tool_choice", "tool_choice"), ("last_chance_max_tokens", "last_chance_max_tokens"),
                                  ("provider_sort", "provider_sort"),
-                                 ("provider_max_price_factor", "provider_max_price_factor")):
+                                 ("provider_max_price_factor", "provider_max_price_factor"),
+                                 ("provider_min_throughput", "provider_min_throughput")):
                 if key not in cfg:
                     cfg[key] = settings.get(setting)
             llm = make_llm(cfg, seat, api_key)
