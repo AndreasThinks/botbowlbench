@@ -18,6 +18,7 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
     # Scripted main-loop replies consumed first: "L" = empty finish_reason=length, "T" = text-only stop,
     # "F" = an empty provider content-filter reply (0 tokens).
     script = []
+    reject_cache_control = False   # answer HTTP 400 to any request with a top-level cache_control
 
     def log_message(self, *args):
         pass
@@ -25,6 +26,10 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         FakeOpenRouter.calls += 1
+        if FakeOpenRouter.reject_cache_control and "cache_control" in body:
+            self._send(400, {"error": {"message": "cache_control is not supported", "code": 400}})
+            FakeOpenRouter.bodies.append(body)
+            return
         FakeOpenRouter.bodies.append(body)
         n = FakeOpenRouter.calls
         if FakeOpenRouter.status != 200:
@@ -118,7 +123,12 @@ def fake_openrouter(monkeypatch):
     FakeOpenRouter.length_truncations_left = 0
     FakeOpenRouter.length_truncation_mode = "main"
     FakeOpenRouter.script = []
+    FakeOpenRouter.reject_cache_control = False
     import bench.llm
+    from bench import model_info
+    # the fake model's OpenRouter listing ($1 / $2 per million tokens), without going to the network
+    monkeypatch.setattr(model_info, "catalog", lambda: {"fake/model": {"prompt_price": "0.000001",
+                                                                       "completion_price": "0.000002"}})
     monkeypatch.setattr(bench.llm, "OPENROUTER_URL", f"http://127.0.0.1:{server.server_port}/chat/completions")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     yield FakeOpenRouter

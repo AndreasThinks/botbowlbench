@@ -124,10 +124,19 @@ class OpenRouterLLM:
                  max_tokens: Optional[int] = None, extra: Optional[dict] = None, timeout: float = 180.0,
                  max_retries: int = 4, prompt_cache: Optional[bool] = None,
                  reasoning_max_tokens: Optional[int] = None, tool_choice: str = "auto",
-                 hurry_max_tokens: int = 2048):
+                 hurry_max_tokens: int = 2048, provider_prefs: Optional[dict] = None,
+                 session_id: Optional[str] = None):
         self.model = model
+        # OpenRouter routing (e.g. {sort: throughput, max_price: ...}), the same rule for every model; a model's own
+        # extra.provider wins. session_id keeps a seat's calls on one host for the game, so its prompt cache stays warm.
+        self.provider_prefs = provider_prefs or {}
+        self.session_id = session_id
         # OpenAI, DeepSeek, Gemini... cache prompt prefixes automatically; Anthropic needs explicit breakpoints
         self.prompt_cache = model.startswith("anthropic/") if prompt_cache is None else prompt_cache
+        # Anthropic only caches up to a cache_control breakpoint. Besides the fixed ones on the system prompt and the
+        # opening situation, a top-level cache_control lets the provider move one along to the newest message, so the
+        # growing tool-call history of a turn is read from the cache too. Dropped for this client if refused.
+        self.auto_cache = self.prompt_cache
         self.api_key = api_key
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -185,6 +194,12 @@ class OpenRouterLLM:
             body["reasoning"] = {"max_tokens": self.reasoning_max_tokens}
         if self.temperature is not None:
             body["temperature"] = self.temperature
+        if self.provider_prefs:
+            body["provider"] = dict(self.provider_prefs)
+        if self.session_id:
+            body["session_id"] = self.session_id
+        if self.auto_cache:
+            body["cache_control"] = {"type": "ephemeral"}
         body.update(self.extra)
         lowest_effort = await self._lowest_effort()
         if hurry:
@@ -245,6 +260,12 @@ class OpenRouterLLM:
                             filtered += 1
                             last_err = (f"provider content filter returned an empty reply (0 tokens, "
                                         f"{resp.provider or 'unknown provider'})")
+                elif r.status_code == 400 and "cache_control" in body and "cache_control" not in self.extra:
+                    # the provider doesn't take top-level cache_control: send it again without, and stop sending it
+                    del body["cache_control"]
+                    self.auto_cache = False
+                    last_err = f"OpenRouter HTTP 400 with top-level cache_control: {r.text[:300]}"
+                    continue
                 elif r.status_code in (400, 404) and body.get("tool_choice") == "required":
                     # most likely the provider can't force tool use: try again at once with "auto", and keep
                     # "auto" for this client if that works
