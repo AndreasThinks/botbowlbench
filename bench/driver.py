@@ -79,6 +79,11 @@ class SeatDriver:
         self.consecutive_llm_errors = 0
         self.thread: Optional[threading.Thread] = None
         self.crashed: Optional[str] = None
+        # while a model call is in flight, for spectators: when it started, when the turn's clock runs out, and
+        # (streamed replies) how much text has arrived and its latest stretch
+        self.waiting: Optional[dict] = None
+        if hasattr(llm, "stream_sink"):
+            llm.stream_sink = self._on_stream
 
     # ---- checkpoints -------------------------------------------------------------------------------
     def state_dict(self) -> dict:
@@ -188,17 +193,21 @@ class SeatDriver:
             k = f"{resp.served_model or '?'}@{resp.provider or '?'}"
             u["served"][k] = u["served"].get(k, 0) + 1
 
-    async def _call_llm(self, messages, tools, key, sent, deadline=None, hurry=False):
+    async def _call_llm(self, messages, tools, key, sent, deadline=None, hurry=False, turn_ends=None):
         """One model call, fully recorded in the transcript. ``sent`` = messages already logged."""
+        self.waiting = {"since": time.time(), "turn_ends": turn_ends, "chars": 0, "text": ""}
         try:
             resp = await self.llm.chat(messages, tools, deadline=deadline, **({"hurry": True} if hurry else {}))
         except LLMError as e:
+            self._keep_partial(e, key)
             if e.timeout:
                 self.usage["http_timeouts"] += 1
             if e.uncertain_spend:
                 # no usage came back, so this call's cost is missing from usage["cost"] and the dollar cap
                 self.usage["uncertain_spend_calls"] += 1
             raise
+        finally:
+            self.waiting = None
         self._record_usage(resp)
         self.session.transcript.write(
             "llm_call", self.seat.side, episode=key, new_messages=messages[sent:],
@@ -210,6 +219,24 @@ class SeatDriver:
             latency=round(resp.latency, 3), served_model=resp.served_model, provider=resp.provider,
             generation_id=resp.generation_id)
         return resp
+
+    LIVE_TAIL = 2000   # characters of the streamed reply kept for spectators
+
+    def _on_stream(self, reasoning: str, content: str):
+        w = self.waiting
+        if w is not None:
+            w["chars"] += len(reasoning) + len(content)
+            w["text"] = (w["text"] + reasoning + content)[-self.LIVE_TAIL:]
+
+    def _keep_partial(self, e: LLMError, key):
+        """A reply the turn deadline cancelled still streamed some thinking: show it and keep it in the transcript."""
+        partial = getattr(self.llm, "partial", None) or {}
+        reasoning, content = partial.get("reasoning") or "", partial.get("content") or ""
+        if not e.deadline or not (reasoning.strip() or content.strip()):
+            return
+        self.session.transcript.write("llm_partial", self.seat.side, episode=key, reasoning=reasoning, content=content)
+        self.session.log_event(self.seat.side, "thought", {"text": (content.strip() or reasoning.strip())[:1500],
+                                                           "cut": True})
 
     async def play_episode(self, client, oa_tools, d):
         key = d.key
@@ -255,7 +282,8 @@ class SeatDriver:
                 # until the model is hurried, its replies must finish before the last-chance reserve starts
                 reserve = 0.0 if hurry else self.limits.last_chance_seconds
                 resp = await self._call_llm(messages, oa_tools, key, sent, hurry=hurry,
-                                            deadline=t0 + self.limits.turn_time_limit - reserve)
+                                            deadline=t0 + self.limits.turn_time_limit - reserve,
+                                            turn_ends=t0 + self.limits.turn_time_limit)
                 self.consecutive_llm_errors = 0
             except LLMError as e:
                 if e.deadline and not hurry and self.limits.last_chance_seconds > 0:

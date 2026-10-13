@@ -31,6 +31,7 @@ def make_llm(model_cfg: dict, seat, api_key: Optional[str]):
                          reasoning_max_tokens=model_cfg.get("reasoning_max_tokens"),
                          reasoning_enabled=bool(model_cfg.get("reasoning_enabled")),
                          tool_choice=model_cfg.get("tool_choice") or "auto",
+                         stream=bool(model_cfg.get("stream")),
                          hurry_max_tokens=int(model_cfg.get("last_chance_max_tokens") or 2048),
                          provider_prefs=provider_prefs(model_cfg),
                          session_id=f"{seat.session.match_id}:{seat.side}"[:256] if seat else None)
@@ -122,7 +123,7 @@ class MatchRunner:
             cfg.setdefault("seed", self.seed + i)   # baselines are reproducible from the match seed
             # the same output ceiling, thinking setting and tool_choice for everyone; a model's own value (or null) wins
             for key, setting in (("max_tokens", "max_output_tokens"), ("reasoning_max_tokens", "reasoning_max_tokens"),
-                                 ("reasoning_enabled", "reasoning_enabled"),
+                                 ("reasoning_enabled", "reasoning_enabled"), ("stream", "stream"),
                                  ("tool_choice", "tool_choice"), ("last_chance_max_tokens", "last_chance_max_tokens"),
                                  ("provider_sort", "provider_sort"),
                                  ("provider_max_price_factor", "provider_max_price_factor"),

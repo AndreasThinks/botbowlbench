@@ -494,6 +494,7 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 .beat .thought::before { content: "thinking  "; font-family: var(--mono); font-style: normal; font-size: .66rem; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); }
 .beat .thought.open { -webkit-line-clamp: unset; display: block; cursor: zoom-out; }
 .beat .thought + .thought { margin-top: 4px; }
+.beat .thought.cut::before { content: "thinking · cut off by the clock  "; }
 .beat .act { font-weight: 600; margin-top: 3px; }
 .beat .act .pid, .beat .out .pid { font-weight: 700; }
 .beat .act .pid.home { color: var(--home); } .beat .act .pid.away { color: var(--away); }
@@ -514,6 +515,17 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 .mc-stream .reflection.home { border-left-color: var(--home); background: var(--home-soft); }
 .mc-stream .reflection.away { border-left-color: var(--away); background: var(--away-soft); }
 .mc-stream .reflection .expects { margin-top: 4px; font-size: .8rem; }
+.mc-waiting { border-top: 1px solid var(--border); padding: 6px 12px 8px; font-family: var(--mono); font-size: .76rem; color: var(--text-secondary); }
+.mc-waiting .wait + .wait { margin-top: 8px; }
+.mc-waiting .home b { color: var(--home); } .mc-waiting .away b { color: var(--away); }
+.mc-waiting .wait-count { font-size: .7rem; margin: 2px 0 0 12px; }
+.mc-waiting .wait-text { font-family: var(--sans); font-style: italic; font-size: .8rem; white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 7.5em; overflow-y: auto; margin: 4px 0 0 12px; padding-left: 8px; border-left: 2px solid var(--border); color: var(--text-secondary); }
+.mc-waiting .home .wait-text { border-left-color: var(--home); } .mc-waiting .away .wait-text { border-left-color: var(--away); }
+.mc-waiting .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 6px;
+  vertical-align: middle; animation: mc-pulse 1.2s ease-in-out infinite; }
+@keyframes mc-pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .mc-waiting .dot { animation: none; } }
 .neutral { margin: 6px 0; font-size: .8rem; color: var(--text-secondary); }
 .note { font-size: .74rem; color: var(--text-muted); margin: 4px 0 4px 13px; font-family: var(--mono); overflow-wrap: anywhere; }
 .note.error { color: var(--critical); }

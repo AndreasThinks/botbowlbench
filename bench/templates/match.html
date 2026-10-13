@@ -47,6 +47,7 @@
       <div class="mc-plan home" id="plan-home"></div>
     </div>
     <div class="feed-body mc-stream" id="feed" aria-live="polite"></div>
+    <div class="mc-waiting" id="waiting" hidden></div>
   </div>
 </div>
 <div class="muted" id="board-note" style="font-size:.8rem;margin-top:6px"></div>
@@ -367,7 +368,8 @@ function addEvent(e) {
   switch (e.kind) {
     case "episode": addHeader(e); return;
     case "thought": {
-      const t = row(beatFor(side, ts, true), h("div", { class: "thought", title: "Click to expand" }, p.text), ts);
+      // p.cut: what streamed in before the turn clock cancelled the reply
+      const t = row(beatFor(side, ts, true), h("div", { class: `thought ${p.cut ? "cut" : ""}`, title: "Click to expand" }, p.text), ts);
       t.onclick = () => t.classList.toggle("open");
       return;
     }
@@ -548,7 +550,8 @@ function poll() {
     const justEnded = wasRunning && (m.status === "completed" || m.status === "error");
     // the replay opens parked on the final whistle, not rewound to the kick-off
     if (justEnded) history.replaceState(null, "", `#f=${Math.max(0, (m.frames || 1) - 1)}`);
-    match = m; renderHeader();
+    m._seen = Date.now() / 1000;
+    match = m; renderHeader(); renderWaiting();
     if (events.length > before) renderFeed(false);
     if (m.status === "completed" || m.status === "error") {
       renderStats();
@@ -565,6 +568,35 @@ const fitFeed = () => {
 };
 new ResizeObserver(fitFeed).observe(document.getElementById("stadium-card"));
 wide.addEventListener("change", fitFeed);
+
+// While a model's reply is still coming, say whose and for how long, so a long think doesn't look like a stall.
+// Streamed replies also show their latest text and a running token estimate (~4 characters a token; the exact
+// count only arrives with the finished reply). Times come from the server clock (server_time), so a skewed viewer
+// clock doesn't matter.
+const waitEl = document.getElementById("waiting");
+const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+function renderWaiting() {
+  const w = match && match.status === "running" && !R.active ? match.waiting || {} : {};
+  const now = Date.now() / 1000 + (match && match.server_time ? match.server_time - match._seen : 0);
+  const usage = (match && match.live_usage) || {};
+  // a quick reply isn't worth a flicker: only show waits of a few seconds or more
+  const parts = Object.entries(w).filter(([, x]) => now - x.since >= 3).map(([side, x]) => {
+    const left = x.turn_ends != null ? Math.max(0, x.turn_ends - now) : null;
+    const game = (usage[side] || {}).reasoning_tokens;
+    const est = x.chars ? Math.round(x.chars / 4) : 0;
+    return h("div", { class: `wait ${side}` },
+      h("div", {}, h("span", { class: "dot" }), h("b", {}, names()[side]),
+        ` is thinking · ${mmss(Math.max(0, now - x.since))}`,
+        left != null ? h("span", { class: "muted" }, ` · ${mmss(left)} left this turn`) : null),
+      h("div", { class: "muted wait-count" }, est ? `≈${est.toLocaleString()} tokens so far` : "no thinking text shown yet",
+        game ? ` · ${fmt.tokens(game + est)} thinking tokens this game` : null),
+      x.text ? h("div", { class: "wait-text" }, x.text) : null);
+  });
+  waitEl.hidden = !parts.length;
+  waitEl.replaceChildren(...parts);
+  waitEl.querySelectorAll(".wait-text").forEach((n) => { n.scrollTop = n.scrollHeight; });
+}
+setInterval(renderWaiting, 1000);
 
 let timer = null;
 poll().then((more) => {

@@ -25,6 +25,7 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.streamed = bool(body.get("stream"))
         FakeOpenRouter.calls += 1
         if FakeOpenRouter.reject_cache_control and "cache_control" in body:
             self._send(400, {"error": {"message": "cache_control is not supported", "code": 400}})
@@ -104,9 +105,46 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
                                    "prompt_tokens_details": {"cached_tokens": 600}}})
 
     def _send(self, code, payload):
+        if code == 200 and getattr(self, "streamed", False):
+            return self._send_stream(payload)
         data = json.dumps(payload).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_stream(self, payload):
+        """The same reply as server-sent events, cut into small pieces the way OpenRouter streams them."""
+        choice = payload["choices"][0]
+        msg = choice["message"]
+        head = {k: payload[k] for k in ("id", "model", "provider") if k in payload}
+        chunks = [": OPENROUTER PROCESSING"]
+
+        def emit(delta, **extra):
+            chunks.append("data: " + json.dumps(dict(head, choices=[{"index": 0, "delta": delta, **extra}])))
+
+        for key in ("reasoning", "content"):
+            text = msg.get(key) or ""
+            for i in range(0, len(text), 7):
+                emit({key: text[i:i + 7]})
+        for d in msg.get("reasoning_details") or []:
+            for k in ("data", "text"):
+                if k in d:
+                    half = len(d[k]) // 2
+                    emit({"reasoning_details": [dict(d, **{k: d[k][:half]}, index=0)]})
+                    emit({"reasoning_details": [{"type": d["type"], k: d[k][half:], "index": 0}]})
+        for i, tc in enumerate(msg.get("tool_calls") or []):
+            args = tc["function"]["arguments"]
+            emit({"tool_calls": [{"index": i, "id": tc["id"], "type": "function",
+                                  "function": {"name": tc["function"]["name"], "arguments": args[:5]}}]})
+            emit({"tool_calls": [{"index": i, "function": {"arguments": args[5:]}}]})
+        emit({}, finish_reason=choice.get("finish_reason"))
+        chunks.append("data: " + json.dumps(dict(head, choices=[], usage=payload.get("usage") or {})))
+        chunks.append("data: [DONE]")
+        data = "".join(c + "\n\n" for c in chunks).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)

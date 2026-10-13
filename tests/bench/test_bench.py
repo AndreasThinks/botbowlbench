@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import threading
 import time
 
@@ -166,10 +167,11 @@ def test_push_and_follow_up_name_their_squares():
         s.abort()
 
 
-def test_openrouter_driver_against_fake_api(fake_openrouter):
+@pytest.mark.parametrize("stream", [False, True])
+def test_openrouter_driver_against_fake_api(fake_openrouter, stream):
     cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 12}
     events = []
-    runner = MatchRunner("t3", cfg, RANDOM, {"budget_usd_per_game": 10},
+    runner = MatchRunner("t3", cfg, RANDOM, {"budget_usd_per_game": 10, "stream": stream},
                          api_key="test-key", event_sink=lambda *a: events.append(a))
     result = runner.run()
     assert result["error"] is None
@@ -197,6 +199,11 @@ def test_openrouter_driver_against_fake_api(fake_openrouter):
     intros = [json.dumps(m["content"]) for b in fake_openrouter.bodies for m in b["messages"] if m["role"] == "user"]
     assert any("YOUR NOTEBOOK:\\nTurn note " in i for i in intros)
     assert result["meta"]["seed"] == runner.seed and result["meta"]["harness"]["prompt_fingerprint"]
+    assert all(b.get("stream", False) == stream for b in fake_openrouter.bodies)
+    # streamed replies are put back together exactly: reasoning blocks and tool calls go back to the model whole
+    sent_back = [m for b in fake_openrouter.bodies for m in b["messages"] if m["role"] == "assistant"]
+    assert sent_back and all(re.fullmatch(r"sig-\d+", d["data"]) for m in sent_back for d in m.get("reasoning_details", []))
+    assert all(tc["id"] and tc["function"]["name"] for m in sent_back for tc in m.get("tool_calls", []))
 
 
 def test_transcript_reconstructs_conversation(fake_openrouter, tmp_path, monkeypatch):
@@ -829,6 +836,108 @@ def _mock_llm(handler, **kw):
 _TOOLS = [{"type": "function", "function": {"name": "reflect"}}]
 
 
+def _sse(*chunks):
+    return "".join(f"data: {json.dumps(c)}\n\n" if not isinstance(c, str) else c + "\n\n" for c in chunks)
+
+
+def test_streamed_reply_is_reassembled_and_reported_live():
+    """Pieces of a streamed reply reach the sink as they come and add up to the same response as a plain reply."""
+    import anyio
+    import httpx
+
+    def handler(request):
+        body = _sse(": OPENROUTER PROCESSING",
+                    {"id": "gen-1", "model": "fake/model", "provider": "Host",
+                     "choices": [{"delta": {"reasoning": "Block A5 ", "reasoning_details": [
+                         {"type": "reasoning.text", "text": "Block A5 ", "index": 0}]}}]},
+                    {"choices": [{"delta": {"reasoning": "first.", "reasoning_details": [
+                         {"type": "reasoning.text", "text": "first.", "signature": "s1", "index": 0}]}}]},
+                    {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                                                            "function": {"name": "block", "arguments": '{"player'}}]}}]},
+                    {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '_id": "H1"}'}}]}}]},
+                    {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+                    {"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.01,
+                                              "completion_tokens_details": {"reasoning_tokens": 3}}},
+                    "data: [DONE]")
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    seen = []
+
+    async def go():
+        llm = _mock_llm(handler, stream=True)
+        llm.stream_sink = lambda r, c: seen.append(r + c)
+        try:
+            return await llm.chat([{"role": "system", "content": "x"}], _TOOLS)
+        finally:
+            await llm.aclose()
+
+    resp = anyio.run(go)
+    assert seen == ["Block A5 ", "first."]
+    assert resp.reasoning == "Block A5 first." and resp.provider == "Host" and resp.finish_reason == "tool_calls"
+    assert [(t.id, t.name, t.arguments) for t in resp.tool_calls] == [("c1", "block", {"player_id": "H1"})]
+    assert resp.raw_message["reasoning_details"] == [
+        {"type": "reasoning.text", "text": "Block A5 first.", "signature": "s1", "index": 0}]
+    assert resp.completion_tokens == 5 and resp.reasoning_tokens == 3 and resp.cost == 0.01
+
+
+def test_streamed_error_is_a_provider_error():
+    """An error sent mid-stream is retried like an error reply, not taken for an empty answer."""
+    import anyio
+    import httpx
+    from bench.llm import LLMError
+    n = []
+
+    def handler(request):
+        n.append(1)
+        body = _sse({"id": "gen-1", "error": {"code": 502, "message": "upstream died"},
+                     "choices": [{"delta": {}, "finish_reason": "error"}]})
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    async def go():
+        llm = _mock_llm(handler, stream=True, max_retries=1)
+        try:
+            await llm.chat([{"role": "system", "content": "x"}], _TOOLS)
+        finally:
+            await llm.aclose()
+
+    with pytest.raises(LLMError, match="upstream died"):
+        anyio.run(go)
+    assert len(n) == 2
+
+
+def test_cut_off_reply_keeps_its_streamed_thinking(monkeypatch):
+    """When the turn clock cancels a streaming reply, what had arrived is shown and kept in the transcript."""
+    import anyio
+    from bench.driver import DriverLimits, SeatDriver
+    from bench.llm import LLMError
+    from bench.session import Decision, GameSession
+
+    s = GameSession("t-partial", "A", "B", seed=1)
+    s.home.team = s.game.state.home_team
+    s.home.decision = Decision(1, "turn-1-1", "Turn", False)
+    events, records = [], []
+    monkeypatch.setattr(s, "log_event", lambda side, kind, payload: events.append((kind, payload)))
+    monkeypatch.setattr(s.transcript, "write", lambda kind, side, **kw: records.append((kind, kw)))
+
+    class Streamer:
+        stream_sink = None
+        partial = {"reasoning": "", "content": ""}
+
+        async def chat(self, messages, tools, deadline=None, hurry=False):
+            self.partial = {"reasoning": "Let me weigh the blitz on A5", "content": ""}
+            self.stream_sink("Let me weigh the blitz on A5", "")
+            assert d.waiting["chars"] == 28 and d.waiting["text"] == "Let me weigh the blitz on A5"
+            raise LLMError("turn time limit reached", uncertain_spend=True, deadline=True)
+
+    d = SeatDriver(s, s.home, Streamer(), "A", DriverLimits(last_chance_seconds=0), opponent_name="B")
+    monkeypatch.setattr(d, "_intro", lambda dec: "situation")
+    monkeypatch.setattr(s.home, "force_episode", lambda key: None)
+    anyio.run(d.play_episode, None, [], s.home.decision)
+    assert ("thought", {"text": "Let me weigh the blitz on A5", "cut": True}) in events
+    assert any(k == "llm_partial" and kw["reasoning"] == "Let me weigh the blitz on A5" for k, kw in records)
+    assert d.waiting is None
+
+
 def test_http_read_timeout_is_not_retried_and_is_flagged(monkeypatch):
     """A read timeout may still be billed upstream: one request only, error flagged as uncertain spend."""
     import anyio
@@ -1382,6 +1491,38 @@ def test_turn_clock_pauses_while_a_tool_call_waits_on_the_opponent(monkeypatch):
     assert WaitingClient.calls == 4          # 1.6s of waiting on the opponent inside a 1s turn
     assert not forced and d.usage["budget_exhausted"] == 0
     assert min(deadlines) > 0.8              # every call still had (nearly) the whole turn
+
+
+def test_driver_reports_the_reply_it_is_waiting_on(monkeypatch):
+    """Spectators see whose reply is in flight, since when and when the turn clock runs out; nothing once it's in."""
+    import anyio
+    import types
+    from bench.driver import DriverLimits, SeatDriver
+    from bench.llm import LLMResponse, ToolCall
+    from bench.session import Decision, GameSession
+
+    s = GameSession("t-waiting", "A", "B", seed=1)
+    s.home.team = s.game.state.home_team
+    s.home.decision = Decision(1, "turn-1-1", "Turn", False)
+    seen = []
+
+    class LLM:
+        async def chat(self, messages, tools, deadline=None):
+            seen.append(dict(d.waiting))
+            return LLMResponse(tool_calls=[ToolCall(id="c", name="move", arguments={})],
+                               raw_message={"role": "assistant", "content": ""})
+
+    class Client:
+        async def call_tool(self, name, args):
+            s.home.decision = None
+            return types.SimpleNamespace(content=[types.SimpleNamespace(text="ok")], is_error=False)
+
+    d = SeatDriver(s, s.home, LLM(), "A", DriverLimits(turn_time_limit=300.0), opponent_name="B")
+    monkeypatch.setattr(d, "_intro", lambda dec: "situation")
+    t = time.time()
+    anyio.run(d.play_episode, Client(), [], s.home.decision)
+    assert len(seen) == 1 and abs(seen[0]["since"] - t) < 1 and abs(seen[0]["turn_ends"] - (t + 300)) < 1
+    assert d.waiting is None
 
 
 def test_driver_does_not_replay_an_episode_handed_to_the_fallback():
