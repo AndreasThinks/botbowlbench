@@ -13,7 +13,9 @@ import subprocess
 #      decision
 # 1.4: zero-token content-filter replies are retried as provider errors; notebook instructions ask models to keep
 #      lessons that still apply and not to copy board positions
-PROTOCOL_VERSION = "1.4"
+# 1.5: no shared 12k thinking budget; every model thinks at its own default effort (reasoning.enabled), so
+#      effort-only models such as Opus 5.5 are no longer mapped to a lower effort
+PROTOCOL_VERSION = "1.5"
 LEGACY_PROTOCOL_VERSION = "1.0"  # matches recorded before protocol versions were enforced have no version in meta
 
 
