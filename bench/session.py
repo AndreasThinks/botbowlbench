@@ -43,6 +43,10 @@ def episode_key(game, team) -> (str, bool):
     return f"{type(proc).__name__}-{game.state.half}-{game.state.round}", False
 
 
+# the model's notebook is shown at every decision, so it stays short
+NOTES_MAX_CHARS = 1500
+
+
 # optional yes/no decisions the engine offers mid-play: kind -> the action that takes it. A team re-roll is offered
 # after a failed roll, and also after every block roll (whatever the dice show), so the two are counted apart.
 # "skill" covers optional skills such as Pro, Juggernaut or Stand Firm.
@@ -129,6 +133,7 @@ class Seat(Agent):
         self.counters = Counter()
         self.report_cursor = 0                     # reports already shown to this seat
         self.msg_cursor = 0                        # opponent messages already shown to this seat
+        self.notes = ""                            # the model's notebook: kept for this game only
 
     # ---- game-thread side ------------------------------------------------------------------
     def new_game(self, game, team):
@@ -340,7 +345,8 @@ class GameSession:
                 "harness_errors": self.harness_errors, "frames": self.frames, "timeline": self.timeline,
                 "time_capped": self.time_capped}, protocol=pickle.HIGHEST_PROTOCOL)
         seats = {s.side: {"counters": dict(s.counters), "report_cursor": s.report_cursor,
-                          "msg_cursor": s.msg_cursor, "autopilot": s.autopilot} for s in (self.home, self.away)}
+                          "msg_cursor": s.msg_cursor, "autopilot": s.autopilot, "notes": s.notes}
+                 for s in (self.home, self.away)}
         return {"game": self.dump_game(), "shared": shared, "seats": seats, "key": self.last_checkpoint_key}
 
     def restore(self, state: dict):
@@ -365,6 +371,7 @@ class GameSession:
             seat.report_cursor = st["report_cursor"]
             seat.msg_cursor = st["msg_cursor"]
             seat.autopilot = st["autopilot"]
+            seat.notes = st.get("notes", "")
         self.last_checkpoint_key = state["key"]
         self.resumed = True
 
@@ -450,6 +457,24 @@ class GameSession:
         self.log_event(seat.side, "reflection", {"plan": rec["plan"], "prediction": rec["prediction"],
                                                  "turn": rec["turn"], "half": rec["half"], "trigger": trigger})
         self.transcript.write("reflection", seat.side, **{k: v for k, v in rec.items() if k not in ("side", "ts")})
+
+    def last_reflection(self, seat: Seat) -> Optional[dict]:
+        with self.lock:
+            return next((r for r in reversed(self.reflections) if r["side"] == seat.side), None)
+
+    def update_notes(self, seat: Seat, notes: str, via: str) -> str:
+        """Replace the seat's notebook. Returns a short note for the model when the text was cut to fit."""
+        text = (notes or "").strip()
+        cut = len(text) > NOTES_MAX_CHARS
+        text = text[:NOTES_MAX_CHARS]
+        if text == seat.notes:
+            return ""
+        seat.notes = text
+        seat.counters["notes_updates"] += 1
+        half, turn = self.game.state.half, seat.team.state.turn if seat.team else 0
+        self.log_event(seat.side, "notes", {"notes": text, "half": half, "turn": turn, "via": via})
+        self.transcript.write("notes", seat.side, notes=text, half=half, turn=turn, via=via)
+        return f" Your notebook was cut to its first {NOTES_MAX_CHARS} characters." if cut else ""
 
     def has_reflection(self, seat: Seat, half: int, turn: int) -> bool:
         return any(r["side"] == seat.side and r["half"] == half and r["turn"] == turn for r in self.reflections)

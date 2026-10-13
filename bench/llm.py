@@ -317,6 +317,9 @@ class RandomPolicy:
     PLAN = "Keep activating players and look for chances to score."
     PREDICTION = "The opponent will try to block my players and advance the ball."
 
+    def _reflection_args(self) -> dict:
+        return {"plan": self.PLAN, "prediction": self.PREDICTION, "notes": "unchanged"}
+
     def _single(self, name: str, args: dict) -> LLMResponse:
         tc = ToolCall(id=f"r{self._n}", name=name, arguments=args)
         return LLMResponse(tool_calls=[tc], raw_message={"role": "assistant", "content": "", "tool_calls": [
@@ -324,7 +327,7 @@ class RandomPolicy:
 
     def _forced_reflection(self, tools) -> Optional[LLMResponse]:
         if len(tools) == 1 and tools[0]["function"]["name"] == "reflect":
-            return self._single("reflect", {"plan": self.PLAN, "prediction": self.PREDICTION})
+            return self._single("reflect", self._reflection_args())
         return None
 
     async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None,
@@ -350,7 +353,7 @@ class RandomPolicy:
             a = self.rng.choice(choices)
             args = {"action_type": a.action_type.name}
             if a.action_type == ActionType.END_TURN:
-                return self._single("end_turn", {"plan": self.PLAN, "prediction": self.PREDICTION})
+                return self._single("end_turn", self._reflection_args())
             if a.action_type == ActionType.END_SETUP and not game.is_setup_legal(self.seat.team):
                 for c in choices:
                     if c.action_type.name.startswith("SETUP_FORMATION_"):
@@ -402,7 +405,7 @@ class ScriptedPolicy(RandomPolicy):
                 else:
                     a = fallback_action(game, team)
                     if a.action_type == ActionType.END_TURN:
-                        return self._single("end_turn", {"plan": self.PLAN, "prediction": self.PREDICTION})
+                        return self._single("end_turn", self._reflection_args())
                     args = {"action_type": a.action_type.name}
                     if a.player is not None:
                         args["player_id"] = render.pid(a.player)
@@ -455,7 +458,8 @@ class ScriptedPolicy(RandomPolicy):
                 if game.get_player_at(game.get_square(x, p.position.y)) is None and 1 <= x <= game.arena.width - 2:
                     return ("move", {"player_id": render.pid(p), "x": x, "y": p.position.y})
         return ("end_turn", {"plan": "Advance the ball carrier safely and make favourable blocks.",
-                             "prediction": "The opponent will blitz my ball carrier if it can reach it."})
+                             "prediction": "The opponent will blitz my ball carrier if it can reach it.",
+                             "notes": "unchanged"})
 
 
 class BotbowlAgentPolicy(RandomPolicy):
@@ -509,7 +513,7 @@ class BotbowlAgentPolicy(RandomPolicy):
         if action is None or not game._is_action_allowed(action):
             action = fallback_action(game, team)
         if action.action_type == ActionType.END_TURN:
-            return self._single("end_turn", {"plan": self.PLAN, "prediction": self.PREDICTION})
+            return self._single("end_turn", self._reflection_args())
         args = {"action_type": action.action_type.name}
         if action.player is not None:
             args["player_id"] = render.pid(action.player)

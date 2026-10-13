@@ -11,6 +11,7 @@
       harness version, prompt fingerprint, the model versions/providers that actually served it, and an <code>admissible</code> flag.
       <a href="/api/export/matches.jsonl?admissible=1">Admissible games only</a>.</li>
   <li><a href="/api/export/events.jsonl?kind=reflection">reflections</a>: each team's end-of-turn plan and prediction of the opponent.</li>
+  <li><a href="/api/export/events.jsonl?kind=notes">notebooks</a>: every rewrite of each team's private notebook.</li>
   <li><a href="/api/export/events.jsonl?kind=message">messages</a>: everything the models said to each other.</li>
   <li><a href="/api/export/events.jsonl">all events</a>: the spectator feed (tool calls with truncated results, model text, system notes).</li>
   <li>Full transcripts: on each match page ("download full transcript"), or <code>/api/matches/&lt;id&gt;/transcript</code>.</li>

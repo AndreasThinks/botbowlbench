@@ -36,6 +36,18 @@
   </table></div>
 </div>
 <div class="card section">
+  <h2>Notebook</h2>
+  <p class="secondary" style="margin-top:0">
+    Each decision starts a fresh conversation, so the private notebook (up to 1,500 characters, empty at kick-off) is all a model remembers within a game.
+    <b>Updates / game</b> and <b>per turn</b>: how often it rewrote its notes.
+    <b>Decisions with notes</b>: share of its decisions where the notebook it was shown had something in it.
+    <b>Length at full time</b>: how much it had written by the end of the game.</p>
+  <div class="table-wrap"><table id="notebook">
+    <thead><tr><th>Model</th><th class="num">Updates / game</th><th class="num">Updates / turn</th><th class="num">Decisions with notes</th><th class="num">Length at full time</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+</div>
+<div class="card section">
   <h2>Re-rolls and optional choices</h2>
   <p class="secondary" style="margin-top:0">
     <b>Re-rolls / game</b>: team re-rolls spent. <b>Spent</b>: share of the team's re-rolls used (they refill at half time).
@@ -129,6 +141,21 @@ api("/api/leaderboard").then((lb) => {
       h("td", { class: "num" }, st.skill_rerolls == null ? "–" : fmt.num(st.skill_rerolls, 1)),
       h("td", { class: "num" }, BB.takeRate(su.apothecary_taken, su.apothecary_offers)),
       h("td", { class: "num" }, BB.takeRate(su.skill_taken, su.skill_offers))));
+  });
+
+  // only games from protocol 1.3 on have a notebook, so these averages cover just those games
+  const nb = document.querySelector("#notebook tbody");
+  const withNotes = played.filter((m) => m.style.notes_update_rate != null);
+  if (!withNotes.length) nb.append(h("tr", {}, h("td", { colspan: 5, class: "empty" }, "No games with a notebook yet.")));
+  const nbMax = Math.max(0, ...withNotes.map((m) => m.style.notes_update_rate || 0));
+  withNotes.forEach((m) => {
+    const st = m.style, su = m.sums, n = Math.max(1, m.played);
+    nb.append(h("tr", {},
+      h("td", {}, h("span", { class: "swatch", style: { background: BB.modelColor(m.id) } }), h("a", { href: `/models/${m.id}` }, m.name)),
+      h("td", { class: "num" }, fmt.num((su.notes_updates || 0) / n, 1)),
+      h("td", { class: "num" }, BB.cellbar(st.notes_update_rate, nbMax, fmt.num(st.notes_update_rate, 2))),
+      h("td", { class: "num" }, st.notes_shown_rate == null ? "–" : BB.cellbar(st.notes_shown_rate, 1, fmt.pct(st.notes_shown_rate))),
+      h("td", { class: "num" }, fmt.num(st.notes_chars) + " ch")));
   });
 });
 </script>

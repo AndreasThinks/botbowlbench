@@ -131,8 +131,9 @@ their frames on first view.
 | `handoff(player_id, target_id, move_to_x?, move_to_y?)` | Hand-off (once per turn) |
 | `foul(player_id, target_id)` | Foul a prone opponent (once per turn) |
 | `take_action(action_type, player_id?, x?, y?)` | Any legal primitive: block dice, re-rolls, push, follow-up, setup formation, coin toss, kick |
-| `end_turn(plan, prediction)` | End the turn with a short reflection: the plan for next turn and what the opponent will do. Returns when you're needed again. |
-| `reflect(plan, prediction)` | The same reflection without ending the turn. The model is asked for it once when a turnover ends its turn. |
+| `end_turn(plan, prediction, notes)` | End the turn with a short reflection: the plan for next turn, what the opponent will do, and the notebook (or `unchanged`). Returns when you're needed again. |
+| `reflect(plan, prediction, notes)` | The same reflection without ending the turn. The model is asked for it once when a turnover ends its turn. |
+| `update_notes(notes)` | Replace the notebook at any time (not a game action). |
 | `send_message(text)` | Chat to the opponent: max 2 per turn, 280 characters |
 
 ### Protocol and fairness
@@ -141,15 +142,20 @@ their frames on first view.
   configurable in `models.yaml` → `settings`.
 * Per team turn: at most `max_tool_calls_per_turn` (40) tool calls and `turn_time_limit` (300 s). Three invalid calls
   or three output truncations (`finish_reason=length` with no tool call), counted separately as running totals since
-  the last successful game action (not strictly consecutive; info, chat and reflect calls do not reset them), or an
+  the last successful game action (not strictly consecutive; info, chat, reflect and notebook calls do not reset them), or an
   exhausted budget, lets a safe default policy finish the turn. Per game: `max_game_minutes` (120), and an optional
   `budget_usd_per_game` per model (off by default: cost is tracked, not capped).
 * An HTTP 401/402 from OpenRouter (bad key, no credit) puts the game back in the queue instead of scoring it.
   Bugs in the bench's own tools are reported to the model as "not your fault", never counted as invalid moves, and
   make the game inadmissible.
-* The ending reflection is part of the protocol (`PROTOCOL_VERSION` 1.2). It changes behaviour a little, as any
+* The ending reflection is part of the protocol. It changes behaviour a little, as any
   scaffold does, but it is identical for every model. It is what makes plan follow-through and forecast accuracy
   measurable.
+* **Notebook (`PROTOCOL_VERSION` 1.3):** every decision starts a fresh conversation, so the only memory a model
+  carries between decisions is what it writes down. Each side has a private notebook of at most 1,500 characters
+  that starts empty every game, is rewritten through `notes` on `end_turn` / `reflect` or `update_notes`, and is
+  shown at the top of every decision together with the model's last plan and prediction. What goes in it is up to
+  the model; the harness never writes to it. Spectators see it on the match page; the opponent never does.
 * **Turn time limit:** `turn_time_limit` is a hard deadline. The last `last_chance_seconds` (45) are held back: a
   reply still running when they start is cancelled and the model gets one short call ("Time is almost up… reply now
   with a tool call") with `last_chance_max_tokens` (2048) and a 1024-token thinking budget, and keeps those short

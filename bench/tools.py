@@ -16,7 +16,7 @@ from botbowl.core.table import ActionType
 from botbowl.core.pathfinding import get_all_paths
 
 from bench import render
-from bench.session import GameSession, Seat, fallback_action
+from bench.session import NOTES_MAX_CHARS, GameSession, Seat, fallback_action
 
 RULES_PRIMER = """\
 BLOOD BOWL QUICK RULES (5-a-side variant, 8 turns per half, 2 halves)
@@ -58,6 +58,7 @@ def _choice(game, action_type: ActionType):
 
 
 INTERNAL_ERROR = "INTERNAL ERROR"
+NOTES_UNCHANGED = ("unchanged", "same", "no change", "no changes")
 
 _RECORDED = {ActionType.MOVE, ActionType.BLOCK, ActionType.PASS, ActionType.HANDOFF, ActionType.FOUL}
 _STARTS = {ActionType.START_MOVE, ActionType.START_BLOCK, ActionType.START_BLITZ, ActionType.START_PASS,
@@ -448,7 +449,7 @@ class SeatTools:
         return self._run([self._start(p, ActionType.START_FOUL),
                           self._at(ActionType.FOUL, lambda: t.position, f"Foul on {target_id}")])
 
-    def end_turn(self, plan: str = "", prediction: str = "") -> str:
+    def end_turn(self, plan: str = "", prediction: str = "", notes: str = "") -> str:
         err = self._not_ready()
         if err:
             return err
@@ -458,17 +459,32 @@ class SeatTools:
                                      "or resolve the pending decision.")
             return self._illegal("You cannot end the turn right now.")
         missing = [k for k, v in (("plan", plan), ("prediction", prediction)) if len((v or "").strip()) < 3]
+        if not (notes or "").strip():
+            missing.append("notes")
         if missing:
             return self._illegal(f"end_turn needs a short reflection: {' and '.join(missing)} "
-                                 f"(1-3 sentences each). Nothing was done.")
+                                 f"(notes may be 'unchanged'). Nothing was done.")
         self.session.record_reflection(self.seat, plan, prediction, trigger="end_turn")
-        return self._run([lambda: Action(ActionType.END_TURN)])
+        cut = self._write_notes(notes, "end_turn")
+        return self._run([lambda: Action(ActionType.END_TURN)]) + cut
 
-    def reflect(self, plan: str = "", prediction: str = "") -> str:
-        if len((plan or "").strip()) < 3 or len((prediction or "").strip()) < 3:
-            return "ILLEGAL: reflect needs both a plan and a prediction (1-3 sentences each)."
+    def reflect(self, plan: str = "", prediction: str = "", notes: str = "") -> str:
+        if len((plan or "").strip()) < 3 or len((prediction or "").strip()) < 3 or not (notes or "").strip():
+            return ("ILLEGAL: reflect needs a plan and a prediction (1-3 sentences each) and your notes "
+                    "(may be 'unchanged').")
         self.session.record_reflection(self.seat, plan, prediction, trigger="reflect")
-        return "Reflection recorded."
+        cut = self._write_notes(notes, "reflect")
+        return "Reflection recorded." + cut
+
+    def update_notes(self, notes: str = "") -> str:
+        if not (notes or "").strip():
+            return "ILLEGAL: notes is empty. Send the whole notebook as it should read from now on."
+        return "Notebook saved." + self._write_notes(notes, "update_notes")
+
+    def _write_notes(self, notes: str, via: str) -> str:
+        if (notes or "").strip().lower().rstrip(".") in NOTES_UNCHANGED:
+            return ""
+        return self.session.update_notes(self.seat, notes, via)
 
     def take_action(self, action_type: str, player_id: Optional[str] = None,
                     x: Optional[int] = None, y: Optional[int] = None) -> str:
@@ -515,10 +531,15 @@ TOOL_DOCS = {
     "handoff": "Hand-off (once per turn): optionally move first, then hand the ball to ADJACENT team-mate target_id.",
     "foul": "Foul (once per turn): player_id kicks a PRONE/STUNNED opponent target_id (moves next to it if needed).",
     "end_turn": "End your team turn. Requires a short reflection: `plan` = what you intend to do on your next "
-                "turn (1-3 concrete sentences), `prediction` = what you expect your opponent to do on their turn. "
+                "turn (1-3 concrete sentences), `prediction` = what you expect your opponent to do on their turn, "
+                "`notes` = your whole notebook as it should read from now on, or 'unchanged'. "
                 "The call returns when it is your turn again (or the game is over).",
-    "reflect": "Record your reflection without ending the turn: `plan` for your next turn and `prediction` of the "
-               "opponent's next turn. Use it when asked to after a turnover.",
+    "reflect": "Record your reflection without ending the turn: `plan` for your next turn, `prediction` of the "
+               "opponent's next turn and `notes` (your whole notebook, or 'unchanged'). Use it when asked to after "
+               "a turnover.",
+    "update_notes": f"Replace your notebook with `notes` (the whole text, max {NOTES_MAX_CHARS} characters). The "
+                    "notebook is private, lasts for this game, and is shown to you at every decision. It does not "
+                    "use up an action.",
     "take_action": "Low-level: perform any legal action listed by get_legal_actions, e.g. "
                    "take_action('SELECT_DEFENDER_DOWN'), take_action('USE_REROLL'), take_action('PUSH', x=5, y=3), "
                    "take_action('SETUP_FORMATION_WEDGE'), take_action('END_SETUP'), take_action('HEADS'), "
@@ -582,12 +603,16 @@ def build_mcp_server(tools: SeatTools) -> MCPServer:
         return await run(tools.foul, player_id, target_id)
 
     @server.tool(description=TOOL_DOCS["end_turn"])
-    async def end_turn(plan: str, prediction: str) -> str:
-        return await run(tools.end_turn, plan, prediction)
+    async def end_turn(plan: str, prediction: str, notes: str) -> str:
+        return await run(tools.end_turn, plan, prediction, notes)
 
     @server.tool(description=TOOL_DOCS["reflect"])
-    async def reflect(plan: str, prediction: str) -> str:
-        return await run(tools.reflect, plan, prediction)
+    async def reflect(plan: str, prediction: str, notes: str) -> str:
+        return await run(tools.reflect, plan, prediction, notes)
+
+    @server.tool(description=TOOL_DOCS["update_notes"])
+    async def update_notes(notes: str) -> str:
+        return await run(tools.update_notes, notes)
 
     @server.tool(description=TOOL_DOCS["take_action"])
     async def take_action(action_type: str, player_id: Optional[str] = None,
