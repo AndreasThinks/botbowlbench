@@ -65,18 +65,18 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
             finish = "stop"
         else:
             if reflect_only:
-                calls = [("reflect", {"plan": "Score next turn.", "prediction": "They will blitz."})]
+                calls = [("reflect", {"plan": "Score next turn.", "prediction": "They will blitz.", "notes": "Dodging out of tackle zones is risky."})]
             elif last["role"] == "user" and "CURRENT SITUATION" in content:
                 calls = [("get_state", {}), ("send_message", {"text": f"hello #{n}"})]
             elif "choose a player to activate" in content:
-                calls = [("end_turn", {"plan": "Advance on the left.", "prediction": "They will blitz my carrier."})]
+                calls = [("end_turn", {"plan": "Advance on the left.", "prediction": "They will blitz my carrier.", "notes": "unchanged"})]
             else:
                 m = re.search(r"^\s+([A-Z_]{3,})\b", content, re.M)
                 name = m.group(1) if m else "END_TURN"
                 if name == "PLACE_PLAYER":
                     name = "SETUP_FORMATION_SPREAD"
                 if name == "END_TURN":
-                    calls = [("end_turn", {"plan": "Regroup.", "prediction": "They attack."})]
+                    calls = [("end_turn", {"plan": "Regroup.", "prediction": "They attack.", "notes": f"Turn note {n}."})]
                 else:
                     calls = [("take_action", {"action_type": name})]
             tool_calls = []

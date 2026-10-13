@@ -18,7 +18,7 @@ from mcp import Client
 
 from bench import render
 from bench.llm import LLMError
-from bench.session import GameSession, Seat
+from bench.session import NOTES_MAX_CHARS, GameSession, Seat
 from bench.tools import INTERNAL_ERROR, RULES_PRIMER, SeatTools, build_mcp_server, is_trivial
 
 
@@ -50,6 +50,10 @@ HOW THIS WORKS
 - Budget: at most {limits.max_tool_calls_per_turn} tool calls and {int(limits.turn_time_limit)} seconds per turn. \
 {limits.max_illegal_streak} illegal calls or {limits.max_truncation_streak} truncated replies in total since your \
 last game action, or running out of budget, ends your turn automatically.
+- Each decision starts a fresh conversation: you do not see your earlier messages or tool results. You do see your
+  notebook and your last plan. The notebook is private, lasts for this game only and holds at most {NOTES_MAX_CHARS}
+  characters: use it for rules, lessons and plans worth keeping. Rewrite it with the `notes` of end_turn (or
+  update_notes at any time); every write replaces the whole notebook.
 - You may talk to your opponent with send_message (max 2 per turn). Spectators can read the chat.
 - Always answer with a tool call. Keep any text you write very short."""
 
@@ -140,7 +144,12 @@ class SeatDriver:
 
     def _intro(self, d) -> str:
         game = self.session.game
-        parts = []
+        parts = [f"YOUR NOTEBOOK:\n{self.seat.notes}" if self.seat.notes else
+                 "YOUR NOTEBOOK: (empty)"]
+        last = self.session.last_reflection(self.seat)
+        if last:
+            parts.append(f"YOUR LAST PLAN (half {last['half']}, turn {last['turn']}): {last['plan']}\n"
+                         f"You expected the opponent to: {last['prediction']}")
         events = render.events_since(game, self.seat.report_cursor, limit=40)
         self.seat.report_cursor = len(game.state.reports)
         if events:
@@ -336,10 +345,10 @@ class SeatDriver:
                 if bad:
                     illegal_streak += 1
                     self.seat.counters["invalid_tool_calls"] += 1
-                elif tc.name not in INFO_TOOLS and tc.name not in ("send_message", "reflect"):
+                elif tc.name not in INFO_TOOLS and tc.name not in ("send_message", "reflect", "update_notes"):
                     # A successful game action clears both counters (they are independent running totals since the last
                     # game action, not strictly consecutive).
-                    # Info / chat / reflect alone must not reset them (avoids infinite length retries).
+                    # Info / chat / reflect / notes alone must not reset them (avoids infinite length retries).
                     illegal_streak = 0
                     truncation_streak = 0
                 self.seat.counters["tool:" + tc.name] += 1
@@ -365,8 +374,8 @@ class SeatDriver:
             return
         messages.append({"role": "user", "content":
                          "Your turn is over (a turnover or touchdown ended it before you called end_turn). Call "
-                         "reflect(plan, prediction) now: your plan for your next turn and what you expect the "
-                         "opponent to do."})
+                         "reflect(plan, prediction, notes) now: your plan for your next turn, what you expect the "
+                         "opponent to do, and your notebook (or 'unchanged')."})
         # The opponent's turn is already under way and may need us (block dice, re-rolls): keep this call as
         # short as a last-chance call so it can't hold up the game.
         bound = self.limits.last_chance_seconds

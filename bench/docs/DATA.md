@@ -74,6 +74,7 @@ The complete research record of one game. Each line has `type`, `ts` (unix secon
 | `action` | `half`, `turn`, `activation` (nth player activated this turn), `action`, `player`, `target`, `target_player`, `reach_prob`, `roll_prob`, `success_est`, `block_dice`, `unused_before` (on START_* actions), `turnover`, `touchdown` |
 | `action_outcome` | a turnover or touchdown attributed to the last logged action of the turn |
 | `reflection` | `half`, `turn`, `plan`, `prediction`, `trigger` (`end_turn` or `reflect` after a turnover) |
+| `notes` | the model rewrote its notebook (protocol 1.3+): `notes` (the full new text), `half`, `turn`, `via` (`end_turn`, `reflect` or `update_notes`) |
 | `message` | `text`, `half`, `turn` |
 | `system` | budget auto-finish and similar notes |
 | `harness_error` | a bug in the bench (`text`, `traceback`) |
@@ -101,7 +102,7 @@ The follow-up reflection after a turnover uses the episode key `<key>#reflect` a
 ## Events (`events.jsonl`)
 
 The spectator feed: `id`, `match_id`, `ts`, `side`, `kind`, `payload`. Kinds: `episode`, `thought` (model text,
-truncated), `tool` (result truncated), `message`, `reflection`, `illegal`, `system`, `error`. For analysis, prefer
+truncated), `tool` (result truncated), `message`, `reflection`, `notes`, `illegal`, `system`, `error`. For analysis, prefer
 transcripts (complete). Events are convenient for messages and reflections across many games.
 
 ## Storage

@@ -470,6 +470,16 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 .plan-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .plan-exp { display: none; margin-top: 4px; }
 .mc-plan.open .plan-text { -webkit-line-clamp: unset; display: block; } .mc-plan.open .plan-exp { display: block; }
+.plan-notes-tag { margin-top: 4px; font-family: var(--mono); font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); }
+.plan-notes-tag::after { content: " ▸"; } .mc-plan.open .plan-notes-tag::after { content: ""; }
+.plan-notes { display: none; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
+.mc-plan.open .plan-notes { display: block; }
+.mc-plan.open { max-height: 45vh; overflow-y: auto; }
+.ev.notes { margin: 6px 0; padding: 2px 8px 2px 10px; border-left: 3px dotted var(--border); font-size: .8rem; }
+.ev.notes.home { border-left-color: var(--home); } .ev.notes.away { border-left-color: var(--away); }
+.ev.notes summary { cursor: pointer; } .ev.notes .plan-tag { display: inline; }
+.ev.notes.home .plan-tag { color: var(--home); } .ev.notes.away .plan-tag { color: var(--away); }
+.notes-text { white-space: pre-wrap; color: var(--text-secondary); margin-top: 4px; }
 
 .mc-stream { font-size: .86rem; padding-top: 0; }
 .mc-turn { margin-top: 10px; }

@@ -160,6 +160,8 @@ def side_stats(session, side: str, driver) -> dict:
     s["reflections"] = seat.counters.get("reflections", 0)
     s["reflections_after_turnover"] = seat.counters.get("reflections_after_turnover", 0)
     s["reflection_coverage"] = round(min(1.0, s["reflections"] / turns), 3)
+    s["notes_updates"] = seat.counters.get("notes_updates", 0)
+    s["notes_chars"] = len(seat.notes)
     s["turnover_causes"] = turnover_causes(game, team)
     s.update(decision_quality(session.action_log.get(side, [])))
     # monitoring rate (cf. CivBench's PMR): share of non-infrastructure calls spent looking rather than acting

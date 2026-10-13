@@ -286,6 +286,7 @@ function toolText(name, a) {
     case "foul": return `${p} fouls ${a.target_id}`;
     case "end_turn": return "Ends the turn";
     case "reflect": return "Writes a plan";
+    case "update_notes": return "Updates its notebook";
     case "send_message": return "Sends a message";
     case "get_state": return "Looks at the board";
     case "get_legal_actions": return "Checks the legal actions";
@@ -311,9 +312,9 @@ function logText(t) {
 // took (in words) and what the dice did; plans, chat and harness notes sit inline. Filters are classes on
 // the layout, so toggling one never rebuilds the stream. Replays hide what hadn't happened yet.
 const INFO_TOOLS = new Set(["get_state", "get_legal_actions", "get_player"]);
-const SILENT_TOOLS = new Set(["end_turn", "reflect", "send_message"]);   // shown as the log line, plan or bubble
+const SILENT_TOOLS = new Set(["end_turn", "reflect", "send_message", "update_notes"]);   // shown as the log line, plan, notebook or bubble
 const feed = document.getElementById("feed");
-const F = { built: 0, beat: {}, header: null, nodes: [], shown: 0, plans: { home: [], away: [] }, now: null };
+const F = { built: 0, beat: {}, header: null, nodes: [], shown: 0, plans: { home: [], away: [] }, notes: { home: [], away: [] }, now: null };
 
 function track(node, ts) { node.dataset.ts = ts; F.nodes.push(node); return node; }
 function put(node, ts) { feed.append(track(node, ts)); return node; }
@@ -400,6 +401,13 @@ function addEvent(e) {
         h("div", { class: "plan-tag" }, names()[side], h("span", { class: "plan-turn" }, ` plan · turn ${p.turn}${p.trigger === "reflect" ? " (after turnover)" : ""}`)),
         h("div", {}, p.plan), p.prediction ? h("div", { class: "secondary expects" }, h("b", {}, "Expects: "), p.prediction) : null), ts);
       return;
+    case "notes":
+      F.notes[side].push(e);
+      F.beat[side] = null;
+      put(h("details", { class: `ev notes ${side}` },
+        h("summary", {}, h("span", { class: "plan-tag" }, names()[side]), h("span", { class: "plan-turn" }, ` updates its notebook · turn ${p.turn}`)),
+        h("div", { class: "notes-text" }, p.notes)), ts);
+      return;
     case "message":
       put(h("div", { class: `bubble ${side}` }, h("span", { class: "who" }, names()[side]), p.text), ts);
       return;
@@ -409,17 +417,20 @@ function addEvent(e) {
   }
 }
 
-// each side's latest plan stays pinned above the stream
+// each side's latest plan and notebook stay pinned above the stream (the notebook shows when the box is opened)
+const latest = (list, cut) => { let r = null; for (const e of list) if (e.ts <= cut) r = e; return r; };
 function renderPlans(cut) {
   for (const side of ["away", "home"]) {
     const box = document.getElementById(`plan-${side}`);
-    const list = F.plans[side].filter((r) => r.ts <= cut), r = list[list.length - 1];
-    const key = String(r ? r.id : "none");
+    const r = latest(F.plans[side], cut), n = latest(F.notes[side], cut);
+    const key = `${r ? r.id : "-"}/${n ? n.id : "-"}`;
     if (box.dataset.key === key) continue;
     box.dataset.key = key; box.innerHTML = "";
     box.append(h("div", { class: "plan-tag" }, names()[side], h("span", { class: "plan-turn" }, r ? ` plan · turn ${r.payload.turn}` : " plan")),
       h("div", { class: "plan-text" }, r ? r.payload.plan : "No plan written yet."),
-      r && r.payload.prediction ? h("div", { class: "plan-exp secondary" }, h("b", {}, "Expects: "), r.payload.prediction) : null);
+      r && r.payload.prediction ? h("div", { class: "plan-exp secondary" }, h("b", {}, "Expects: "), r.payload.prediction) : null,
+      h("div", { class: "plan-notes-tag" }, "Notebook", h("span", { class: "plan-turn" }, n ? ` · updated turn ${n.payload.turn}` : " · empty")),
+      n ? h("div", { class: "plan-notes" }, n.payload.notes) : null);
   }
 }
 for (const side of ["away", "home"]) {
@@ -490,6 +501,7 @@ function renderStats() {
     ["Avg success of risky actions", "avg_risky_success", (v) => (v == null ? "–" : fmt.pct(v))],
     ["Players idle at turnover", "unactivated_at_turnover", (v) => (v == null ? "–" : fmt.num(v, 1))],
     ["Monitoring rate", "monitoring_rate", fmt.pct], ["Reflections written", "reflections"],
+    ["Notebook updates", "notes_updates"],
     ["Aggression (blocks+blitzes+fouls / turn)", "aggression", (v) => fmt.num(v, 2)],
     ["Risk taking (dodges+GFIs / turn)", "risk_taking", (v) => fmt.num(v, 2)],
   ];
