@@ -79,6 +79,8 @@ class SeatDriver:
         self.consecutive_llm_errors = 0
         self.thread: Optional[threading.Thread] = None
         self.crashed: Optional[str] = None
+        # while a model call is in flight: when it started and when the turn's clock runs out (for spectators)
+        self.waiting: Optional[dict] = None
 
     # ---- checkpoints -------------------------------------------------------------------------------
     def state_dict(self) -> dict:
@@ -188,8 +190,9 @@ class SeatDriver:
             k = f"{resp.served_model or '?'}@{resp.provider or '?'}"
             u["served"][k] = u["served"].get(k, 0) + 1
 
-    async def _call_llm(self, messages, tools, key, sent, deadline=None, hurry=False):
+    async def _call_llm(self, messages, tools, key, sent, deadline=None, hurry=False, turn_ends=None):
         """One model call, fully recorded in the transcript. ``sent`` = messages already logged."""
+        self.waiting = {"since": time.time(), "turn_ends": turn_ends}
         try:
             resp = await self.llm.chat(messages, tools, deadline=deadline, **({"hurry": True} if hurry else {}))
         except LLMError as e:
@@ -199,6 +202,8 @@ class SeatDriver:
                 # no usage came back, so this call's cost is missing from usage["cost"] and the dollar cap
                 self.usage["uncertain_spend_calls"] += 1
             raise
+        finally:
+            self.waiting = None
         self._record_usage(resp)
         self.session.transcript.write(
             "llm_call", self.seat.side, episode=key, new_messages=messages[sent:],
@@ -255,7 +260,8 @@ class SeatDriver:
                 # until the model is hurried, its replies must finish before the last-chance reserve starts
                 reserve = 0.0 if hurry else self.limits.last_chance_seconds
                 resp = await self._call_llm(messages, oa_tools, key, sent, hurry=hurry,
-                                            deadline=t0 + self.limits.turn_time_limit - reserve)
+                                            deadline=t0 + self.limits.turn_time_limit - reserve,
+                                            turn_ends=t0 + self.limits.turn_time_limit)
                 self.consecutive_llm_errors = 0
             except LLMError as e:
                 if e.deadline and not hurry and self.limits.last_chance_seconds > 0:

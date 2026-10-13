@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import threading
+import time
 
 from flask import (Flask, Response, abort, jsonify, render_template, request, send_file, send_from_directory,
                    stream_with_context)
@@ -42,6 +43,14 @@ def create_app(start_scheduler: bool = True) -> Flask:
         m["home_name"] = names.get(m["home_model"], {}).get("name", m["home_model"])
         m["away_name"] = names.get(m["away_model"], {}).get("name", m["away_model"])
         return m
+
+    def live_fields(runner):
+        """Score and clock of a running game, plus which model's reply the game is waiting on and since when."""
+        g = runner.session.game
+        waiting = {side: d.waiting for side, d in runner.drivers.items() if d.waiting}
+        return {"home_score": g.state.home_team.state.score, "away_score": g.state.away_team.state.score,
+                "half": g.state.half, "turn": max(g.state.home_team.state.turn, g.state.away_team.state.turn),
+                "waiting": waiting, "server_time": time.time()}
 
     def placement_base(t):
         return json.loads(t["settings"] or "{}").get("placement_base") if t["kind"] == "placement" else None
@@ -146,11 +155,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
         for m in live:
             runner = bench.live.get(m["id"])
             if runner is not None:
-                g = runner.session.game
-                m["home_score"] = g.state.home_team.state.score
-                m["away_score"] = g.state.away_team.state.score
-                m["half"] = g.state.half
-                m["turn"] = max(g.state.home_team.state.turn, g.state.away_team.state.turn)
+                m.update(live_fields(runner))
         queued = upcoming(names)
         recent = [match_summary(m, names) for m in db.rows(
             "SELECT * FROM matches WHERE status IN ('completed','error') ORDER BY finished_at DESC LIMIT 12")]
@@ -219,11 +224,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
         out["tournament"] = t
         runner = bench.live.get(match_id)
         if runner is not None:
-            g = runner.session.game
-            out["home_score"] = g.state.home_team.state.score
-            out["away_score"] = g.state.away_team.state.score
-            out["half"] = g.state.half
-            out["turn"] = max(g.state.home_team.state.turn, g.state.away_team.state.turn)
+            out.update(live_fields(runner))
             out["live_usage"] = {side: {k: round(v, 4) if isinstance(v, float) else v
                                         for k, v in d.usage.items()} for side, d in runner.drivers.items()}
         return jsonify(out)

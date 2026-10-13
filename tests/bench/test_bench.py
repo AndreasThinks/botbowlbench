@@ -1384,6 +1384,38 @@ def test_turn_clock_pauses_while_a_tool_call_waits_on_the_opponent(monkeypatch):
     assert min(deadlines) > 0.8              # every call still had (nearly) the whole turn
 
 
+def test_driver_reports_the_reply_it_is_waiting_on(monkeypatch):
+    """Spectators see whose reply is in flight, since when and when the turn clock runs out; nothing once it's in."""
+    import anyio
+    import types
+    from bench.driver import DriverLimits, SeatDriver
+    from bench.llm import LLMResponse, ToolCall
+    from bench.session import Decision, GameSession
+
+    s = GameSession("t-waiting", "A", "B", seed=1)
+    s.home.team = s.game.state.home_team
+    s.home.decision = Decision(1, "turn-1-1", "Turn", False)
+    seen = []
+
+    class LLM:
+        async def chat(self, messages, tools, deadline=None):
+            seen.append(dict(d.waiting))
+            return LLMResponse(tool_calls=[ToolCall(id="c", name="move", arguments={})],
+                               raw_message={"role": "assistant", "content": ""})
+
+    class Client:
+        async def call_tool(self, name, args):
+            s.home.decision = None
+            return types.SimpleNamespace(content=[types.SimpleNamespace(text="ok")], is_error=False)
+
+    d = SeatDriver(s, s.home, LLM(), "A", DriverLimits(turn_time_limit=300.0), opponent_name="B")
+    monkeypatch.setattr(d, "_intro", lambda dec: "situation")
+    t = time.time()
+    anyio.run(d.play_episode, Client(), [], s.home.decision)
+    assert len(seen) == 1 and abs(seen[0]["since"] - t) < 1 and abs(seen[0]["turn_ends"] - (t + 300)) < 1
+    assert d.waiting is None
+
+
 def test_driver_does_not_replay_an_episode_handed_to_the_fallback():
     """After an auto-finish the seat's decision stays set until the game thread takes the fallback action;
     the driver must not start a second (empty) episode for it."""

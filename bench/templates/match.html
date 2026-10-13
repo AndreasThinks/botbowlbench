@@ -47,6 +47,7 @@
       <div class="mc-plan home" id="plan-home"></div>
     </div>
     <div class="feed-body mc-stream" id="feed" aria-live="polite"></div>
+    <div class="mc-waiting" id="waiting" hidden></div>
   </div>
 </div>
 <div class="muted" id="board-note" style="font-size:.8rem;margin-top:6px"></div>
@@ -548,7 +549,8 @@ function poll() {
     const justEnded = wasRunning && (m.status === "completed" || m.status === "error");
     // the replay opens parked on the final whistle, not rewound to the kick-off
     if (justEnded) history.replaceState(null, "", `#f=${Math.max(0, (m.frames || 1) - 1)}`);
-    match = m; renderHeader();
+    m._seen = Date.now() / 1000;
+    match = m; renderHeader(); renderWaiting();
     if (events.length > before) renderFeed(false);
     if (m.status === "completed" || m.status === "error") {
       renderStats();
@@ -565,6 +567,25 @@ const fitFeed = () => {
 };
 new ResizeObserver(fitFeed).observe(document.getElementById("stadium-card"));
 wide.addEventListener("change", fitFeed);
+
+// While a model's reply is still coming, say whose and for how long, so a long think doesn't look like a stall.
+// Times come from the server clock (server_time), so a skewed viewer clock doesn't matter.
+const waitEl = document.getElementById("waiting");
+const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+function renderWaiting() {
+  const w = match && match.status === "running" && !R.active ? match.waiting || {} : {};
+  const now = Date.now() / 1000 + (match && match.server_time ? match.server_time - match._seen : 0);
+  // a quick reply isn't worth a flicker: only show waits of a few seconds or more
+  const lines = Object.entries(w).filter(([, x]) => now - x.since >= 3).map(([side, x]) => {
+    const left = x.turn_ends != null ? Math.max(0, x.turn_ends - now) : null;
+    return h("div", { class: side }, h("span", { class: "dot" }), h("b", {}, names()[side]),
+      ` is thinking · ${mmss(Math.max(0, now - x.since))}`,
+      left != null ? h("span", { class: "muted" }, ` · ${mmss(left)} left this turn`) : null);
+  });
+  waitEl.hidden = !lines.length;
+  waitEl.replaceChildren(...lines);
+}
+setInterval(renderWaiting, 1000);
 
 let timer = null;
 poll().then((more) => {

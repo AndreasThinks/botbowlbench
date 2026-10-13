@@ -113,16 +113,29 @@ function renderNow(s) {
   box.innerHTML = "";
   const stadiumEl = h("div", {}, h("div", { class: "stadium-empty" }, "Loading the board…"));
   box.append(h("div", { class: "card stadium-card" },
-    h("div", { class: "now-bar" }, h("span", { class: "badge live" }, "● LIVE"), h("span", { class: "muted" }, "Now playing")),
+    h("div", { class: "now-bar" }, h("span", { class: "badge live" }, "● LIVE"), h("span", { class: "muted" }, "Now playing"),
+      W.el = h("span", { class: "muted now-wait" })),
     h("div", { class: "hp-split" }, stadiumEl, teaser(m))));
   if (board) board.stop();
   board = BBBoard.create(stadiumEl, { names: () => ({ home: m.home_name, away: m.away_name }) });
   board.live(m.id);
 }
 
+// whose reply the game is waiting on and for how long, on the server's clock
+const W = { el: null, m: null, seen: 0 };
+const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+function drawWait() {
+  if (!W.el) return;
+  const m = W.m, w = m && m.id === liveId && !hold ? Object.entries(m.waiting || {}) : [];
+  const now = Date.now() / 1000 + (m && m.server_time ? m.server_time - W.seen : 0);
+  W.el.textContent = w.filter(([, x]) => now - x.since >= 3).map(([side, x]) => `${m[side + "_name"]} is thinking · ${mmss(Math.max(0, now - x.since))}`).join(" · ");
+}
+setInterval(drawWait, 1000);
+
 function refresh() {
   api("/api/status").then((s) => {
     renderNow(s);
+    W.m = s.live[0] || null; W.seen = Date.now() / 1000; drawWait();
     const q = document.getElementById("queued"); q.innerHTML = "";
     if (!s.queued.length) q.append(h("div", { class: "empty" }, "Nothing queued."));
     s.queued.forEach((m) => q.append(BB.matchRow(m)));

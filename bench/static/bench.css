@@ -514,6 +514,12 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 .mc-stream .reflection.home { border-left-color: var(--home); background: var(--home-soft); }
 .mc-stream .reflection.away { border-left-color: var(--away); background: var(--away-soft); }
 .mc-stream .reflection .expects { margin-top: 4px; font-size: .8rem; }
+.mc-waiting { border-top: 1px solid var(--border); padding: 6px 12px; font-family: var(--mono); font-size: .76rem; color: var(--text-secondary); }
+.mc-waiting .home b { color: var(--home); } .mc-waiting .away b { color: var(--away); }
+.mc-waiting .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 6px;
+  vertical-align: middle; animation: mc-pulse 1.2s ease-in-out infinite; }
+@keyframes mc-pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .mc-waiting .dot { animation: none; } }
 .neutral { margin: 6px 0; font-size: .8rem; color: var(--text-secondary); }
 .note { font-size: .74rem; color: var(--text-muted); margin: 4px 0 4px 13px; font-family: var(--mono); overflow-wrap: anywhere; }
 .note.error { color: var(--critical); }
