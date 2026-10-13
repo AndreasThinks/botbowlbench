@@ -44,6 +44,7 @@ class LLMResponse:
     generation_id: str = ""
     finish_reason: str = ""
     raw_message: Dict[str, Any] = field(default_factory=dict)
+    filtered_retries: int = 0     # empty content-filter replies retried before this one (see is_empty_filtered)
 
 
 def is_account_limit(body: str) -> bool:
@@ -58,6 +59,13 @@ def is_account_limit(body: str) -> bool:
                                    str(meta.get("limit_source", "")).startswith("openrouter_")):
         return True
     return "key limit exceeded" in body.lower()
+
+
+def is_empty_filtered(resp: "LLMResponse") -> bool:
+    """A provider-side content filter that stopped the call before the model produced anything: no tokens, no text,
+    no tool call. The model never answered, so this is a provider error to retry, not a reply without a tool call."""
+    return (resp.finish_reason or "").lower() == "content_filter" and not resp.tool_calls \
+        and not resp.content.strip() and not resp.reasoning.strip() and resp.completion_tokens == 0
 
 
 class LLMError(Exception):
@@ -194,6 +202,7 @@ class OpenRouterLLM:
         }
         delay = 2.0
         last_err = None
+        filtered = 0
         for attempt in range(self.max_retries + 1):
             t0 = time.time()
             # httpx's timeout is per socket read, and OpenRouter keeps slow requests alive with whitespace, so it
@@ -229,7 +238,13 @@ class OpenRouterLLM:
                             last_err = f"provider error: {data['error']}"
                         else:
                             self.tool_choice = body["tool_choice"]
-                            return self._parse(data, time.time() - t0)
+                            resp = self._parse(data, time.time() - t0)
+                            if not is_empty_filtered(resp):
+                                resp.filtered_retries = filtered
+                                return resp
+                            filtered += 1
+                            last_err = (f"provider content filter returned an empty reply (0 tokens, "
+                                        f"{resp.provider or 'unknown provider'})")
                 elif r.status_code in (400, 404) and body.get("tool_choice") == "required":
                     # most likely the provider can't force tool use: try again at once with "auto", and keep
                     # "auto" for this client if that works

@@ -1005,7 +1005,7 @@ def test_settings_output_ceiling_applies_unless_the_model_sets_its_own(fake_open
                              {"budget_usd_per_game": 10, "max_output_tokens": 16384}, api_key="k").run()
         assert fake_openrouter.bodies
         assert all(b.get("max_tokens") == want for b in fake_openrouter.bodies), name
-        assert result["meta"]["harness"]["protocol_version"] == PROTOCOL_VERSION == "1.3"
+        assert result["meta"]["harness"]["protocol_version"] == PROTOCOL_VERSION == "1.4"
 
 
 def test_default_settings_carry_the_output_ceiling():
@@ -1058,6 +1058,51 @@ def test_interleaved_truncations_trip_the_limit_since_last_game_action(fake_open
     assert "output length limit" in hit[0] and "max_tokens" not in hit[0]
     assert "in a row" not in hit[0]
     assert result["home_stats"]["output_truncations"] >= 3
+
+
+def test_empty_content_filter_replies_are_retried_not_counted_against_the_model(fake_openrouter, monkeypatch):
+    """A zero-token content_filter reply means the provider stopped the call before the model answered: retry it."""
+    import anyio
+    import bench.llm
+    from bench.llm import LLMError, OpenRouterLLM
+    monkeypatch.setattr(bench.llm.asyncio, "sleep", lambda s: anyio.sleep(0))
+    llm = OpenRouterLLM("fake/model", "k")
+    fake_openrouter.script = ["F", "F"]
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "choose a player to activate"}]
+    tools = [{"type": "function", "function": {"name": "end_turn", "parameters": {}}}]
+
+    async def go():
+        try:
+            return await llm.chat(msgs, tools)
+        finally:
+            await llm.aclose()
+    resp = anyio.run(go)
+    assert resp.tool_calls and resp.filtered_retries == 2 and fake_openrouter.calls == 3
+    # only an empty reply qualifies: a filtered reply with text is the model's own answer
+    r = bench.llm.LLMResponse(content="I can't help with that", finish_reason="content_filter")
+    assert not bench.llm.is_empty_filtered(r)
+    # when every retry is filtered the call fails as an LLM error, not as a reply without a tool call
+    llm2 = OpenRouterLLM("fake/model", "k", max_retries=1)
+    fake_openrouter.script = ["F", "F"]
+
+    async def go2():
+        try:
+            await llm2.chat(msgs, tools)
+        finally:
+            await llm2.aclose()
+    with pytest.raises(LLMError, match="content filter"):
+        anyio.run(go2)
+
+
+def test_content_filter_retries_are_counted_in_match_stats(fake_openrouter, monkeypatch):
+    import anyio
+    import bench.llm
+    monkeypatch.setattr(bench.llm.asyncio, "sleep", lambda s: anyio.sleep(0))
+    fake_openrouter.script = ["F", "F", "F"]
+    cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 12}
+    result = MatchRunner("t-filter", cfg, RANDOM, {}, api_key="k").run()
+    hs = result["home_stats"]
+    assert hs["content_filter_retries"] == 3 and hs["llm_errors"] == 0
 
 
 def test_prompt_wording_is_not_strictly_consecutive():

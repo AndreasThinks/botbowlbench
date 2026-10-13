@@ -53,7 +53,8 @@ last game action, or running out of budget, ends your turn automatically.
 - Each decision starts a fresh conversation: you do not see your earlier messages or tool results. You do see your
   notebook and your last plan. The notebook is private, lasts for this game only and holds at most {NOTES_MAX_CHARS}
   characters: use it for rules, lessons and plans worth keeping. Rewrite it with the `notes` of end_turn (or
-  update_notes at any time); every write replaces the whole notebook.
+  update_notes at any time). Every write replaces the whole notebook, so carry over each lesson that still applies.
+  You see the board at every decision, so there is no need to copy positions into it.
 - You may talk to your opponent with send_message (max 2 per turn). Spectators can read the chat.
 - Always answer with a tool call. Keep any text you write very short."""
 
@@ -71,7 +72,7 @@ class SeatDriver:
         self.usage = {"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0,
                       "reasoning_tokens": 0, "cost": 0.0, "latency": 0.0, "tool_calls": 0, "llm_errors": 0,
                       "no_tool_replies": 0, "output_truncations": 0, "http_timeouts": 0,
-                      "uncertain_spend_calls": 0, "deadline_cutoffs": 0, "last_chance_calls": 0, "budget_exhausted": 0, "episodes": 0,
+                      "uncertain_spend_calls": 0, "content_filter_retries": 0, "deadline_cutoffs": 0, "last_chance_calls": 0, "budget_exhausted": 0, "episodes": 0,
                       "served": {}}
         self.unavailable = False
         self._oa_tools = []
@@ -182,6 +183,7 @@ class SeatDriver:
         u["reasoning_tokens"] += resp.reasoning_tokens
         u["cost"] += resp.cost
         u["latency"] += resp.latency
+        u["content_filter_retries"] += resp.filtered_retries
         if resp.served_model or resp.provider:
             k = f"{resp.served_model or '?'}@{resp.provider or '?'}"
             u["served"][k] = u["served"].get(k, 0) + 1

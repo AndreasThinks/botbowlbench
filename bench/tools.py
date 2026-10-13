@@ -532,7 +532,8 @@ TOOL_DOCS = {
     "foul": "Foul (once per turn): player_id kicks a PRONE/STUNNED opponent target_id (moves next to it if needed).",
     "end_turn": "End your team turn. Requires a short reflection: `plan` = what you intend to do on your next "
                 "turn (1-3 concrete sentences), `prediction` = what you expect your opponent to do on their turn, "
-                "`notes` = your whole notebook as it should read from now on, or 'unchanged'. "
+                "`notes` = your whole notebook as it should read from now on (keep the lessons that still apply), "
+                "or 'unchanged'. "
                 "The call returns when it is your turn again (or the game is over).",
     "reflect": "Record your reflection without ending the turn: `plan` for your next turn, `prediction` of the "
                "opponent's next turn and `notes` (your whole notebook, or 'unchanged'). Use it when asked to after "

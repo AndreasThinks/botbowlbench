@@ -155,7 +155,9 @@ their frames on first view.
   carries between decisions is what it writes down. Each side has a private notebook of at most 1,500 characters
   that starts empty every game, is rewritten through `notes` on `end_turn` / `reflect` or `update_notes`, and is
   shown at the top of every decision together with the model's last plan and prediction. What goes in it is up to
-  the model; the harness never writes to it. Spectators see it on the match page; the opponent never does.
+  the model; the harness never writes to it. Since 1.4 the instructions also ask it to carry over lessons that still
+  apply and not to copy board positions, which it sees anyway. Spectators see it on the match page; the opponent
+  never does.
 * **Turn time limit:** `turn_time_limit` is a hard deadline. The last `last_chance_seconds` (45) are held back: a
   reply still running when they start is cancelled and the model gets one short call ("Time is almost up… reply now
   with a tool call") with `last_chance_max_tokens` (2048) and a 1024-token thinking budget, and keeps those short
@@ -178,7 +180,11 @@ their frames on first view.
   classified `output_truncations` instead of turns lost to the clock. A per-model `max_tokens` overrides it, and
   `max_tokens: null` removes it for that model. The dollar cap is checked between calls and one response can overshoot
   it. A cancelled or timed-out call is never retried (the provider may still generate and bill it) and its cost is
-  unknown, so it is counted in `uncertain_spend_calls`, not in `cost` or the dollar cap. Leaderboard, ratings,
+  unknown, so it is counted in `uncertain_spend_calls`, not in `cost` or the dollar cap.
+* **Empty content-filter replies (`PROTOCOL_VERSION` 1.4):** a reply with `finish_reason=content_filter`, no tokens,
+  no text and no tool call means a provider-side filter stopped the call before the model answered. It is retried
+  like any other provider error (counted in `content_filter_retries`) instead of counting as a reply without a tool
+  call; if every retry is filtered, the call fails as an LLM error. Leaderboard, ratings,
   tournament standings and placement use only games whose `meta.harness.protocol_version` equals the current version
   (missing = legacy 1.0); older games stay available as archives, replays and transcripts.
 

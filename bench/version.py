@@ -11,7 +11,9 @@ import subprocess
 #      budget; tool_choice=required; a last-chance call when a reply runs into the end of the turn
 # 1.3: a private per-game notebook (end_turn/reflect `notes`, update_notes) and the last plan are shown at every
 #      decision
-PROTOCOL_VERSION = "1.3"
+# 1.4: zero-token content-filter replies are retried as provider errors; notebook instructions ask models to keep
+#      lessons that still apply and not to copy board positions
+PROTOCOL_VERSION = "1.4"
 LEGACY_PROTOCOL_VERSION = "1.0"  # matches recorded before protocol versions were enforced have no version in meta
 
 
