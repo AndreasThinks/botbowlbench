@@ -113,6 +113,30 @@ def test_state_text_and_illegal_inputs():
         s.abort()
 
 
+def test_push_and_follow_up_name_their_squares():
+    from botbowl.core.model import ActionChoice, Square
+    from botbowl.core.table import ActionType, OutcomeType
+    from botbowl.core.procedure import Outcome
+    s, tools, threads = _first_turn_session()
+    try:
+        g = s.game
+        attacker = [p for p in g.get_players_on_pitch(s.home.team) if p.state.up][0]
+        defender = g.get_players_on_pitch(s.away.team)[0]
+        # an auto-resolved push leaves the model only this line, so it has to say where the player went
+        assert render.report_text(g, Outcome(OutcomeType.PUSHED, player=defender, position=Square(11, 7))) \
+            == f"{render.pid(defender)} was pushed to (11,7)."
+        assert render.report_text(g, Outcome(OutcomeType.FOLLOW_UP, player=attacker, position=Square(10, 6))) \
+            == f"{render.pid(attacker)} follows up to (10,6)."
+        empty = next(Square(x, y) for x in range(1, g.arena.width - 1) for y in range(1, g.arena.height - 1)
+                     if g.get_player_at(Square(x, y)) is None)
+        g.state.available_actions = [ActionChoice(ActionType.FOLLOW_UP, team=s.home.team,
+                                                  positions=[attacker.position, empty])]
+        txt = render.legal_actions_text(g, s.home.team)
+        assert f"{render.sq(attacker.position)}=stay {render.sq(empty)}=follow up" in txt
+    finally:
+        s.abort()
+
+
 def test_openrouter_driver_against_fake_api(fake_openrouter):
     cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 12}
     events = []
