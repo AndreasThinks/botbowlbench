@@ -21,7 +21,7 @@ let board = null;
 // "Inside the coaches' heads": a live taste of the match centre beside the board, so it's clear what
 // opening it gets you. Keeps only each coach's latest thought, the latest play and the plans, not the whole
 // event history. Only the button links to the match centre, so the panel can be read and selected freely.
-const T = { id: null, last: 0, box: null, m: null, thoughts: {}, play: null, plans: {} };
+const T = { id: null, last: 0, box: null, m: null, thoughts: {}, play: null, plans: {}, live: {} };
 function teaser(m) {
   Object.assign(T, { id: m.id, last: 0, m, thoughts: {}, play: null, plans: {},
     box: h("div", { class: "hp-teaser" }) });
@@ -50,10 +50,15 @@ function drawTeaser() {
   box.innerHTML = "";
   box.append(h("h2", {}, "Inside the coaches' heads"));
   // Both coaches' latest thoughts, newest first: they share whatever height the board leaves free.
-  const ths = Object.values(T.thoughts).sort((a, b) => b.id - a.id);
-  if (!ths.length) box.append(h("div", { class: "muted" }, "Waiting for the first move…"));
+  // a reply still streaming in goes first, live; otherwise each coach's latest finished thought
+  const live = Object.entries(T.live || {}).filter(([, x]) => x.text);
+  live.forEach(([side, x]) => box.append(h("div", { class: `hp-think ${side}` },
+    h("div", { class: "hp-who" }, nm[side], h("span", { class: "muted" }, ` is thinking · live · ≈${Math.round(x.chars / 4).toLocaleString()} tokens`)),
+    h("div", { class: "hp-quote" }, "…" + x.text.slice(-600)))));
+  const ths = Object.values(T.thoughts).filter((th) => !live.some(([side]) => side === th.side)).sort((a, b) => b.id - a.id);
+  if (!ths.length && !live.length) box.append(h("div", { class: "muted" }, "Waiting for the first move…"));
   ths.forEach((th, i) => box.append(h("div", { class: `hp-think ${th.side}` },
-    h("div", { class: "hp-who" }, nm[th.side], h("span", { class: "muted" }, i ? " last thought" : " is thinking")),
+    h("div", { class: "hp-who" }, nm[th.side], h("span", { class: "muted" }, i || live.length ? " last thought" : " is thinking")),
     h("div", { class: "hp-quote" }, th.payload.text))));
   if (T.play) box.append(h("div", { class: "hp-last" }, h("span", { class: "muted" }, "Latest: "),
     T.play.payload.lines[T.play.payload.lines.length - 1].t.replace(/Home\(H\)/g, nm.home).replace(/Away\(A\)/g, nm.away)));
@@ -136,6 +141,8 @@ function refresh() {
   api("/api/status").then((s) => {
     renderNow(s);
     W.m = s.live[0] || null; W.seen = Date.now() / 1000; drawWait();
+    T.live = (W.m && W.m.id === T.id && W.m.waiting) || {};
+    if (T.box) drawTeaser();
     const q = document.getElementById("queued"); q.innerHTML = "";
     if (!s.queued.length) q.append(h("div", { class: "empty" }, "Nothing queued."));
     s.queued.forEach((m) => q.append(BB.matchRow(m)));

@@ -16,6 +16,7 @@ DEFAULT_SETTINGS = {
     "reasoning_max_tokens": None,     # optional thinking budget (reasoning.max_tokens) per reply; per-model value overrides
     "reasoning_enabled": True,        # with no budget: thinking on at each model's own default effort
     "tool_choice": "required",        # every reply must be a tool call; falls back to auto where a provider rejects it
+    "stream": True,                   # stream replies so spectators watch the thinking arrive (models see the same request)
     "last_chance_seconds": 45,        # held back from each turn for one short "act now" call if a reply runs long
     "provider_sort": "throughput",    # OpenRouter host order for every model: fastest recent throughput first
     "provider_min_throughput": 50,    # ...preferring hosts at least this fast (tokens/s; slower ones go last)

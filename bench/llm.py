@@ -12,7 +12,7 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
@@ -126,8 +126,14 @@ class OpenRouterLLM:
                  reasoning_max_tokens: Optional[int] = None, reasoning_enabled: bool = False,
                  tool_choice: str = "auto",
                  hurry_max_tokens: int = 2048, provider_prefs: Optional[dict] = None,
-                 session_id: Optional[str] = None):
+                 session_id: Optional[str] = None, stream: bool = False):
         self.model = model
+        # Streamed replies are put back together into the usual response, so nothing changes for the model or the
+        # harness; stream_sink(reasoning, content) sees each piece as it arrives (the live "thinking" view), and the
+        # text received so far survives a reply the turn deadline cancels (see partial).
+        self.stream = stream
+        self.stream_sink: Optional[Callable[[str, str], None]] = None
+        self.partial = {"reasoning": "", "content": ""}
         # OpenRouter routing (e.g. {sort: throughput, max_price: ...}), the same rule for every model; a model's own
         # extra.provider wins. session_id keeps a seat's calls on one host for the game so its prompt cache stays warm;
         # only sent where caching needs explicit breakpoints (Claude), since pinning can lock a seat onto a slow host.
@@ -207,6 +213,8 @@ class OpenRouterLLM:
             body["session_id"] = self.session_id
         if self.auto_cache:
             body["cache_control"] = {"type": "ephemeral"}
+        if self.stream:
+            body["stream"] = True
         body.update(self.extra)
         lowest_effort = await self._lowest_effort()
         if hurry:
@@ -233,8 +241,9 @@ class OpenRouterLLM:
             if budget <= 0:
                 raise LLMError(f"{last_err or 'turn deadline reached'} (no time left for a model call)",
                                deadline=True)
+            self.partial = {"reasoning": "", "content": ""}
             try:
-                r = await asyncio.wait_for(self.client.post(OPENROUTER_URL, json=body, headers=headers), budget)
+                r, data = await asyncio.wait_for(self._post(body, headers), budget)
             except asyncio.TimeoutError:
                 # like a read timeout, the provider may still be generating (and billing) after we hang up
                 if deadline is not None:
@@ -251,9 +260,7 @@ class OpenRouterLLM:
                 last_err = f"network error: {e}"
             else:
                 if r.status_code == 200:
-                    try:
-                        data = r.json()
-                    except ValueError:
+                    if data is None:
                         last_err = "invalid JSON from OpenRouter"
                     else:
                         if "error" in data and not data.get("choices"):
@@ -292,6 +299,80 @@ class OpenRouterLLM:
                 await asyncio.sleep(delay)
                 delay *= 2
         raise LLMError(last_err or "unknown error")
+
+    async def _post(self, body: dict, headers: dict):
+        """POST one request: (response, decoded body or None). A streamed reply (server-sent events) is put back
+        together into the same shape as a plain one."""
+        async with self.client.stream("POST", OPENROUTER_URL, json=body, headers=headers) as r:
+            if r.status_code == 200 and "text/event-stream" in r.headers.get("content-type", ""):
+                return r, await self._read_stream(r)
+            await r.aread()
+            if r.status_code != 200:
+                return r, None
+            try:
+                return r, r.json()
+            except ValueError:
+                return r, None
+
+    async def _read_stream(self, r) -> Optional[dict]:
+        out = {"choices": [{"message": {"role": "assistant"}, "finish_reason": None}]}
+        msg = out["choices"][0]["message"]
+        content, reasoning, calls, details = [], [], {}, {}
+        async for line in r.aiter_lines():
+            if not line.startswith("data:"):
+                continue   # blank separators and ": OPENROUTER PROCESSING" keep-alives
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                chunk = json.loads(payload)
+            except ValueError:
+                continue
+            for k in ("id", "model", "provider", "usage"):
+                if chunk.get(k):
+                    out[k] = chunk[k]
+            if chunk.get("error"):
+                out["error"] = chunk["error"]   # a mid-stream failure: handled like an error reply
+            choice = (chunk.get("choices") or [{}])[0]
+            if choice.get("finish_reason"):
+                out["choices"][0]["finish_reason"] = choice["finish_reason"]
+            delta = choice.get("delta") or {}
+            text, thought = delta.get("content") or "", delta.get("reasoning") or ""
+            if text:
+                content.append(text)
+                self.partial["content"] += text
+            if thought:
+                reasoning.append(thought)
+                self.partial["reasoning"] += thought
+            if (text or thought) and self.stream_sink:
+                self.stream_sink(thought, text)
+            for i, tc in enumerate(delta.get("tool_calls") or []):
+                cur = calls.setdefault(tc.get("index", i), {"id": None, "type": "function",
+                                                            "function": {"name": "", "arguments": ""}})
+                if tc.get("id"):
+                    cur["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                cur["function"]["name"] += fn.get("name") or ""
+                args = fn.get("arguments")
+                cur["function"]["arguments"] += args if isinstance(args, str) else json.dumps(args) if args else ""
+            for i, d in enumerate(delta.get("reasoning_details") or []):
+                # pieces of one reasoning block share an index: join their text, keep the latest of the rest
+                cur = details.setdefault((d.get("index", i), d.get("type")), {})
+                for k, v in d.items():
+                    if k in ("text", "summary", "data") and isinstance(v, str):
+                        cur[k] = cur.get(k, "") + v
+                    elif v is not None or k not in cur:
+                        cur[k] = v
+        if "error" in out and not content and not calls:
+            out.pop("choices")
+        msg["content"] = "".join(content)
+        if reasoning:
+            msg["reasoning"] = "".join(reasoning)
+        if calls:
+            msg["tool_calls"] = [dict(calls[k], id=calls[k]["id"] or f"call_{n}") for n, k in enumerate(sorted(calls))]
+        if details:
+            msg["reasoning_details"] = list(details.values())
+        return out
 
     @staticmethod
     def _parse(data: dict, latency: float) -> LLMResponse:
