@@ -185,10 +185,13 @@ their frames on first view.
   it. A cancelled or timed-out call is never retried (the provider may still generate and bill it) and its cost is
   unknown, so it is counted in `uncertain_spend_calls`, not in `cost` or the dollar cap.
 * **Host routing:** every request asks OpenRouter to sort a model's hosts by recent throughput
-  (`provider_sort: throughput`), but never to pay more than `provider_max_price_factor` (1.5) times the model's listed
-  price per token, so premium "fast" tiers stay out. Each seat sends a `session_id` (`<match>:<side>`) so OpenRouter
-  keeps a game's calls on one host where it can, which keeps that host's prompt cache warm. This is routing, not the
-  prompt, so it does not change the protocol version; the host that served each call is still logged.
+  (`provider_sort: throughput`), to prefer hosts that recently ran at `provider_min_throughput` (50) tokens/s or more
+  (slower ones go to the back of the queue, not out of it), and never to pay more than `provider_max_price_factor` (3)
+  times the model's listed price per token. The listing is often the cheapest, slowest host, so a tighter cap shut
+  out every fast host for models like DeepSeek. Claude seats also send a `session_id` (`<match>:<side>`) so a game's
+  calls stay on one host and its prompt cache stays warm; other models are not pinned, so a slow first host isn't
+  kept for the whole game. This is routing, not the prompt, so it does not change the protocol version; the host
+  that served each call is still logged.
 * **Prompt caching:** Anthropic models also get a top-level `cache_control` so the cache follows the growing
   conversation inside a turn (on top of the fixed breakpoints on the system prompt and first message). Other providers
   cache automatically. If a host rejects the field it is dropped for the rest of that client's life.

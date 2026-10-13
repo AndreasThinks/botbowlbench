@@ -1105,14 +1105,17 @@ def test_content_filter_retries_are_counted_in_match_stats(fake_openrouter, monk
     assert hs["content_filter_retries"] == 3 and hs["llm_errors"] == 0
 
 
-def test_requests_go_to_the_fastest_affordable_host_and_stay_there(fake_openrouter):
-    """Every model: hosts sorted by throughput, capped at 1.5x the listed price, one session per seat per game."""
+def test_requests_go_to_the_fastest_affordable_host(fake_openrouter):
+    """Every model: hosts sorted by throughput, fast ones preferred, capped at 3x the listed price; only Claude
+    (whose cache needs it) is pinned to one host per seat per game."""
     cfg = {"name": "Fake LLM", "provider": "openrouter", "model": "fake/model", "max_tool_calls_per_turn": 12}
-    result = MatchRunner("t-route", cfg, RANDOM, {"provider_sort": "throughput", "provider_max_price_factor": 1.5}, api_key="k").run()
+    result = MatchRunner("t-route", cfg, RANDOM, {"provider_sort": "throughput", "provider_min_throughput": 50,
+                                                          "provider_max_price_factor": 3}, api_key="k").run()
     assert result["error"] is None and fake_openrouter.bodies
     for b in fake_openrouter.bodies:
-        assert b["provider"] == {"sort": "throughput", "max_price": {"prompt": 1.5, "completion": 3.0}}
-        assert b["session_id"] == "t-route:home"
+        assert b["provider"] == {"sort": "throughput", "preferred_min_throughput": 50.0,
+                                 "max_price": {"prompt": 3.0, "completion": 6.0}}
+        assert "session_id" not in b             # not pinned: a slow first host isn't kept for the whole game
         assert "cache_control" not in b          # only Claude models need cache breakpoints
     from bench.match import provider_prefs
     # no listing to price against: sorted, but no cap rather than a wrong one
@@ -1124,7 +1127,7 @@ def test_requests_go_to_the_fastest_affordable_host_and_stay_there(fake_openrout
 def test_claude_requests_cache_the_growing_turn_and_fall_back_if_refused(fake_openrouter):
     import anyio
     from bench.llm import OpenRouterLLM
-    llm = OpenRouterLLM("anthropic/claude-haiku-5.5", "k", provider_prefs={"sort": "throughput"})
+    llm = OpenRouterLLM("anthropic/claude-haiku-5.5", "k", provider_prefs={"sort": "throughput"}, session_id="m:home")
     msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "choose a player to activate"}]
     tools = [{"type": "function", "function": {"name": "end_turn", "parameters": {}}}]
 
@@ -1132,6 +1135,7 @@ def test_claude_requests_cache_the_growing_turn_and_fall_back_if_refused(fake_op
         return await llm.chat(msgs, tools)
     anyio.run(go)
     assert fake_openrouter.bodies[-1]["cache_control"] == {"type": "ephemeral"}
+    assert fake_openrouter.bodies[-1]["session_id"] == "m:home"   # Claude stays on one host so the cache stays warm
     # a host that refuses top-level cache_control: the same call goes again without it, and it stays off
     fake_openrouter.reject_cache_control = True
     anyio.run(go)

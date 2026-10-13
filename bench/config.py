@@ -18,7 +18,8 @@ DEFAULT_SETTINGS = {
     "tool_choice": "required",        # every reply must be a tool call; falls back to auto where a provider rejects it
     "last_chance_seconds": 45,        # held back from each turn for one short "act now" call if a reply runs long
     "provider_sort": "throughput",    # OpenRouter host order for every model: fastest recent throughput first
-    "provider_max_price_factor": 1.5, # ...but never a host dearer than this times the model's listed price
+    "provider_min_throughput": 50,    # ...preferring hosts at least this fast (tokens/s; slower ones go last)
+    "provider_max_price_factor": 3,   # ...but never a host dearer than this times the model's listed price
     "last_chance_max_tokens": 2048,   # output ceiling for that last-chance call  # finish_reason=length with no tool call; defaults same as illegal cap
     "max_messages_per_turn": 2,
     "max_message_len": 280,
