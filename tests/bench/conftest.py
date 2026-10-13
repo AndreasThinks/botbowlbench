@@ -15,7 +15,8 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
     # the completion budget on reasoning. 0 disables. Separate from the usual n%11 text-only nudges.
     length_truncations_left = 0
     length_truncation_mode = "main"  # \"main\" | \"reflect\": only fire on main-loop / reflect-only calls
-    # Scripted main-loop replies consumed first: "L" = empty finish_reason=length, "T" = text-only stop.
+    # Scripted main-loop replies consumed first: "L" = empty finish_reason=length, "T" = text-only stop,
+    # "F" = an empty provider content-filter reply (0 tokens).
     script = []
 
     def log_message(self, *args):
@@ -54,6 +55,12 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
                                        "completion_tokens_details": {"reasoning_tokens": usage_comp}}})
             return
         scripted = FakeOpenRouter.script.pop(0) if FakeOpenRouter.script and not reflect_only else None
+        if scripted == "F":
+            self._send(200, {"id": f"gen-{n}", "model": body["model"], "provider": "FakeCloud",
+                             "choices": [{"message": {"role": "assistant", "content": None},
+                                          "finish_reason": "content_filter"}],
+                             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "cost": 0}})
+            return
         if scripted == "L":
             self._send(200, {"id": f"gen-{n}", "model": body["model"], "provider": "FakeCloud",
                              "choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "length"}],
