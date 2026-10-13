@@ -706,17 +706,13 @@ const BBBoard = (() => {
       const run = lastRun;
       const shown = run ? run.steps.filter((s) => s.dodge || s.gfi) : [];
       const f = hist[hist.length - 1];
-      const zs = shownZside;
-      rolls.hidden = !shown.length && !zs;
+      rolls.hidden = !shown.length && !shownZside;
       if (rolls.hidden) return;
       rolls.className = "st-rolls";
-      if (zs) {
-        rolls.append(h("span", "st-rolls-key", h("i", `sw ${zs === "H" ? "home" : "away"}`),
-          `Shaded: ${sideName(zs)} tackle zones. Leaving one takes a dodge roll`));
-      }
       if (!shown.length) {
         const act = f && f.act, W = dims && dims.W, H = dims && dims.H;
         const e = act && f.p[act] && zones(f, act[0] === "H" ? "A" : "H", W, H).get(sqKey(f.p[act]));
+        rolls.hidden = !e;
         if (e) rolls.append(h("span", "st-roll bad", h("b", null, `${longName(act)} is marked by ${e.n === 1 ? "1 player" : e.n + " players"}`), " · moving away takes a dodge roll"));
         return;
       }

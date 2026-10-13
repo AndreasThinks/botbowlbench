@@ -268,6 +268,7 @@ tr.disabled td { opacity: .55; }
 .prose code { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px; font-size: .88em; }
 .prose pre { background: var(--surface-2); padding: 12px; border-radius: 8px; overflow-x: auto; }
 footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-muted); font-size: .82rem; }
+.footer-credit { display: block; margin-top: 6px; }
 @media (max-width: 640px) {
   .topbar-inner { gap: 10px; }
   .status-pill .txt { display: none; }
@@ -544,10 +545,6 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 .tz-hover { fill: rgba(255,255,255,.12); stroke-width: .06; stroke-dasharray: .16 .1; }
 .tz-hover-tx { font: 700 .22px var(--mono); fill: #fff; stroke: #111; stroke-width: .05; paint-order: stroke; text-anchor: middle; }
 .st-rolls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 4px 16px 0; font-size: .78rem; }
-.st-rolls-key { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: .76rem; margin-right: 8px; flex-basis: 100%; }
-.st-rolls-key .sw { width: 14px; height: 14px; display: inline-block; flex: none; }
-.st-rolls-key .sw.home { background: color-mix(in srgb, var(--home) 45%, transparent); outline: 1px solid var(--home); outline-offset: -1px; }
-.st-rolls-key .sw.away { background: color-mix(in srgb, var(--away) 45%, transparent); outline: 1px solid var(--away); outline-offset: -1px; }
 .st-rolls-lbl { font-family: var(--mono); font-size: .66rem; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin-right: 2px; }
 .st-roll { display: inline-flex; gap: 6px; align-items: baseline; border: 1px solid var(--border); padding: 1px 7px; background: var(--bg); color: var(--text-secondary); }
 .st-roll b { font-family: var(--mono); font-weight: 600; color: var(--text-primary); }
