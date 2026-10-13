@@ -175,6 +175,10 @@ def roster_text(game, team, title: str) -> str:
     return "\n".join(lines)
 
 
+# outcomes whose report position is where the piece ended up
+_WHERE_TO = {OutcomeType.PUSHED, OutcomeType.FOLLOW_UP, OutcomeType.BALL_BOUNCED, OutcomeType.PLAYER_BOUNCED}
+
+
 def report_text(game, report) -> Optional[str]:
     texts = _load_log_texts()
     name = report.outcome_type.name
@@ -198,6 +202,9 @@ def report_text(game, report) -> Optional[str]:
         line = line.replace("<players>", pid(report.player) + "'s").replace("<player>", pid(report.player))
     if report.opp_player is not None:
         line = line.replace("<opp_player>", pid(report.opp_player))
+    if report.outcome_type in _WHERE_TO and report.position is not None:
+        # the templates drop the square; without it a player can't tell where a pushed piece ended up
+        line = re.sub(r"\.?\s*$", f" to {sq(report.position)}.", line, count=1)
     if report.rolls:
         rolls = []
         for r in report.rolls:
@@ -391,6 +398,10 @@ def legal_actions_text(game, team) -> str:
             detail = f" target squares: {_positions_text(a.positions, 12)}"
         elif a.players:
             detail = " players: " + " ".join(pid(p) for p in a.players)
+        elif name == "FOLLOW_UP" and a.positions:
+            # the attacker's own square means stay; the empty one is the defender's vacated square
+            detail = " squares: " + " ".join(
+                f"{sq(pos)}={'stay' if game.get_player_at(pos) is not None else 'follow up'}" for pos in a.positions)
         elif a.positions:
             detail = " squares: " + _positions_text(a.positions)
         lines.append(f"  {name}{(' - ' + desc) if desc else ''}{detail}")
