@@ -1203,6 +1203,34 @@ def test_empty_content_filter_replies_are_retried_not_counted_against_the_model(
         anyio.run(go2)
 
 
+def test_a_host_that_filters_is_skipped_for_the_rest_of_the_game(fake_openrouter, monkeypatch):
+    """An empty content-filter reply from one host (Azure for Opus 5.5, game 294e497a) kept coming back on every retry
+    while session_id pinned the seat there. The retry goes out at once with that host ignored, and later calls keep
+    ignoring it; if that leaves no host, the ignore list is dropped again."""
+    import anyio
+    import bench.llm
+    from bench.llm import OpenRouterLLM
+    monkeypatch.setattr(bench.llm.asyncio, "sleep", lambda s: anyio.sleep(0))
+    llm = OpenRouterLLM("anthropic/claude-opus-5.5", "k", provider_prefs={"sort": "throughput"}, session_id="m:home")
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "choose a player to activate"}]
+    tools = [{"type": "function", "function": {"name": "end_turn", "parameters": {}}}]
+
+    async def go():
+        return await llm.chat(msgs, tools)
+    fake_openrouter.script = ["F"]
+    resp = anyio.run(go)
+    assert resp.tool_calls and resp.filtered_retries == 1
+    assert "ignore" not in fake_openrouter.bodies[-2]["provider"]
+    assert fake_openrouter.bodies[-1]["provider"] == {"sort": "throughput", "ignore": ["fakecloud"]}
+    anyio.run(go)
+    assert fake_openrouter.bodies[-1]["provider"]["ignore"] == ["fakecloud"]   # still skipped on the next call
+    # no host left once it is skipped: OpenRouter answers 404, and the call goes again to every host
+    fake_openrouter.no_endpoints_when_ignoring = True
+    resp = anyio.run(go)
+    assert resp.tool_calls and "ignore" not in fake_openrouter.bodies[-1]["provider"] and not llm.skipped_hosts
+    anyio.run(llm.aclose)
+
+
 def test_content_filter_retries_are_counted_in_match_stats(fake_openrouter, monkeypatch):
     import anyio
     import bench.llm
@@ -1721,6 +1749,34 @@ def test_key_spending_limit_403_is_infra_error():
         with pytest.raises(LLMError) as ei:
             anyio.run(go)
         assert ei.value.fatal and ei.value.infra is infra, kind
+
+
+def test_games_a_content_filter_put_on_default_actions_are_requeued_on_startup(bench_env, monkeypatch):
+    """A model marked unavailable after empty content-filter replies (Opus 5.5 on Azure) gets its game replayed from
+    scratch, finished or interrupted; a filtered reply the model recovered from leaves the game alone."""
+    import bench.scheduler as sch
+    b = sch.Bench()
+    b.sync_models(force=True)
+    done, live, fine = db.rows("SELECT * FROM matches WHERE status='queued' ORDER BY seq LIMIT 3")
+    for m in (done, fine):
+        db.execute("UPDATE matches SET status='completed', home_score=1, away_score=0, winner='home', "
+                   "finished_at=1, frames=5, admissible=0 WHERE id=?", (m["id"],))
+        sch.save_frames(m["id"], [b"x"])
+    db.execute("UPDATE matches SET status='running', started_at=1 WHERE id=?", (live["id"],))
+    filtered = {"text": "provider content filter returned an empty reply (0 tokens, Azure)"}
+    for m in (done, live, fine):
+        db.add_event(m["id"], "home", "error", filtered)
+    for m in (done, live):
+        db.add_event(m["id"], "home", "system", {"text": "Model unavailable - default actions for the rest of the game."})
+    db.add_event(fine["id"], "away", "system", {"text": "Model unavailable - default actions for the rest of the game."})
+
+    monkeypatch.setattr(sch, "_bench", None)
+    sch.Bench()
+    for m in (done, live):
+        row = db.row("SELECT * FROM matches WHERE id=?", (m["id"],))
+        assert row["status"] == "queued" and row["started_at"] is None and not db.get_events(m["id"], limit=10)
+    assert not os.path.exists(sch.frames_path(done["id"]))
+    assert db.row("SELECT status FROM matches WHERE id=?", (fine["id"],))["status"] == "completed"
 
 
 def test_games_played_past_the_key_limit_are_requeued_on_startup(bench_env, monkeypatch):
