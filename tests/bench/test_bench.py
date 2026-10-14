@@ -1751,6 +1751,34 @@ def test_key_spending_limit_403_is_infra_error():
         assert ei.value.fatal and ei.value.infra is infra, kind
 
 
+def test_games_a_content_filter_put_on_default_actions_are_requeued_on_startup(bench_env, monkeypatch):
+    """A model marked unavailable after empty content-filter replies (Opus 5.5 on Azure) gets its game replayed from
+    scratch, finished or interrupted; a filtered reply the model recovered from leaves the game alone."""
+    import bench.scheduler as sch
+    b = sch.Bench()
+    b.sync_models(force=True)
+    done, live, fine = db.rows("SELECT * FROM matches WHERE status='queued' ORDER BY seq LIMIT 3")
+    for m in (done, fine):
+        db.execute("UPDATE matches SET status='completed', home_score=1, away_score=0, winner='home', "
+                   "finished_at=1, frames=5, admissible=0 WHERE id=?", (m["id"],))
+        sch.save_frames(m["id"], [b"x"])
+    db.execute("UPDATE matches SET status='running', started_at=1 WHERE id=?", (live["id"],))
+    filtered = {"text": "provider content filter returned an empty reply (0 tokens, Azure)"}
+    for m in (done, live, fine):
+        db.add_event(m["id"], "home", "error", filtered)
+    for m in (done, live):
+        db.add_event(m["id"], "home", "system", {"text": "Model unavailable - default actions for the rest of the game."})
+    db.add_event(fine["id"], "away", "system", {"text": "Model unavailable - default actions for the rest of the game."})
+
+    monkeypatch.setattr(sch, "_bench", None)
+    sch.Bench()
+    for m in (done, live):
+        row = db.row("SELECT * FROM matches WHERE id=?", (m["id"],))
+        assert row["status"] == "queued" and row["started_at"] is None and not db.get_events(m["id"], limit=10)
+    assert not os.path.exists(sch.frames_path(done["id"]))
+    assert db.row("SELECT status FROM matches WHERE id=?", (fine["id"],))["status"] == "completed"
+
+
 def test_games_played_past_the_key_limit_are_requeued_on_startup(bench_env, monkeypatch):
     """Games finished on default actions after the key limit was hit go back in the queue as fresh games, once."""
     import bench.scheduler as sch

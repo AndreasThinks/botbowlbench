@@ -24,6 +24,7 @@ from typing import Dict, List, Optional
 from bench import config, db, ratings, version
 from bench.match import CHECKPOINT_VERSION, MatchRunner
 from bench.session import timeline_point
+from bench.transcript import transcript_path
 
 
 # ---- frame storage (for replays) ------------------------------------------------------------------
@@ -178,19 +179,35 @@ class Bench:
         about the models: put them back in the queue as fresh games. A no-op once they have been replayed."""
         rows = db.rows("SELECT DISTINCT m.id FROM matches m JOIN events e ON e.match_id=m.id "
                        "WHERE m.status='completed' AND e.kind='error' AND e.payload LIKE '%Key limit exceeded%'")
-        for r in rows:
-            db.execute("DELETE FROM events WHERE match_id=?", (r["id"],))
-            delete_checkpoint(r["id"])
-            for path in (frames_path(r["id"]), timeline_path(r["id"])):
+        Bench._requeue_fresh([r["id"] for r in rows])
+        if rows:
+            print(f"requeued {len(rows)} games played after the OpenRouter key limit was hit", flush=True)
+        # Likewise games where one host's content filter answered every retry with an empty reply until the model
+        # was marked unavailable (Opus 5.5 pinned to Azure, before filtering hosts were skipped). An interrupted
+        # game (queued again after a restart) starts over too, rather than resuming with the model unavailable.
+        rows = db.rows("SELECT DISTINCT m.id FROM matches m JOIN events e ON e.match_id=m.id "
+                       "JOIN events u ON u.match_id=m.id AND u.side=e.side "
+                       "WHERE m.status IN ('completed', 'queued') AND e.kind='error' "
+                       "AND e.payload LIKE '%provider content filter returned an empty reply%' "
+                       "AND u.kind='system' AND u.payload LIKE '%Model unavailable%'")
+        Bench._requeue_fresh([r["id"] for r in rows])
+        if rows:
+            print(f"requeued {len(rows)} games a provider content filter put on default actions", flush=True)
+
+    @staticmethod
+    def _requeue_fresh(ids):
+        """Put games back in the queue as if they had never been played."""
+        for mid in ids:
+            db.execute("DELETE FROM events WHERE match_id=?", (mid,))
+            delete_checkpoint(mid)
+            for path in (frames_path(mid), timeline_path(mid), transcript_path(mid), transcript_path(mid) + ".partial"):
                 if os.path.exists(path):
                     os.remove(path)
             db.execute("UPDATE matches SET status='queued', started_at=NULL, finished_at=NULL, error=NULL, seed=NULL, "
                        "home_score=NULL, away_score=NULL, winner=NULL, home_stats=NULL, away_stats=NULL, "
-                       "duration=NULL, frames=0, meta=NULL, admissible=NULL WHERE id=?", (r["id"],))
+                       "duration=NULL, frames=0, meta=NULL, admissible=NULL WHERE id=?", (mid,))
             db.execute("UPDATE tournaments SET status='queued', finished_at=NULL WHERE id=(SELECT tournament_id FROM "
-                       "matches WHERE id=?) AND status='completed'", (r["id"],))
-        if rows:
-            print(f"requeued {len(rows)} games played after the OpenRouter key limit was hit", flush=True)
+                       "matches WHERE id=?) AND status='completed'", (mid,))
 
     def start(self):
         self.thread = threading.Thread(target=self._loop, name="scheduler", daemon=True)
