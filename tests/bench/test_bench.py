@@ -184,6 +184,7 @@ def test_openrouter_driver_against_fake_api(fake_openrouter, stream):
     assert hs["messages_sent"] > 0
     kinds = {e[2] for e in events}
     assert {"episode", "tool", "message", "thought"} <= kinds
+    assert all("secs" in e[3] and "tokens" in e[3] for e in events if e[2] == "thought" and not e[3].get("cut"))
     assert hs["cached_tokens"] == 600 * hs["llm_calls"] and hs["cache_hit_rate"] == 0.6
     assert hs["served"] == {"fake/model-20260901@FakeCloud": hs["llm_calls"]}
     assert hs["reflections"] > 0
@@ -933,7 +934,9 @@ def test_cut_off_reply_keeps_its_streamed_thinking(monkeypatch):
     monkeypatch.setattr(d, "_intro", lambda dec: "situation")
     monkeypatch.setattr(s.home, "force_episode", lambda key: None)
     anyio.run(d.play_episode, None, [], s.home.decision)
-    assert ("thought", {"text": "Let me weigh the blitz on A5", "cut": True}) in events
+    cut = [p for k, p in events if k == "thought"]
+    assert len(cut) == 1 and cut[0]["text"] == "Let me weigh the blitz on A5" and cut[0]["cut"] is True
+    assert cut[0]["secs"] is not None and cut[0]["tokens_est"] == 7
     assert any(k == "llm_partial" and kw["reasoning"] == "Let me weigh the blitz on A5" for k, kw in records)
     assert d.waiting is None
 

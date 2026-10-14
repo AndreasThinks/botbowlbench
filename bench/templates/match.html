@@ -46,8 +46,7 @@
       <div class="mc-plan away" id="plan-away"></div>
       <div class="mc-plan home" id="plan-home"></div>
     </div>
-    <div class="feed-body mc-stream" id="feed" aria-live="polite"></div>
-    <div class="mc-waiting" id="waiting" hidden></div>
+    <div class="feed-body mc-stream" id="feed" aria-live="polite"><div class="mc-waiting" id="waiting" hidden></div></div>
   </div>
 </div>
 <div class="muted" id="board-note" style="font-size:.8rem;margin-top:6px"></div>
@@ -59,6 +58,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="/bench-static/board.js"></script>
+<script src="/bench-static/think.js"></script>
 <script>
 const { h, api, fmt } = BB;
 const MATCH_ID = {{ match_id|tojson }};
@@ -318,7 +318,8 @@ const feed = document.getElementById("feed");
 const F = { built: 0, beat: {}, header: null, nodes: [], shown: 0, plans: { home: [], away: [] }, notes: { home: [], away: [] }, now: null };
 
 function track(node, ts) { node.dataset.ts = ts; F.nodes.push(node); return node; }
-function put(node, ts) { feed.append(track(node, ts)); return node; }
+// the live "is thinking" line (#waiting) stays last in the stream, where the finished thought will land
+function put(node, ts) { feed.insertBefore(track(node, ts), document.getElementById("waiting")); return node; }
 
 // decision episodes mark the turns ("turn-1-5", "turn-2-0b" for a kick-off blitz) and the kick-off procedures
 const PROC_LABEL = { Setup: "Setup", PlaceBall: "Kick-off", Touchback: "Kick-off", HighKick: "Kick-off",
@@ -363,16 +364,15 @@ function outcomeLines(lines) {
   });
 }
 
-function addEvent(e) {
+function addEvent(e, prev) {
   const p = e.payload || {}, side = e.side, ts = e.ts;
   switch (e.kind) {
     case "episode": addHeader(e); return;
-    case "thought": {
-      // p.cut: what streamed in before the turn clock cancelled the reply
-      const t = row(beatFor(side, ts, true), h("div", { class: `thought ${p.cut ? "cut" : ""}`, title: "Click to expand" }, p.text), ts);
-      t.onclick = () => t.classList.toggle("open");
+    case "thought":
+      // games logged before thoughts carried their own time: the gap since the previous event is the reply's time
+      // (a gap of 10 minutes or more is a pause or a restart, not thinking)
+      row(beatFor(side, ts, true), BBThink.line(e, prev && ts - prev.ts < 600 ? Math.max(0, ts - prev.ts) : null), ts);
       return;
-    }
     case "play": {
       const lines = outcomeLines(p.lines);
       if (!lines.length) return;
@@ -457,12 +457,12 @@ function applyCutoff() {
 const nearBottom = () => feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
 function renderFeed(reset) {
   const atBottom = nearBottom(), before = F.nodes.length;
-  for (; F.built < events.length; F.built++) addEvent(events[F.built]);
+  for (; F.built < events.length; F.built++) addEvent(events[F.built], events[F.built - 1]);
   for (let i = before; i < F.nodes.length; i++) F.nodes[i].hidden = true;
   applyCutoff();
   const any = F.shown > 0;
   feed.querySelectorAll(":scope > .empty").forEach((n) => any && n.remove());
-  if (!any && !feed.querySelector(":scope > .empty")) feed.append(h("div", { class: "empty" },
+  if (!any && !feed.querySelector(":scope > .empty")) feed.prepend(h("div", { class: "empty" },
     R.active && R.sync && events.length ? "Nothing yet at this point of the replay." : "Nothing here yet."));
   if (reset || atBottom || (R.active && R.sync)) feed.scrollTop = feed.scrollHeight;
 }
@@ -574,27 +574,15 @@ wide.addEventListener("change", fitFeed);
 // count only arrives with the finished reply). Times come from the server clock (server_time), so a skewed viewer
 // clock doesn't matter.
 const waitEl = document.getElementById("waiting");
-const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 function renderWaiting() {
   const w = match && match.status === "running" && !R.active ? match.waiting || {} : {};
   const now = Date.now() / 1000 + (match && match.server_time ? match.server_time - match._seen : 0);
-  const usage = (match && match.live_usage) || {};
+  const atBottom = nearBottom();
   // a quick reply isn't worth a flicker: only show waits of a few seconds or more
-  const parts = Object.entries(w).filter(([, x]) => now - x.since >= 3).map(([side, x]) => {
-    const left = x.turn_ends != null ? Math.max(0, x.turn_ends - now) : null;
-    const game = (usage[side] || {}).reasoning_tokens;
-    const est = x.chars ? Math.round(x.chars / 4) : 0;
-    return h("div", { class: `wait ${side}` },
-      h("div", {}, h("span", { class: "dot" }), h("b", {}, names()[side]),
-        ` is thinking · ${mmss(Math.max(0, now - x.since))}`,
-        left != null ? h("span", { class: "muted" }, ` · ${mmss(left)} left this turn`) : null),
-      h("div", { class: "muted wait-count" }, est ? `≈${est.toLocaleString()} tokens so far` : "no thinking text shown yet",
-        game ? ` · ${fmt.tokens(game + est)} thinking tokens this game` : null),
-      x.text ? h("div", { class: "wait-text" }, x.text) : null);
-  });
+  const parts = Object.entries(w).filter(([, x]) => now - x.since >= 3).map(([side, x]) => BBThink.live(side, x, now, names()[side]));
   waitEl.hidden = !parts.length;
   waitEl.replaceChildren(...parts);
-  waitEl.querySelectorAll(".wait-text").forEach((n) => { n.scrollTop = n.scrollHeight; });
+  if (atBottom && parts.length) feed.scrollTop = feed.scrollHeight;
 }
 setInterval(renderWaiting, 1000);
 
