@@ -1946,3 +1946,20 @@ def test_games_played_past_the_key_limit_are_requeued_on_startup(bench_env, monk
     assert not db.get_events(bad["id"], limit=10) and not os.path.exists(sch.frames_path(bad["id"]))
     assert db.row("SELECT status FROM tournaments WHERE id=?", (bad["tournament_id"],))["status"] == "queued"
     assert db.row("SELECT status FROM matches WHERE id=?", (good["id"],))["status"] == "completed"
+
+
+def test_games_played_on_a_far_too_slow_host_are_requeued_once(bench_env, monkeypatch):
+    """The listed games (DeepSeek V4.1 Flash on a ~20 tokens/s host) go back in the queue; once replayed, their stats
+    record slow_host_skips and they are left alone."""
+    import bench.scheduler as sch
+    b = sch.Bench()
+    b.sync_models(force=True)
+    old, replayed, other = db.rows("SELECT * FROM matches WHERE status='queued' ORDER BY seq LIMIT 3")
+    monkeypatch.setattr(sch, "SLOW_HOST_REPLAYS", (old["id"], replayed["id"]))
+    for m, stats in ((old, {"deadline_cutoffs": 32}), (replayed, {"slow_host_skips": 1}), (other, {})):
+        db.execute("UPDATE matches SET status='completed', home_score=1, away_score=0, winner='home', finished_at=1, "
+                   "frames=5, home_stats=?, away_stats=? WHERE id=?", (json.dumps({}), json.dumps(stats), m["id"]))
+    monkeypatch.setattr(sch, "_bench", None)
+    sch.Bench()
+    status = {m["id"]: db.row("SELECT status FROM matches WHERE id=?", (m["id"],))["status"] for m in (old, replayed, other)}
+    assert status == {old["id"]: "queued", replayed["id"]: "completed", other["id"]: "completed"}
