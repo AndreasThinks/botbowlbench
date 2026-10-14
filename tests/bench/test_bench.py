@@ -1234,6 +1234,51 @@ def test_a_host_that_filters_is_skipped_for_the_rest_of_the_game(fake_openrouter
     anyio.run(llm.aclose)
 
 
+def test_a_host_that_keeps_generating_below_the_minimum_speed_is_skipped(fake_openrouter, monkeypatch):
+    """DeepSeek V4.1 Flash played two whole games on OpenInference at ~20 tokens/s although routing prefers hosts at
+    50+: preferred_min_throughput is only a preference. A seat now measures its hosts and, after a few long replies
+    from one at under half that speed, ignores it for the rest of the game; short replies, fast hosts and hosts only
+    a little slow are left alone."""
+    import anyio
+    import bench.llm
+    from bench.llm import LLMResponse, OpenRouterLLM
+    monkeypatch.setattr(bench.llm.asyncio, "sleep", lambda s: anyio.sleep(0))
+    llm = OpenRouterLLM("fake/model", "k", provider_prefs={"sort": "throughput", "preferred_min_throughput": 50.0})
+
+    def note(provider, tokens, secs):
+        return anyio.run(lambda: llm._note_speed({}, LLMResponse(provider=provider, completion_tokens=tokens), secs))
+    assert note("FastCloud", 2000, 10) == "" and note("FastCloud", 2000, 10) == "" and note("FastCloud", 2000, 10) == ""
+    assert all(note("MidCloud", 1000, 25) == "" for _ in range(4))   # 40 tokens/s: slow, but not far off
+    assert note("SlowCloud", 100, 10) == ""          # too short to judge, however slow
+    assert note("SlowCloud", 1000, 50) == "" and note("SlowCloud", 1000, 50) == ""   # 20 tokens/s, twice
+    assert not llm.skipped_hosts
+    assert note("SlowCloud", 1000, 50) == "SlowCloud"   # the third slow reply skips it
+    assert llm.skipped_hosts == ["slowcloud"]
+    anyio.run(llm.aclose)
+    # a model with its own extra.provider keeps its routing
+    own = OpenRouterLLM("fake/model", "k", provider_prefs={"preferred_min_throughput": 50.0},
+                        extra={"provider": {"order": ["x"]}})
+    assert own.min_throughput is None
+    anyio.run(own.aclose)
+
+    # through real calls (streamed): every long reply is far below an absurd minimum, so the host goes after three
+    llm = OpenRouterLLM("fake/model", "k", stream=True,
+                        provider_prefs={"sort": "throughput", "preferred_min_throughput": 1e12})
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "choose a player to activate"}]
+    tools = [{"type": "function", "function": {"name": "end_turn", "parameters": {}}}]
+    fake_openrouter.completion_tokens = 500
+    slow = [anyio.run(lambda: llm.chat(msgs, tools)).slow_host for _ in range(3)]
+    assert slow == ["", "", "FakeCloud"]
+    anyio.run(lambda: llm.chat(msgs, tools))
+    assert fake_openrouter.bodies[-1]["provider"]["ignore"] == ["fakecloud"]
+    # the only host for this model: OpenRouter answers 404, every host comes back and speed is no longer judged
+    fake_openrouter.no_endpoints_when_ignoring = True
+    resp = anyio.run(lambda: llm.chat(msgs, tools))
+    assert resp.tool_calls and not llm.skipped_hosts and llm.min_throughput is None
+    assert "ignore" not in fake_openrouter.bodies[-1]["provider"]
+    anyio.run(llm.aclose)
+
+
 def test_content_filter_retries_are_counted_in_match_stats(fake_openrouter, monkeypatch):
     import anyio
     import bench.llm
@@ -1901,3 +1946,20 @@ def test_games_played_past_the_key_limit_are_requeued_on_startup(bench_env, monk
     assert not db.get_events(bad["id"], limit=10) and not os.path.exists(sch.frames_path(bad["id"]))
     assert db.row("SELECT status FROM tournaments WHERE id=?", (bad["tournament_id"],))["status"] == "queued"
     assert db.row("SELECT status FROM matches WHERE id=?", (good["id"],))["status"] == "completed"
+
+
+def test_games_played_on_a_far_too_slow_host_are_requeued_once(bench_env, monkeypatch):
+    """The listed games (DeepSeek V4.1 Flash on a ~20 tokens/s host) go back in the queue; once replayed, their stats
+    record slow_host_skips and they are left alone."""
+    import bench.scheduler as sch
+    b = sch.Bench()
+    b.sync_models(force=True)
+    old, replayed, other = db.rows("SELECT * FROM matches WHERE status='queued' ORDER BY seq LIMIT 3")
+    monkeypatch.setattr(sch, "SLOW_HOST_REPLAYS", (old["id"], replayed["id"]))
+    for m, stats in ((old, {"deadline_cutoffs": 32}), (replayed, {"slow_host_skips": 1}), (other, {})):
+        db.execute("UPDATE matches SET status='completed', home_score=1, away_score=0, winner='home', finished_at=1, "
+                   "frames=5, home_stats=?, away_stats=? WHERE id=?", (json.dumps({}), json.dumps(stats), m["id"]))
+    monkeypatch.setattr(sch, "_bench", None)
+    sch.Bench()
+    status = {m["id"]: db.row("SELECT status FROM matches WHERE id=?", (m["id"],))["status"] for m in (old, replayed, other)}
+    assert status == {old["id"]: "queued", replayed["id"]: "completed", other["id"]: "completed"}

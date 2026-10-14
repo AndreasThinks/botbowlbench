@@ -15,7 +15,7 @@ SUM_KEYS = ["touchdowns", "blocks", "blitzes", "fouls", "passes", "handoffs", "c
             "tool_calls", "llm_calls", "prompt_tokens", "completion_tokens", "cost", "forced_actions",
             "budget_exhausted", "turns", "latency", "rerolls_used", "dodges", "failed_dodges", "gfis", "failed_gfis",
             "cached_tokens", "reasoning_tokens", "reflections", "risky_actions", "long_shots",
-            "no_tool_replies", "output_truncations", "llm_errors", "http_timeouts", "uncertain_spend_calls", "content_filter_retries", "deadline_cutoffs",
+            "no_tool_replies", "output_truncations", "llm_errors", "http_timeouts", "uncertain_spend_calls", "content_filter_retries", "slow_host_skips", "deadline_cutoffs",
             "last_chance_calls", "thinking_cuts", "reroll_offers", "reroll_taken", "block_reroll_offers",
             "block_reroll_taken", "apothecary_offers", "apothecary_taken", "skill_offers", "skill_taken",
             "notes_updates", "notes_shown"]

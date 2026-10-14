@@ -77,7 +77,7 @@ class SeatDriver:
         self.usage = {"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0,
                       "reasoning_tokens": 0, "cost": 0.0, "latency": 0.0, "tool_calls": 0, "llm_errors": 0,
                       "no_tool_replies": 0, "output_truncations": 0, "http_timeouts": 0,
-                      "uncertain_spend_calls": 0, "content_filter_retries": 0, "deadline_cutoffs": 0, "last_chance_calls": 0, "thinking_cuts": 0, "budget_exhausted": 0, "episodes": 0,
+                      "uncertain_spend_calls": 0, "content_filter_retries": 0, "slow_host_skips": 0, "deadline_cutoffs": 0, "last_chance_calls": 0, "thinking_cuts": 0, "budget_exhausted": 0, "episodes": 0,
                       "served": {}}
         self.unavailable = False
         self._oa_tools = []
@@ -194,6 +194,11 @@ class SeatDriver:
         u["cost"] += resp.cost
         u["latency"] += resp.latency
         u["content_filter_retries"] += resp.filtered_retries
+        if resp.slow_host:
+            u["slow_host_skips"] += 1
+            self.session.log_event(self.seat.side, "system", {"text": (
+                f"{resp.slow_host} was answering at under half of {self.llm.min_throughput:g} tokens/s: "
+                f"later calls go to other hosts.")})
         if resp.served_model or resp.provider:
             k = f"{resp.served_model or '?'}@{resp.provider or '?'}"
             u["served"][k] = u["served"].get(k, 0) + 1

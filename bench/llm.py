@@ -10,6 +10,7 @@ import json
 import os
 import random
 import re
+import statistics
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
@@ -45,6 +46,7 @@ class LLMResponse:
     finish_reason: str = ""
     raw_message: Dict[str, Any] = field(default_factory=dict)
     filtered_retries: int = 0     # empty content-filter replies retried before this one (see is_empty_filtered)
+    slow_host: str = ""           # the host this reply came from, if its speed just got it skipped (see _note_speed)
 
 
 def is_account_limit(body: str) -> bool:
@@ -118,7 +120,10 @@ def parse_dsml_tool_calls(text: str) -> List[dict]:
 EFFORT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")   # least thinking first
 _LOWEST_EFFORT: Dict[str, Optional[str]] = {}
 _PROVIDER_SLUGS: Dict[str, str] = {}   # OpenRouter host display name ("Azure") -> routing slug ("azure")
-MAX_SKIPPED_HOSTS = 3                  # hosts one client may stop using after empty content-filter replies
+MAX_SKIPPED_HOSTS = 3                  # hosts one client may stop using (content filter or too slow)
+SLOW_HOST_SAMPLES = 3                  # replies a host is judged on before it is skipped as too slow
+SLOW_HOST_MIN_TOKENS = 400             # only replies at least this long say anything about a host's speed
+SLOW_HOST_FACTOR = 0.5                 # ...and it is skipped below this share of the routing's minimum speed
 
 
 class OpenRouterLLM:
@@ -171,6 +176,15 @@ class OpenRouterLLM:
         # Hosts (routing slugs) that sent an empty content-filter reply: skipped for the rest of the game, since
         # retrying on the same host (where session_id keeps a Claude seat) tends to be filtered again and again.
         self.skipped_hosts: List[str] = []
+        # preferred_min_throughput only puts slower hosts at the back of OpenRouter's queue, and its speed figures
+        # can be far from what a seat actually gets (DeepSeek V4.1 Flash on OpenInference: ~20 tokens/s against a
+        # 50 minimum, every call of two games). So each seat measures its own hosts: one whose last few long replies
+        # ran at under half the minimum is skipped like a filtering host. Half, because skipping a host that is only
+        # a little slow can send the seat to a slower one (DeepSeek V3.2's next hosts after Friendli at ~55 run at
+        # ~17). Off for a model with its own extra.provider.
+        self.min_throughput = None if "provider" in self.extra else (
+            (self.provider_prefs or {}).get("preferred_min_throughput"))
+        self.host_speeds: Dict[str, List[float]] = {}
         self.client = httpx.AsyncClient(timeout=timeout)
 
     async def aclose(self):
@@ -217,6 +231,20 @@ class OpenRouterLLM:
         self.skipped_hosts.append(slug)
         self._ignore_skipped(body)
         return True
+
+    async def _note_speed(self, body: dict, resp: "LLMResponse", secs: float) -> str:
+        """Record how fast the host answered (tokens/s over the whole call: a slow start costs the turn clock as
+        much as slow generation). Returns the host's name when it has just been skipped as too slow."""
+        if (not self.min_throughput or not resp.provider or resp.completion_tokens < SLOW_HOST_MIN_TOKENS
+                or secs <= 0):
+            return ""
+        speeds = self.host_speeds.setdefault(resp.provider, [])
+        speeds.append(resp.completion_tokens / secs)
+        if (len(speeds) >= SLOW_HOST_SAMPLES
+                and statistics.median(speeds[-SLOW_HOST_SAMPLES:]) < float(self.min_throughput) * SLOW_HOST_FACTOR
+                and await self._skip_host(body, resp.provider)):
+            return resp.provider
+        return ""
 
     def _ignore_skipped(self, body: dict):
         prefs = dict(body.get("provider") or {})
@@ -306,6 +334,7 @@ class OpenRouterLLM:
                             resp = self._parse(data, time.time() - t0)
                             if not is_empty_filtered(resp):
                                 resp.filtered_retries = filtered
+                                resp.slow_host = await self._note_speed(body, resp, resp.latency)
                                 return resp
                             filtered += 1
                             last_err = (f"provider content filter returned an empty reply (0 tokens, "
@@ -325,8 +354,10 @@ class OpenRouterLLM:
                     last_err = f"OpenRouter HTTP {r.status_code} with tool_choice=required: {r.text[:300]}"
                     continue
                 elif r.status_code == 404 and (body.get("provider") or {}).get("ignore") and self.skipped_hosts:
-                    # skipping filtered hosts left no host for this model: go back to all of them
+                    # skipping filtered or slow hosts left no host for this model: go back to all of them, and stop
+                    # judging speed, since this model has no faster host to move to
                     self.skipped_hosts.clear()
+                    self.min_throughput = None
                     body["provider"] = {k: v for k, v in body["provider"].items() if k != "ignore"}
                     if "provider" in self.extra and self.extra["provider"].get("ignore"):
                         body["provider"]["ignore"] = list(self.extra["provider"]["ignore"])

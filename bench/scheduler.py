@@ -144,6 +144,11 @@ def delete_checkpoint(match_id: str):
             pass
 
 
+# games a seat played entirely on a host far below the minimum speed (see _replay_key_limit_matches)
+SLOW_HOST_REPLAYS = ("f52d7abe-aeb9-4724-9192-19135a01ca55",   # Claude Haiku 5.5 1-0 DeepSeek V4.1 Flash
+                     "d8c2fe72-f6aa-4366-ad60-08c96e324b90")   # DeepSeek V3.2 1-0 DeepSeek V4.1 Flash
+
+
 class Bench:
     """Process-wide coordinator. Create one with :func:`get_bench`."""
 
@@ -193,6 +198,15 @@ class Bench:
         Bench._requeue_fresh([r["id"] for r in rows])
         if rows:
             print(f"requeued {len(rows)} games a provider content filter put on default actions", flush=True)
+        # And games where a seat was stuck for the whole game on a host answering at ~20 tokens/s, before such
+        # hosts were skipped (DeepSeek V4.1 Flash on OpenInference: 32 deadline cutoffs a game). Found by checking
+        # every game's transcript for 2026-10-14; a replayed game records slow_host_skips, so this runs once.
+        rows = [r for r in db.rows("SELECT id, home_stats, away_stats FROM matches WHERE status='completed' AND id IN "
+                                   f"({','.join('?' * len(SLOW_HOST_REPLAYS))})", tuple(SLOW_HOST_REPLAYS))
+                if "slow_host_skips" not in (r["home_stats"] or "") + (r["away_stats"] or "")]
+        Bench._requeue_fresh([r["id"] for r in rows])
+        if rows:
+            print(f"requeued {len(rows)} games played on a host far below the minimum speed", flush=True)
 
     @staticmethod
     def _requeue_fresh(ids):
