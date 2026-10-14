@@ -170,7 +170,10 @@ their frames on first view.
   a turnover runs during the opponent's turn, so it gets the same short settings and `last_chance_seconds` limit.
 * **Reply time limit (`PROTOCOL_VERSION` 1.6):** one reply may run for at most `reply_time_limit` (120) seconds. A
   reply still running then is cancelled, and the model's next message hands back the end of the thinking it had
-  streamed (last 6,000 characters) with "act on it now"; the model keeps its normal settings and the rest of the turn.
+  streamed (last 6,000 characters) with "act on it now". Since 1.7 that next reply uses the short last-chance
+  settings (and no reply limit); later replies in the turn are normal again. Under 1.6 it kept normal settings, and
+  Mistral Large 4 re-deliberated from scratch, was stopped again at 240s and played 11 of 16 turns in the last-chance
+  window anyway.
   The last-chance note hands back a cancelled reply's thinking the same way. Before 1.6 a turn's opening call could
   think for 3-4 minutes and then lose all of it to the clock or the output ceiling (Mistral Large 4: 37 of 51 opening
   calls never produced a move), while a fresh call for block dice or setup with the same intro took seconds: the time

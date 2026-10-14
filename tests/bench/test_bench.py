@@ -1117,7 +1117,7 @@ def test_settings_output_ceiling_applies_unless_the_model_sets_its_own(fake_open
                              {"budget_usd_per_game": 10, "max_output_tokens": 16384}, api_key="k").run()
         assert fake_openrouter.bodies
         assert all(b.get("max_tokens") == want for b in fake_openrouter.bodies), name
-        assert result["meta"]["harness"]["protocol_version"] == PROTOCOL_VERSION == "1.6"
+        assert result["meta"]["harness"]["protocol_version"] == PROTOCOL_VERSION == "1.7"
 
 
 def test_default_settings_carry_the_output_ceiling():
@@ -1672,12 +1672,13 @@ def test_long_reply_is_stopped_and_its_thinking_handed_back(monkeypatch):
         def __init__(self, seat):
             self.policy = RandomPolicy(seat, seed=5)
             self.partial = {"reasoning": "", "content": ""}
-            self.deadlines, self.notes = [], []
+            self.deadlines, self.notes, self.short_after_cut = [], [], []
 
         async def chat(self, messages, tools, deadline=None, hurry=False):
             last = messages[-1]
             if last["role"] == "user" and "was stopped" in last["content"]:
                 self.notes.append(last["content"])
+                self.short_after_cut.append(hurry)
                 return await self.policy.chat(messages, tools)
             if hurry:   # the one-shot reflect after a turnover
                 return await self.policy.chat(messages, tools)
@@ -1709,6 +1710,7 @@ def test_long_reply_is_stopped_and_its_thinking_handed_back(monkeypatch):
     assert stats["thinking_cuts"] > 4 and stats["last_chance_calls"] == 0
     assert stats["tool_calls"] > 0 and stats["llm_errors"] == 0
     assert all(115 < d <= 120 for d in llm.deadlines)
+    assert llm.short_after_cut and all(llm.short_after_cut)   # the reply after a stop is short
     note = llm.notes[0]
     assert "PLAN: move A1 first." in note and "(the last part)" in note and len(note) < 6500
     texts = [e[3].get("text", "") for e in events if e[2] == "system"]

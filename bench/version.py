@@ -17,7 +17,9 @@ import subprocess
 #      effort-only models such as Opus 5.5 are no longer mapped to a lower effort
 # 1.6: one reply may run at most reply_time_limit (120s); a reply still running is stopped and the end of its
 #      thinking is handed back so the model can act on it (also on the last-chance call)
-PROTOCOL_VERSION = "1.6"
+# 1.7: the reply right after a reply_time_limit stop uses the short last-chance settings, so the model acts on its
+#      handed-back thinking instead of deliberating afresh
+PROTOCOL_VERSION = "1.7"
 LEGACY_PROTOCOL_VERSION = "1.0"  # matches recorded before protocol versions were enforced have no version in meta
 
 
