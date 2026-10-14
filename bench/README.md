@@ -168,6 +168,15 @@ their frames on first view.
   timeout alone never bounded a long generation. The clock only counts the model's own time: it pauses while a tool
   call waits for the opponent (for example when the defender picks the block die). The one-shot `reflect` call after
   a turnover runs during the opponent's turn, so it gets the same short settings and `last_chance_seconds` limit.
+* **Reply time limit (`PROTOCOL_VERSION` 1.6):** one reply may run for at most `reply_time_limit` (120) seconds. A
+  reply still running then is cancelled, and the model's next message hands back the end of the thinking it had
+  streamed (last 6,000 characters) with "act on it now"; the model keeps its normal settings and the rest of the turn.
+  The last-chance note hands back a cancelled reply's thinking the same way. Before 1.6 a turn's opening call could
+  think for 3-4 minutes and then lose all of it to the clock or the output ceiling (Mistral Large 4: 37 of 51 opening
+  calls never produced a move), while a fresh call for block dice or setup with the same intro took seconds: the time
+  goes on planning the whole turn, not on reading the situation. When the model's own thinking is in the
+  conversation, its next call acts in seconds. Cuts are counted in `thinking_cuts` (and `uncertain_spend_calls`).
+  Models whose providers hide their thinking get the note without it. `reply_time_limit: null` turns this off.
 * **Tool calls are required:** requests send `tool_choice: required` (setting `tool_choice`), so a reply must be a
   tool call rather than prose. If a provider rejects it (for example Anthropic with extended thinking), the request is
   re-sent with `auto` and that model stays on `auto` for the rest of the game.
