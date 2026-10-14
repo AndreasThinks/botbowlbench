@@ -42,7 +42,7 @@ def system_prompt(display_name: str, limits: DriverLimits, side: str, opponent_n
     reply_rule = ""
     if limits.reply_time_limit > 0:
         reply_rule = (f"- One reply may run for at most {int(limits.reply_time_limit)} seconds. A reply still thinking then is "
-                      "stopped and you get back the end of\n  your thinking so far: act on it.\n")
+                      "stopped: you get back the end of\n  your thinking so far and one short reply (little thinking) to act on it.\n")
     return f"""You are {display_name}, the coach of a Blood Bowl team in an AI benchmark tournament. Your opponent is \
 {opponent_name}, another AI model. You control the {you} players. You act ONLY by calling the provided tools (an MCP server).
 
@@ -276,6 +276,7 @@ class SeatDriver:
         illegal_streak = 0
         truncation_streak = 0
         hurry = False   # set once a reply ran into the last-chance reserve: short replies only from then on
+        short = False   # set after reply_time_limit stopped a reply: the next reply only is short, to act on its thinking
         while not self._episode_over(key):
             reason = None
             if calls >= self.limits.max_tool_calls_per_turn:
@@ -304,18 +305,20 @@ class SeatDriver:
             reserve = 0.0 if hurry else self.limits.last_chance_seconds
             deadline = t0 + self.limits.turn_time_limit - reserve
             reply_cut = None
-            if self.limits.reply_time_limit > 0 and not hurry \
+            if self.limits.reply_time_limit > 0 and not hurry and not short \
                     and time.time() + self.limits.reply_time_limit < deadline:
                 reply_cut = time.time() + self.limits.reply_time_limit
             try:
-                resp = await self._call_llm(messages, oa_tools, key, sent, hurry=hurry,
+                was_short, short = short, False
+                resp = await self._call_llm(messages, oa_tools, key, sent, hurry=hurry or was_short,
                                             deadline=reply_cut or deadline,
                                             turn_ends=t0 + self.limits.turn_time_limit)
                 self.consecutive_llm_errors = 0
             except LLMError as e:
                 if e.deadline and reply_cut is not None:
-                    # One reply ran past reply_time_limit: stop it, hand its thinking back and let the model act on
-                    # it, with the rest of the turn's time and its normal settings.
+                    # One reply ran past reply_time_limit: stop it, hand its thinking back and give the model one
+                    # short reply (last-chance settings) to act on it; normal settings again after that. Without
+                    # the short reply, slow thinkers started deliberating afresh and were stopped again.
                     self.usage["thinking_cuts"] += 1
                     self.session.log_event(self.seat.side, "system", {"text": (
                         f"Reply still running after {int(self.limits.reply_time_limit)}s: stopped, its thinking "
@@ -323,9 +326,10 @@ class SeatDriver:
                     self.session.transcript.write("llm_cutoff", self.seat.side, episode=key, error=str(e)[:2000],
                                                   waited=round(time.time() - t0, 1), reply_limit=True)
                     note = (f"Your reply was still running after {int(self.limits.reply_time_limit)} seconds, so it "
-                            f"was stopped.{self._handback() or ' '}Act on it now: reply with a tool call (your next "
-                            f"action, or end_turn).")
+                            f"was stopped.{self._handback() or ' '}Act on it now, thinking only briefly: reply with a "
+                            f"tool call (your next action, or end_turn).")
                     messages.append({"role": "user", "content": note})
+                    short = True
                     continue
                 if e.deadline and not hurry and self.limits.last_chance_seconds > 0:
                     # The reply ran into the reserve. Cancel it and give the model one short call to act itself
