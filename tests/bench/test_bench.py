@@ -1203,6 +1203,34 @@ def test_empty_content_filter_replies_are_retried_not_counted_against_the_model(
         anyio.run(go2)
 
 
+def test_a_host_that_filters_is_skipped_for_the_rest_of_the_game(fake_openrouter, monkeypatch):
+    """An empty content-filter reply from one host (Azure for Opus 5.5, game 294e497a) kept coming back on every retry
+    while session_id pinned the seat there. The retry goes out at once with that host ignored, and later calls keep
+    ignoring it; if that leaves no host, the ignore list is dropped again."""
+    import anyio
+    import bench.llm
+    from bench.llm import OpenRouterLLM
+    monkeypatch.setattr(bench.llm.asyncio, "sleep", lambda s: anyio.sleep(0))
+    llm = OpenRouterLLM("anthropic/claude-opus-5.5", "k", provider_prefs={"sort": "throughput"}, session_id="m:home")
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "choose a player to activate"}]
+    tools = [{"type": "function", "function": {"name": "end_turn", "parameters": {}}}]
+
+    async def go():
+        return await llm.chat(msgs, tools)
+    fake_openrouter.script = ["F"]
+    resp = anyio.run(go)
+    assert resp.tool_calls and resp.filtered_retries == 1
+    assert "ignore" not in fake_openrouter.bodies[-2]["provider"]
+    assert fake_openrouter.bodies[-1]["provider"] == {"sort": "throughput", "ignore": ["fakecloud"]}
+    anyio.run(go)
+    assert fake_openrouter.bodies[-1]["provider"]["ignore"] == ["fakecloud"]   # still skipped on the next call
+    # no host left once it is skipped: OpenRouter answers 404, and the call goes again to every host
+    fake_openrouter.no_endpoints_when_ignoring = True
+    resp = anyio.run(go)
+    assert resp.tool_calls and "ignore" not in fake_openrouter.bodies[-1]["provider"] and not llm.skipped_hosts
+    anyio.run(llm.aclose)
+
+
 def test_content_filter_retries_are_counted_in_match_stats(fake_openrouter, monkeypatch):
     import anyio
     import bench.llm

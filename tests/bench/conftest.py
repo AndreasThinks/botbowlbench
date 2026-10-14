@@ -19,6 +19,7 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
     # "F" = an empty provider content-filter reply (0 tokens).
     script = []
     reject_cache_control = False   # answer HTTP 400 to any request with a top-level cache_control
+    no_endpoints_when_ignoring = False   # answer HTTP 404 (no host left) to any request with provider.ignore
 
     def log_message(self, *args):
         pass
@@ -32,6 +33,9 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
             FakeOpenRouter.bodies.append(body)
             return
         FakeOpenRouter.bodies.append(body)
+        if FakeOpenRouter.no_endpoints_when_ignoring and (body.get("provider") or {}).get("ignore"):
+            self._send(404, {"error": {"message": "No endpoints found matching your data policy", "code": 404}})
+            return
         n = FakeOpenRouter.calls
         if FakeOpenRouter.status != 200:
             self._send(FakeOpenRouter.status, {"error": {"message": "User not found.", "code": 401}})
@@ -162,6 +166,7 @@ def fake_openrouter(monkeypatch):
     FakeOpenRouter.length_truncation_mode = "main"
     FakeOpenRouter.script = []
     FakeOpenRouter.reject_cache_control = False
+    FakeOpenRouter.no_endpoints_when_ignoring = False
     import bench.llm
     from bench import model_info
     # the fake model's OpenRouter listing ($1 / $2 per million tokens), without going to the network

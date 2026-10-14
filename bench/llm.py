@@ -117,6 +117,8 @@ def parse_dsml_tool_calls(text: str) -> List[dict]:
 
 EFFORT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")   # least thinking first
 _LOWEST_EFFORT: Dict[str, Optional[str]] = {}
+_PROVIDER_SLUGS: Dict[str, str] = {}   # OpenRouter host display name ("Azure") -> routing slug ("azure")
+MAX_SKIPPED_HOSTS = 3                  # hosts one client may stop using after empty content-filter replies
 
 
 class OpenRouterLLM:
@@ -166,6 +168,9 @@ class OpenRouterLLM:
         self.hurry_max_tokens = hurry_max_tokens
         self.timeout = timeout
         self.max_retries = max_retries
+        # Hosts (routing slugs) that sent an empty content-filter reply: skipped for the rest of the game, since
+        # retrying on the same host (where session_id keeps a Claude seat) tends to be filtered again and again.
+        self.skipped_hosts: List[str] = []
         self.client = httpx.AsyncClient(timeout=timeout)
 
     async def aclose(self):
@@ -188,6 +193,35 @@ class OpenRouterLLM:
                 pass   # fall back to the token budget
             _LOWEST_EFFORT[self.model] = lowest
         return _LOWEST_EFFORT[self.model]
+
+    async def _provider_slug(self, name: str) -> str:
+        """OpenRouter's routing slug for a host as replies name it ("Google" -> "google-vertex"). Looked up once per
+        process; falls back to the lower-cased name."""
+        if not _PROVIDER_SLUGS:
+            try:
+                r = await self.client.get(OPENROUTER_URL.rsplit("/chat/completions", 1)[0] + "/providers", timeout=5)
+                _PROVIDER_SLUGS.update({p["name"]: p["slug"] for p in r.json().get("data", [])
+                                        if p.get("name") and p.get("slug")})
+            except Exception:
+                pass
+        return _PROVIDER_SLUGS.get(name) or name.strip().lower().replace(" ", "-")
+
+    async def _skip_host(self, body: dict, name: str) -> bool:
+        """Stop routing this client's calls to the host that just sent an empty content-filter reply. False when
+        there is no host to name or the limit is reached (then the same request is simply retried)."""
+        if not name or len(self.skipped_hosts) >= MAX_SKIPPED_HOSTS:
+            return False
+        slug = await self._provider_slug(name)
+        if slug in self.skipped_hosts:
+            return False
+        self.skipped_hosts.append(slug)
+        self._ignore_skipped(body)
+        return True
+
+    def _ignore_skipped(self, body: dict):
+        prefs = dict(body.get("provider") or {})
+        prefs["ignore"] = list(dict.fromkeys(list(prefs.get("ignore") or []) + self.skipped_hosts))
+        body["provider"] = prefs
 
     async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None,
                    hurry: bool = False) -> LLMResponse:
@@ -216,6 +250,8 @@ class OpenRouterLLM:
         if self.stream:
             body["stream"] = True
         body.update(self.extra)
+        if self.skipped_hosts:
+            self._ignore_skipped(body)
         lowest_effort = await self._lowest_effort()
         if hurry:
             body["max_tokens"] = min(self.hurry_max_tokens, body.get("max_tokens") or self.hurry_max_tokens)
@@ -274,6 +310,8 @@ class OpenRouterLLM:
                             filtered += 1
                             last_err = (f"provider content filter returned an empty reply (0 tokens, "
                                         f"{resp.provider or 'unknown provider'})")
+                            if await self._skip_host(body, resp.provider):
+                                continue   # another host can take the same request at once: no back-off
                 elif r.status_code == 400 and "cache_control" in body and "cache_control" not in self.extra:
                     # the provider doesn't take top-level cache_control: send it again without, and stop sending it
                     del body["cache_control"]
@@ -285,6 +323,14 @@ class OpenRouterLLM:
                     # "auto" for this client if that works
                     body["tool_choice"] = "auto"
                     last_err = f"OpenRouter HTTP {r.status_code} with tool_choice=required: {r.text[:300]}"
+                    continue
+                elif r.status_code == 404 and (body.get("provider") or {}).get("ignore") and self.skipped_hosts:
+                    # skipping filtered hosts left no host for this model: go back to all of them
+                    self.skipped_hosts.clear()
+                    body["provider"] = {k: v for k, v in body["provider"].items() if k != "ignore"}
+                    if "provider" in self.extra and self.extra["provider"].get("ignore"):
+                        body["provider"]["ignore"] = list(self.extra["provider"]["ignore"])
+                    last_err = f"OpenRouter HTTP 404 with filtered hosts skipped: {r.text[:300]}"
                     continue
                 elif r.status_code in (400, 401, 402, 403, 404):
                     raise LLMError(f"OpenRouter HTTP {r.status_code}: {r.text[:500]}",
