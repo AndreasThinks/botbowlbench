@@ -176,7 +176,6 @@ table.kv td:first-child { white-space: normal; }
 .ev .who { font-weight: 700; font-size: .78rem; }
 .ev.home .who { color: var(--home); } .ev.away .who { color: var(--away); }
 .ev .kind { font-family: var(--mono); font-size: .72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; margin-left: 6px; }
-.ev.thought .body { font-style: italic; color: var(--text-secondary); white-space: pre-wrap; }
 .ev.tool .call { font-weight: 500; }
 .ev.tool.bad .call { color: var(--critical); }
 .ev.tool details { margin-top: 2px; }
@@ -489,12 +488,6 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 .beat.home { border-left-color: var(--home); } .beat.away { border-left-color: var(--away); }
 .beat.seek { cursor: pointer; } .beat.seek:hover { background: var(--surface-2); }
 .beat.now { background: var(--accent-soft); }
-.beat .thought { font-style: italic; color: var(--text-secondary); white-space: pre-wrap; font-size: .82rem; cursor: zoom-in;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.beat .thought::before { content: "thinking  "; font-family: var(--mono); font-style: normal; font-size: .66rem; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); }
-.beat .thought.open { -webkit-line-clamp: unset; display: block; cursor: zoom-out; }
-.beat .thought + .thought { margin-top: 4px; }
-.beat .thought.cut::before { content: "thinking · cut off by the clock  "; }
 .beat .act { font-weight: 600; margin-top: 3px; }
 .beat .act .pid, .beat .out .pid { font-weight: 700; }
 .beat .act .pid.home { color: var(--home); } .beat .act .pid.away { color: var(--away); }
@@ -515,17 +508,64 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 .mc-stream .reflection.home { border-left-color: var(--home); background: var(--home-soft); }
 .mc-stream .reflection.away { border-left-color: var(--away); background: var(--away-soft); }
 .mc-stream .reflection .expects { margin-top: 4px; font-size: .8rem; }
-.mc-waiting { border-top: 1px solid var(--border); padding: 6px 12px 8px; font-family: var(--mono); font-size: .76rem; color: var(--text-secondary); }
-.mc-waiting .wait + .wait { margin-top: 8px; }
-.mc-waiting .home b { color: var(--home); } .mc-waiting .away b { color: var(--away); }
-.mc-waiting .wait-count { font-size: .7rem; margin: 2px 0 0 12px; }
-.mc-waiting .wait-text { font-family: var(--sans); font-style: italic; font-size: .8rem; white-space: pre-wrap; overflow-wrap: anywhere;
-  max-height: 7.5em; overflow-y: auto; margin: 4px 0 0 12px; padding-left: 8px; border-left: 2px solid var(--border); color: var(--text-secondary); }
-.mc-waiting .home .wait-text { border-left-color: var(--home); } .mc-waiting .away .wait-text { border-left-color: var(--away); }
-.mc-waiting .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 6px;
-  vertical-align: middle; animation: mc-pulse 1.2s ease-in-out infinite; }
+/* a model's thinking (bench/static/think.js): one line per thought, with its time as a number and a bar (full at
+   2:00), opening to the full text; a reply still streaming is the same line, animated, last in the stream */
+.th-line, .th-live, .th-chip { --side: var(--text-muted); }
+.beat.home .th-line, .hp-think.home .th-line, .th-live.home, .th-chip.home { --side: var(--home); }
+.beat.away .th-line, .hp-think.away .th-line, .th-live.away, .th-chip.away { --side: var(--away); }
+.th-line { font-size: .82rem; margin: 2px 0; }
+.beat .th-line + .th-line { margin-top: 3px; }
+.th-row { all: unset; box-sizing: border-box; display: flex; align-items: baseline; gap: 8px; width: 100%; min-width: 0; cursor: pointer; }
+.th-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.th-ic { flex: none; width: 6px; height: 6px; border: 1.5px solid var(--side); transform: rotate(45deg); align-self: center; }
+.th-dur { flex: none; min-width: 34px; align-self: center; font-family: var(--mono); font-size: .66rem; color: var(--text-muted); line-height: 1; font-variant-numeric: tabular-nums; }
+.th-dur i { display: block; height: 2px; margin-top: 2px; background: var(--border); }
+.th-dur b { display: block; height: 100%; background: var(--side); }
+.th-head { flex: 1; min-width: 0; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.th-chev { flex: none; color: var(--text-muted); font-size: .7rem; transition: transform .15s; }
+.th-line.open .th-chev { transform: rotate(90deg); }
+.th-line.open .th-head { white-space: normal; color: var(--text-primary); font-weight: 600; }
+.th-line.short { display: flex; align-items: baseline; gap: 8px; }
+.th-line.short .th-ic { width: 4px; height: 4px; border-width: 1px; opacity: .7; }
+.th-line.short .th-head { white-space: normal; font-size: .78rem; color: var(--text-muted); }
+.th-line.cut .th-ic { border-style: dashed; }
+.th-line.cut .th-dur, .th-cut { color: var(--warning); }
+.th-line.cut .th-dur b { background: repeating-linear-gradient(135deg, var(--warning) 0 3px, transparent 3px 5px); }
+.th-body { display: none; margin: 6px 0 4px 54px; color: var(--text-secondary); line-height: 1.5; overflow-wrap: anywhere; }
+.th-line.open .th-body { display: block; }
+.th-h { font-weight: 600; color: var(--text-primary); margin: 8px 0 2px; }
+.th-h:first-child { margin-top: 0; }
+.th-p { margin: 0 0 6px; white-space: pre-wrap; }
+.th-foot { font-family: var(--mono); font-size: .68rem; color: var(--text-muted); }
+.th-cutnote { margin-top: 4px; color: var(--warning); }
+
+.mc-waiting { padding: 0 12px 0 0; }
+.th-live { padding: 8px 10px; margin: 8px 0 10px; border-left: 3px solid var(--side); background: var(--surface-2); font-size: .82rem; min-width: 0; }
+.th-live .th-row { cursor: default; }
+.th-who { color: var(--side); }
+.th-time { font-family: var(--mono); font-size: .7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+.th-live > .th-head { margin-top: 3px; white-space: normal; color: var(--text-primary); font-weight: 500;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.th-live > .th-head.quiet { color: var(--text-muted); font-weight: 400; }
+.th-spin { flex: none; display: inline-block; width: 7px; height: 7px; border: 1.5px solid var(--side); transform: rotate(45deg); animation: th-spin 1.6s linear infinite; }
+@keyframes th-spin { to { transform: rotate(405deg); } }
+.th-track { height: 2px; background: var(--border); margin: 7px 0 6px; }
+.th-track b { display: block; height: 100%; background: var(--side); transition: width 1s linear; }
+/* the newest lines of the streamed text, bottom-aligned so the latest words are the ones in view */
+.th-tail { color: var(--text-secondary); line-height: 1.5; max-height: 3em; overflow: hidden; overflow-wrap: anywhere;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 1.2em); mask-image: linear-gradient(to bottom, transparent, #000 1.2em); }
+.th-tail span::after { content: ""; display: inline-block; width: .45em; height: .95em; margin-left: 2px; vertical-align: -1px; background: var(--side); opacity: .7; animation: mc-pulse 1s steps(1) infinite; }
+.th-live .th-foot { margin-top: 5px; }
+.th-live.big { display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; margin: 0; }
+.th-live.big > * { flex: none; }
+.th-live.big .th-tail { max-height: none; flex: 1 1 auto; min-height: 4.5em; }
+@media (max-width: 1000px) { .th-live.big .th-tail { max-height: 10.5em; } }
+.th-chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: .76rem; color: var(--text-secondary); }
+.th-chip + .th-chip { margin-left: 12px; }
+.th-chip b { color: var(--side); font-family: var(--sans); }
 @keyframes mc-pulse { 50% { opacity: .25; } }
-@media (prefers-reduced-motion: reduce) { .mc-waiting .dot { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .th-spin, .th-tail span::after { animation: none; } .th-track b { transition: none; } }
 .neutral { margin: 6px 0; font-size: .8rem; color: var(--text-secondary); }
 .note { font-size: .74rem; color: var(--text-muted); margin: 4px 0 4px 13px; font-family: var(--mono); overflow-wrap: anywhere; }
 .note.error { color: var(--critical); }
@@ -543,10 +583,14 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 .hp-think { border-left: 3px solid var(--border); padding: 4px 0 4px 10px; display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; }
 .hp-think.home { border-color: var(--home); } .hp-think.away { border-color: var(--away); }
 .hp-who { font-weight: 700; font-size: .8rem; }
-.hp-think.home .hp-who { color: var(--home); } .hp-think.away .hp-who { color: var(--away); }
-.hp-quote { font-style: italic; color: var(--text-secondary); white-space: pre-wrap; overflow: hidden; min-height: 3em;
+/* the other coach's last thought, opened, fills whatever height the board leaves free */
+.hp-think .th-line { display: flex; flex-direction: column; min-height: 0; overflow: hidden; margin-top: 2px; }
+.hp-think .th-line .th-row { cursor: default; pointer-events: none; }
+.hp-think .th-chev, .hp-think .th-dur.none { display: none; }
+.hp-think .th-body { margin: 4px 0 0; min-height: 2em; overflow: hidden;
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.2em), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 2.2em), transparent); }
-@media (max-width: 1000px) { .hp-quote { max-height: 9em; } }
+@media (max-width: 1000px) { .hp-think .th-body { max-height: 9em; } }
+.hp-think.home .hp-who { color: var(--home); } .hp-think.away .hp-who { color: var(--away); }
 .hp-last { font-family: var(--mono); font-size: .76rem; overflow-wrap: anywhere; flex: none; }
 .hp-plan { font-size: .82rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; flex: none; }
 .hp-plan.home b { color: var(--home); } .hp-plan.away b { color: var(--away); }

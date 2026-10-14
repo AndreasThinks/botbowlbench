@@ -200,7 +200,8 @@ class SeatDriver:
 
     async def _call_llm(self, messages, tools, key, sent, deadline=None, hurry=False, turn_ends=None):
         """One model call, fully recorded in the transcript. ``sent`` = messages already logged."""
-        self.waiting = {"since": time.time(), "turn_ends": turn_ends, "chars": 0, "text": ""}
+        # cut_at: when this reply is stopped (the reply limit, or the turn's own deadline if that comes first)
+        self.waiting = {"since": time.time(), "turn_ends": turn_ends, "cut_at": deadline, "chars": 0, "text": ""}
         try:
             resp = await self.llm.chat(messages, tools, deadline=deadline, **({"hurry": True} if hurry else {}))
         except LLMError as e:
@@ -251,8 +252,12 @@ class SeatDriver:
         if not e.deadline or not (reasoning.strip() or content.strip()):
             return
         self.session.transcript.write("llm_partial", self.seat.side, episode=key, reasoning=reasoning, content=content)
+        # a cancelled reply has no usage, so its tokens are estimated from the streamed text (~4 characters a token)
+        since = (self.waiting or {}).get("since")
         self.session.log_event(self.seat.side, "thought", {"text": (content.strip() or reasoning.strip())[:1500],
-                                                           "cut": True})
+                                                           "cut": True,
+                                                           "secs": round(time.time() - since, 1) if since else None,
+                                                           "tokens_est": round(len(reasoning + content) / 4)})
 
     async def play_episode(self, client, oa_tools, d):
         key = d.key
@@ -375,7 +380,10 @@ class SeatDriver:
                 return
             thought = (resp.content or "").strip() or (resp.reasoning or "").strip()
             if thought:
-                self.session.log_event(self.seat.side, "thought", {"text": thought[:1500]})
+                # how long the reply took and how many tokens it spent, so the feed can show each thought's weight
+                self.session.log_event(self.seat.side, "thought", {
+                    "text": thought[:1500], "secs": round(resp.latency, 1),
+                    "tokens": resp.reasoning_tokens or resp.completion_tokens})
             messages.append(resp.raw_message)
             sent = len(messages)  # the assistant message is logged as the call's response; tool results go
             #                       out with the next call's new_messages
