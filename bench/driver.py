@@ -30,6 +30,7 @@ class DriverLimits:
     max_tool_calls_per_turn: int = 40
     turn_time_limit: float = 300.0
     last_chance_seconds: float = 0.0  # held back from the turn for one short "act now" call; 0 = off
+    reply_time_limit: float = 0.0     # a reply still running after this long is stopped and its thinking handed back
     max_illegal_streak: int = 3
     max_truncation_streak: int = 3  # finish_reason=length with no tools; separate from illegal
     max_llm_errors: int = 4
@@ -38,6 +39,10 @@ class DriverLimits:
 
 def system_prompt(display_name: str, limits: DriverLimits, side: str, opponent_name: str = "another AI model") -> str:
     you = "H (home)" if side == "home" else "A (away)"
+    reply_rule = ""
+    if limits.reply_time_limit > 0:
+        reply_rule = (f"- One reply may run for at most {int(limits.reply_time_limit)} seconds. A reply still thinking then is "
+                      "stopped and you get back the end of\n  your thinking so far: act on it.\n")
     return f"""You are {display_name}, the coach of a Blood Bowl team in an AI benchmark tournament. Your opponent is \
 {opponent_name}, another AI model. You control the {you} players. You act ONLY by calling the provided tools (an MCP server).
 
@@ -55,7 +60,7 @@ last game action, or running out of budget, ends your turn automatically.
   characters: use it for rules, lessons and plans worth keeping. Rewrite it with the `notes` of end_turn (or
   update_notes at any time). Every write replaces the whole notebook, so carry over each lesson that still applies.
   You see the board at every decision, so there is no need to copy positions into it.
-- You may talk to your opponent with send_message (max 2 per turn). Spectators can read the chat.
+{reply_rule}- You may talk to your opponent with send_message (max 2 per turn). Spectators can read the chat.
 - Always answer with a tool call. Keep any text you write very short."""
 
 
@@ -72,7 +77,7 @@ class SeatDriver:
         self.usage = {"llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0,
                       "reasoning_tokens": 0, "cost": 0.0, "latency": 0.0, "tool_calls": 0, "llm_errors": 0,
                       "no_tool_replies": 0, "output_truncations": 0, "http_timeouts": 0,
-                      "uncertain_spend_calls": 0, "content_filter_retries": 0, "deadline_cutoffs": 0, "last_chance_calls": 0, "budget_exhausted": 0, "episodes": 0,
+                      "uncertain_spend_calls": 0, "content_filter_retries": 0, "deadline_cutoffs": 0, "last_chance_calls": 0, "thinking_cuts": 0, "budget_exhausted": 0, "episodes": 0,
                       "served": {}}
         self.unavailable = False
         self._oa_tools = []
@@ -221,6 +226,17 @@ class SeatDriver:
         return resp
 
     LIVE_TAIL = 2000   # characters of the streamed reply kept for spectators
+    HANDBACK_CHARS = 6000   # characters of a cancelled reply's thinking handed back to the model
+
+    def _handback(self) -> str:
+        """The end of the thinking a cancelled reply had streamed, for the model's next call ("" if none was shown)."""
+        partial = getattr(self.llm, "partial", None) or {}
+        text = ((partial.get("reasoning") or "") + (partial.get("content") or "")).strip()
+        if not text:
+            return ""
+        cut = len(text) > self.HANDBACK_CHARS
+        text = text[-self.HANDBACK_CHARS:]
+        return (f"\nYour thinking so far{' (the last part)' if cut else ''}:\n<<<\n{'...' if cut else ''}{text}\n>>>\n")
 
     def _on_stream(self, reasoning: str, content: str):
         w = self.waiting
@@ -278,14 +294,34 @@ class SeatDriver:
                 else:
                     self.seat.force_episode(key)
                 return
+            # until the model is hurried, its replies must finish before the last-chance reserve starts, and no
+            # single reply may run longer than reply_time_limit
+            reserve = 0.0 if hurry else self.limits.last_chance_seconds
+            deadline = t0 + self.limits.turn_time_limit - reserve
+            reply_cut = None
+            if self.limits.reply_time_limit > 0 and not hurry \
+                    and time.time() + self.limits.reply_time_limit < deadline:
+                reply_cut = time.time() + self.limits.reply_time_limit
             try:
-                # until the model is hurried, its replies must finish before the last-chance reserve starts
-                reserve = 0.0 if hurry else self.limits.last_chance_seconds
                 resp = await self._call_llm(messages, oa_tools, key, sent, hurry=hurry,
-                                            deadline=t0 + self.limits.turn_time_limit - reserve,
+                                            deadline=reply_cut or deadline,
                                             turn_ends=t0 + self.limits.turn_time_limit)
                 self.consecutive_llm_errors = 0
             except LLMError as e:
+                if e.deadline and reply_cut is not None:
+                    # One reply ran past reply_time_limit: stop it, hand its thinking back and let the model act on
+                    # it, with the rest of the turn's time and its normal settings.
+                    self.usage["thinking_cuts"] += 1
+                    self.session.log_event(self.seat.side, "system", {"text": (
+                        f"Reply still running after {int(self.limits.reply_time_limit)}s: stopped, its thinking "
+                        f"handed back.")})
+                    self.session.transcript.write("llm_cutoff", self.seat.side, episode=key, error=str(e)[:2000],
+                                                  waited=round(time.time() - t0, 1), reply_limit=True)
+                    note = (f"Your reply was still running after {int(self.limits.reply_time_limit)} seconds, so it "
+                            f"was stopped.{self._handback() or ' '}Act on it now: reply with a tool call (your next "
+                            f"action, or end_turn).")
+                    messages.append({"role": "user", "content": note})
+                    continue
                 if e.deadline and not hurry and self.limits.last_chance_seconds > 0:
                     # The reply ran into the reserve. Cancel it and give the model one short call to act itself
                     # before the default policy takes over.
@@ -299,7 +335,8 @@ class SeatDriver:
                     self.session.transcript.write("llm_cutoff", self.seat.side, episode=key, error=str(e)[:2000],
                                                   waited=round(time.time() - t0, 1), last_chance=True)
                     note = (f"Time is almost up: about {int(self.limits.last_chance_seconds)} seconds are left in "
-                            "this turn. Think briefly and reply now with a tool call: your best action, or end_turn.")
+                            f"this turn.{(self._handback() if e.uncertain_spend else '') or ' '}Think briefly and "
+                            "reply now with a tool call: your best action, or end_turn.")
                     messages.append({"role": "user", "content": note})
                     continue
                 if e.deadline:

@@ -80,6 +80,7 @@ def limits_for(model_cfg: dict, settings: dict) -> DriverLimits:
         max_tool_calls_per_turn=int(model_cfg.get("max_tool_calls_per_turn", settings.get("max_tool_calls_per_turn", 40))),
         turn_time_limit=float(model_cfg.get("turn_time_limit", settings.get("turn_time_limit", 300))),
         last_chance_seconds=float(model_cfg.get("last_chance_seconds", settings.get("last_chance_seconds", 0)) or 0),
+        reply_time_limit=float(model_cfg.get("reply_time_limit", settings.get("reply_time_limit", 0)) or 0),
         max_illegal_streak=max_illegal,
         max_truncation_streak=max_trunc,
         budget_usd=model_cfg.get("budget_usd_per_game", settings.get("budget_usd_per_game")),

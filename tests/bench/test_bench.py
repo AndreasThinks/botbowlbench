@@ -1114,7 +1114,7 @@ def test_settings_output_ceiling_applies_unless_the_model_sets_its_own(fake_open
                              {"budget_usd_per_game": 10, "max_output_tokens": 16384}, api_key="k").run()
         assert fake_openrouter.bodies
         assert all(b.get("max_tokens") == want for b in fake_openrouter.bodies), name
-        assert result["meta"]["harness"]["protocol_version"] == PROTOCOL_VERSION == "1.5"
+        assert result["meta"]["harness"]["protocol_version"] == PROTOCOL_VERSION == "1.6"
 
 
 def test_default_settings_carry_the_output_ceiling():
@@ -1612,6 +1612,104 @@ def test_missed_reflection_is_a_short_bounded_call():
     d._oa_tools = [{"type": "function", "function": {"name": "reflect", "description": "", "parameters": {}}}]
     anyio.run(d._missed_reflection, [{"role": "user", "content": "turn over"}], None, "turn-1-1", 0)
     assert seen["hurry"] is True and 40 < seen["deadline"] <= 45
+
+
+def test_long_reply_is_stopped_and_its_thinking_handed_back(monkeypatch):
+    """A reply still running after reply_time_limit is cancelled; the model gets the end of its thinking back and
+    acts on it with its normal settings (not the hurried last-chance ones)."""
+    import bench.match
+    from bench.llm import LLMError, RandomPolicy
+
+    class Overthinker:
+        def __init__(self, seat):
+            self.policy = RandomPolicy(seat, seed=5)
+            self.partial = {"reasoning": "", "content": ""}
+            self.deadlines, self.notes = [], []
+
+        async def chat(self, messages, tools, deadline=None, hurry=False):
+            last = messages[-1]
+            if last["role"] == "user" and "was stopped" in last["content"]:
+                self.notes.append(last["content"])
+                return await self.policy.chat(messages, tools)
+            if hurry:   # the one-shot reflect after a turnover
+                return await self.policy.chat(messages, tools)
+            self.deadlines.append(deadline - time.time())
+            self.partial = {"reasoning": "x" * 7000 + " PLAN: move A1 first.", "content": ""}
+            raise LLMError("turn time limit reached after 120s without a reply (request cancelled)",
+                           uncertain_spend=True, deadline=True)
+
+        async def aclose(self):
+            pass
+
+    made = []
+    real = bench.match.make_llm
+
+    def fake_make(cfg, seat, key):
+        if cfg.get("provider") != "openrouter":
+            return real(cfg, seat, key)
+        made.append(Overthinker(seat))
+        return made[-1]
+
+    monkeypatch.setattr(bench.match, "make_llm", fake_make)
+    cfg = {"name": "Slow LLM", "provider": "openrouter", "model": "fake/model"}
+    events = []
+    result = MatchRunner("t-reply-limit", cfg, RANDOM, {"last_chance_seconds": 45, "reply_time_limit": 120},
+                         api_key="k", event_sink=lambda *a: events.append(a)).run()
+    stats = result["home_stats"]
+    llm = made[0]
+    assert result["error"] is None
+    assert stats["thinking_cuts"] > 4 and stats["last_chance_calls"] == 0
+    assert stats["tool_calls"] > 0 and stats["llm_errors"] == 0
+    assert all(115 < d <= 120 for d in llm.deadlines)
+    note = llm.notes[0]
+    assert "PLAN: move A1 first." in note and "(the last part)" in note and len(note) < 6500
+    texts = [e[3].get("text", "") for e in events if e[2] == "system"]
+    assert any("stopped, its thinking handed back" in t for t in texts)
+
+
+def test_reply_limit_is_in_the_rules_only_when_on():
+    from bench.driver import DriverLimits, system_prompt
+    on = system_prompt("M", DriverLimits(reply_time_limit=120), "home")
+    assert "at most 120 seconds" in on
+    assert "One reply may run" not in system_prompt("M", DriverLimits(), "home")
+
+
+def test_last_chance_note_hands_back_the_cut_thinking(monkeypatch):
+    import bench.match
+    from bench.llm import LLMError, RandomPolicy
+
+    class CutThenAct:
+        def __init__(self, seat):
+            self.policy = RandomPolicy(seat, seed=3)
+            self.partial = {"reasoning": "", "content": ""}
+            self.prompts = []
+
+        async def chat(self, messages, tools, deadline=None, hurry=False):
+            if not hurry:
+                self.partial = {"reasoning": "I will blitz H2 with A1.", "content": ""}
+                raise LLMError("cancelled", uncertain_spend=True, deadline=True)
+            self.prompts.append(messages[-1]["content"] if messages[-1]["role"] == "user" else "")
+            return await self.policy.chat(messages, tools)
+
+        async def aclose(self):
+            pass
+
+    made = []
+    real = bench.match.make_llm
+
+    def fake_make(cfg, seat, key):
+        if cfg.get("provider") != "openrouter":
+            return real(cfg, seat, key)
+        made.append(CutThenAct(seat))
+        return made[-1]
+
+    monkeypatch.setattr(bench.match, "make_llm", fake_make)
+    cfg = {"name": "Slow LLM", "provider": "openrouter", "model": "fake/model"}
+    result = MatchRunner("t-lc-handback", cfg, RANDOM, {"last_chance_seconds": 45, "reply_time_limit": 0},
+                         api_key="k").run()
+    assert result["error"] is None
+    lc = [p for p in made[0].prompts if "Time is almost up" in p]
+    assert lc and all("I will blitz H2 with A1." in p for p in lc)
 
 
 def test_claude_models_keep_auto_tool_choice_so_they_can_think():
