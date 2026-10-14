@@ -20,6 +20,7 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
     script = []
     reject_cache_control = False   # answer HTTP 400 to any request with a top-level cache_control
     no_endpoints_when_ignoring = False   # answer HTTP 404 (no host left) to any request with provider.ignore
+    completion_tokens = 50   # usage.completion_tokens of an ordinary reply
 
     def log_message(self, *args):
         pass
@@ -105,7 +106,8 @@ class FakeOpenRouter(BaseHTTPRequestHandler):
             finish = "tool_calls"
         self._send(200, {"id": f"gen-{n}", "model": body["model"] + "-20260901", "provider": "FakeCloud",
                          "choices": [{"message": msg, "finish_reason": finish}],
-                         "usage": {"prompt_tokens": 1000, "completion_tokens": 50, "cost": 0.0001,
+                         "usage": {"prompt_tokens": 1000, "completion_tokens": FakeOpenRouter.completion_tokens,
+                                   "cost": 0.0001,
                                    "prompt_tokens_details": {"cached_tokens": 600}}})
 
     def _send(self, code, payload):
@@ -167,6 +169,7 @@ def fake_openrouter(monkeypatch):
     FakeOpenRouter.script = []
     FakeOpenRouter.reject_cache_control = False
     FakeOpenRouter.no_endpoints_when_ignoring = False
+    FakeOpenRouter.completion_tokens = 50
     import bench.llm
     from bench import model_info
     # the fake model's OpenRouter listing ($1 / $2 per million tokens), without going to the network
