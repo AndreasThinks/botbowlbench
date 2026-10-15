@@ -98,3 +98,6 @@ models:
 
   - name: Muse Wonder
     model: meta/muse-wonder
+
+  - name: Muse Spark Open
+    model: meta/muse-spark-open
