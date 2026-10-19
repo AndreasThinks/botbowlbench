@@ -101,3 +101,6 @@ models:
 
   - name: Muse Spark Open
     model: meta/muse-spark-open
+
+  - name: Reflection Beam 1.0
+    model: reflection/beam-1.0-501b-a23b
