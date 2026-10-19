@@ -2,6 +2,9 @@
 {% block title %}Tournament · BotBowl Bench{% endblock %}
 {% block content %}
 <div id="head"></div>
+<div class="card section" id="members-card" style="display:none"><h2>Newcomers</h2><div class="table-wrap"><table id="mem">
+  <thead><tr><th>Model</th><th class="num">Anchor games</th><th class="num">Top-ups played</th><th class="num">Top-ups possible</th></tr></thead><tbody></tbody>
+</table></div><div class="muted" style="font-size:.82rem;margin-top:6px">Each newcomer has its own anchors and top-up allowance. A game two newcomers have in common is played once and counts for both. Possible top-ups are only scheduled, against opponents picked from the results, once a newcomer's queued games are done, and are skipped if its rating has settled.</div></div>
 <div class="card section"><h2>Standings</h2><div class="table-wrap"><table id="st">
   <thead><tr><th class="rank">#</th><th>Model</th><th class="num">P</th><th class="num">W</th><th class="num">D</th><th class="num">L</th><th class="num">TD +/-</th><th class="num">Diff</th><th class="num">Cas</th><th class="num">Pts</th></tr></thead><tbody></tbody>
 </table></div><div class="muted" style="font-size:.82rem;margin-top:6px">3 points for a win, 1 for a draw. Ties are broken by TD difference, then TDs scored.</div></div>
@@ -18,8 +21,16 @@ function load() {
     const head = document.getElementById("head"); head.innerHTML = "";
     const done = d.matches.filter((m) => m.status === "completed").length;
     head.append(h("h1", {}, t.name), h("p", { class: "secondary" },
-      `${({ gauntlet: "Gauntlet", placement: "Placement" })[t.kind] || "Round robin"} · ${t.status} · ${done}/${d.matches.length} games played`,
+      `${t.kind === "placement" && d.members.length > 1 ? `Placement cohort (${d.members.length} newcomers)` : ({ gauntlet: "Gauntlet", placement: "Placement" })[t.kind] || "Round robin"} · ${t.status} · ${done}/${d.matches.length} games played`,
       t.settings && t.settings.game_mode ? ` · ${t.settings.game_mode}-a-side` : ""));
+    if (t.settings && t.settings.merged_into) head.append(h("p", {}, "Merged into ", h("a", { href: `/tournaments/${t.settings.merged_into}` }, "its placement cohort"), "."));
+    document.getElementById("members-card").style.display = d.members.length ? "" : "none";
+    const mb = document.querySelector("#mem tbody"); mb.innerHTML = "";
+    d.members.forEach((r) => mb.append(h("tr", {},
+      h("td", {}, h("a", { href: `/models/${r.model}` }, r.name), r.enabled ? "" : h("span", { class: "muted" }, " (retired)")),
+      h("td", { class: "num" }, `${r.anchor_done}/${r.anchor_total}`),
+      h("td", { class: "num" }, `${r.top_up_done}/${r.top_up_total}`),
+      h("td", { class: "num" }, r.adaptive ? r.top_ups_possible : "–"))));
     const tb = document.querySelector("#st tbody"); tb.innerHTML = "";
     if (!d.standings.length) tb.append(h("tr", {}, h("td", { colspan: 10, class: "empty" }, "No completed games yet.")));
     d.standings.forEach((r, i) => tb.append(h("tr", {}, h("td", { class: "rank" }, i + 1),
@@ -28,7 +39,7 @@ function load() {
       h("td", { class: "num" }, (r.td_diff > 0 ? "+" : "") + r.td_diff), h("td", { class: "num" }, fmt.num(r.cas)), h("td", { class: "num" }, h("b", {}, r.points)))));
     const fx = document.getElementById("fx"); fx.innerHTML = "";
     d.matches.forEach((m) => fx.append(BB.matchRow(m)));
-    return t.status !== "completed";
+    return t.status !== "completed" && t.status !== "merged";
   });
 }
 load().then((more) => { if (more) setInterval(load, 10000); });

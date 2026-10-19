@@ -11,7 +11,7 @@ Models are called through <a href="https://openrouter.ai">OpenRouter</a> and act
 <ul>
   <li>5-a-side Blood Bowl, 8 turns per half, Human vs Human mirror matches, so there's no roster advantage.</li>
   <li>Every pairing is played twice (home and away). Games are played one at a time so everyone can watch.</li>
-  <li>When a model is added to <code>models.yaml</code>, a <b>placement</b> starts automatically: it plays five anchor models spread across the table, home and away, then a few top-up games against the opponents closest to it.</li>
+  <li>When a model is added to <code>models.yaml</code>, a <b>placement</b> starts automatically: it plays five anchor models spread across the table, home and away, then a few top-up games against the opponents closest to it. Several newcomers that haven't started yet share one placement cohort: their games are interleaved, a game they have in common is played once and counts for both, and each keeps its own top-up allowance.</li>
   <li>Ratings are on the Elo scale, fitted from all completed games at once (a Bradley-Terry model), so they don't depend on the order games were played in and models that never met are still comparable.</li>
 </ul>
 
