@@ -8,7 +8,7 @@ can watch the games live in the browser.
   play-by-play of every tool call.
 * **Automatic tournaments.** Competitors are listed in [`models.yaml`](../models.yaml). The first start plays a
   round robin. Every model added later automatically gets a *placement*: five anchors spread across the table, home and away,
-  then up to six top-up games against its closest opponents, so adding a model costs the same however big the list is.
+  then up to six top-up games against its closest opponents, so adding a model costs the same however big the list is. Newcomers added before their games start share one placement cohort (see below).
 * **Replays of every game.** The [Matches](#replays) archive lists every finished game. Each one can be watched again
   on the board with play/pause, speed, a scrubber with turn and touchdown markers, and the chat, plans and
   play-by-play kept in sync. It can hide the result until the end, and a link can point to any moment.
@@ -60,6 +60,37 @@ models:
 
 The scheduler notices the new id and queues its placement. Setting `enabled: false` (or deleting the entry) retires a
 model: its queued games are cancelled but its history stays. Renaming creates a *new* competitor.
+
+### Placement cohorts
+
+Newcomers whose placements haven't started are combined automatically (on every models.yaml sync, including start-up
+and admin reloads; even two newcomers) into one **placement cohort** tournament instead of being played one after the
+other:
+
+* **Who joins.** Only placements nothing has ever happened to: status `queued`, no `started_at` on the tournament or
+  any game, no events or checkpoint (so a game interrupted by a restart, which recovery puts back to `queued`, keeps its
+  placement out for good). Running tournaments, completed games, manual round robins and the opening tournament are
+  never touched. Games already cancelled by a retired model stay where they are.
+* **Compatibility.** Placements merge only when their effective game settings (everything in `settings:` except
+  `pause_between_matches` and `placement_*`, so `legs` and `game_mode` count) are equal and they run under the
+  current protocol. A cohort is *pinned* to the settings it was merged under: its games run with them even after a
+  hot reload changes `settings:` (a standalone placement keeps following the live settings, as it always did, so it is
+  judged by them). The cohort's protocol label of a still-unstarted cohort is refreshed to the current one, since that is
+  what its games will be played under.
+* **Games.** The oldest placement becomes the cohort and keeps its game ids; the others' games are moved in. A directed
+  fixture two newcomers share (same home and away) is played once and counts for both; the home and away legs
+  are kept. Games are re-sequenced one newcomer at a time so everyone plays early. The emptied placements stay in the
+  database as `merged` (with `merged_into` in their settings) and are hidden from the tournament list.
+* **Per newcomer.** Each keeps its own anchors, progress, top-up allowance (`placement_extra_games`, frozen when it joins,
+  so later reloads can't widen it) and stopping rule (`placement_target_range`). A newcomer tops up as soon as its own
+  queued games are done, one pairing at a time against the opponent whose result is least predictable, until its 95%
+  range is narrow enough or its allowance (counted per newcomer, shared games count for both) is used. The cohort is
+  complete when no newcomer has games left or can still top up. Nothing becomes a full round robin.
+* **Storage.** Tables `placement_members` (newcomer, joined time, frozen allowance) and `placement_fixtures` (which
+  games count for which newcomer, as `anchor` or `top_up`) are created on start-up, and placements from before cohorts
+  are backfilled from `focus_model` / `settings.placement_base` (idempotent). The merge is one SQLite transaction.
+  `GET /api/tournaments/<id>` returns `members` (per-newcomer anchor/top-up progress and possible top-ups), and each match
+  has `for_models` / `top_up`.
 
 Classic botbowl bots can compete too, as free baselines. `provider: botbowl` plays any bot from botbowl's registry
 through the same MCP tools, so its games are scored like everyone else's:

@@ -58,6 +58,25 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_match ON events(match_id, id);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+-- Newcomers of a placement (one, or several in a cohort) and which games count for whom. A game shared by two
+-- newcomers has a row for each. extra_games / target_range are frozen when the newcomer joins (NULL = read the live
+-- settings, as placements made before cohorts did); adaptive=0 means no top-ups.
+CREATE TABLE IF NOT EXISTS placement_members (
+    tournament_id INTEGER NOT NULL REFERENCES tournaments(id),
+    model_id TEXT NOT NULL REFERENCES models(id),
+    joined_at REAL NOT NULL,
+    adaptive INTEGER NOT NULL DEFAULT 1,
+    extra_games INTEGER,
+    target_range REAL,
+    PRIMARY KEY (tournament_id, model_id)
+);
+CREATE TABLE IF NOT EXISTS placement_fixtures (
+    match_id TEXT NOT NULL REFERENCES matches(id),
+    model_id TEXT NOT NULL REFERENCES models(id),
+    role TEXT NOT NULL,              -- anchor | top_up
+    PRIMARY KEY (match_id, model_id)
+);
+CREATE INDEX IF NOT EXISTS idx_placement_fixtures_model ON placement_fixtures(model_id);
 """
 
 _local = threading.local()
@@ -81,6 +100,29 @@ def init(path: str):
             for name, typ in cols:
                 if name not in have:
                     c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
+    backfill_placements()
+
+
+def backfill_placements():
+    """Placements made before cohorts have no member or fixture rows: derive them (focus model, games before
+    settings.placement_base are anchors, later ones top-ups). Idempotent: only touches placements without members."""
+    with transaction() as c:
+        todo = c.execute("SELECT * FROM tournaments WHERE kind='placement' AND status!='merged' AND focus_model IS NOT NULL AND id NOT IN "
+                         "(SELECT tournament_id FROM placement_members)").fetchall()
+        for t in todo:
+            if not c.execute("SELECT 1 FROM models WHERE id=?", (t["focus_model"],)).fetchone():
+                continue
+            try:
+                base = json.loads(t["settings"] or "{}").get("placement_base")
+            except ValueError:
+                base = None
+            c.execute("INSERT INTO placement_members(tournament_id, model_id, joined_at, adaptive) VALUES(?,?,?,?)",
+                      (t["id"], t["focus_model"], t["created_at"], 0 if base is None else 1))
+            for i, m in enumerate(c.execute("SELECT id FROM matches WHERE tournament_id=? ORDER BY seq", (t["id"],))
+                                  .fetchall()):
+                role = "top_up" if base is not None and i >= base else "anchor"
+                c.execute("INSERT OR IGNORE INTO placement_fixtures(match_id, model_id, role) VALUES(?,?,?)",
+                          (m["id"], t["focus_model"], role))
 
 
 def _connect():
@@ -99,12 +141,38 @@ def conn():
         c = _connect()
         _local.conn = c
         _local.path = _DB_PATH
+        _local.in_tx = False
+    if getattr(_local, "in_tx", False):
+        # inside transaction(): the helpers below join it; only the transaction commits or rolls back
+        yield c
+        return
     try:
         yield c
         c.commit()
     except Exception:
         c.rollback()
         raise
+
+
+@contextmanager
+def transaction():
+    """One atomic write transaction (takes the write lock up front). Helpers called inside it (rows, row, execute,
+    conn) join it instead of committing, so it stays all-or-nothing. Nesting is an error, never a silent commit."""
+    with conn() as c:
+        if getattr(_local, "in_tx", False):
+            raise RuntimeError("db.transaction() cannot be nested")
+        if c.in_transaction:
+            c.commit()
+        c.execute("BEGIN IMMEDIATE")
+        _local.in_tx = True
+        try:
+            yield c
+            c.commit()
+        except BaseException:
+            c.rollback()
+            raise
+        finally:
+            _local.in_tx = False
 
 
 def rows(sql: str, args=()) -> List[dict]:

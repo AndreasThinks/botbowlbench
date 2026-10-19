@@ -52,13 +52,26 @@ def create_app(start_scheduler: bool = True) -> Flask:
                 "half": g.state.half, "turn": max(g.state.home_team.state.turn, g.state.away_team.state.turn),
                 "waiting": waiting, "server_time": time.time()}
 
-    def placement_base(t):
-        return json.loads(t["settings"] or "{}").get("placement_base") if t["kind"] == "placement" else None
+    def placement_links(tid):
+        """match id -> {model: role} for the games of a placement (a shared game counts for several newcomers)."""
+        out = {}
+        for r in db.rows("SELECT f.match_id, f.model_id, f.role FROM placement_fixtures f JOIN matches m "
+                         "ON m.id=f.match_id WHERE m.tournament_id=?", (tid,)):
+            out.setdefault(r["match_id"], {})[r["model_id"]] = r["role"]
+        return out
 
-    def tbc_row(t, names, games):
-        """Stands in for a placement's top-up games, which aren't scheduled until its queued games are done."""
-        return {"tbc": True, "tournament_id": t["id"], "games": games, "home_model": t["focus_model"],
-                "home_name": names.get(t["focus_model"], {}).get("name", t["focus_model"])}
+    def with_links(m, names, links):
+        """A match summary with whether it is a top-up and which newcomers it counts for."""
+        who = links.get(m["id"], {})
+        return {**match_summary(m, names), "top_up": "top_up" in who.values(),
+                "for_models": list(who), "for_names": [names.get(x, {}).get("name", x) for x in who]}
+
+    def tbc_rows(t, names):
+        """Stand in for a placement's top-up games, which aren't scheduled until a newcomer's queued games are done:
+        one row per newcomer, with how many it may still add."""
+        return [{"tbc": True, "tournament_id": t["id"], "games": n, "home_model": model,
+                 "home_name": names.get(model, {}).get("name", model)}
+                for model, n in bench.member_top_ups(t).items()]
 
     def upcoming(names, limit=12):
         """The next queued games in play order, with top-ups marked, plus a row for top-ups not yet scheduled."""
@@ -68,12 +81,11 @@ def create_app(start_scheduler: bool = True) -> Flask:
                 break
             rows = db.rows("SELECT * FROM matches WHERE tournament_id=? AND status='queued' ORDER BY seq",
                            (t["id"],))
-            base = placement_base(t)
+            links = placement_links(t["id"]) if t["kind"] == "placement" else {}
             for m in rows[:limit - len(out)]:
-                out.append({**match_summary(m, names), "top_up": base is not None and m["seq"] >= base})
-            maybe = bench.possible_top_ups(t)
-            if maybe and (not rows or out[-1]["id"] == rows[-1]["id"]):
-                out.append(tbc_row(t, names, maybe))
+                out.append(with_links(m, names, links))
+            if not rows or out[-1]["id"] == rows[-1]["id"]:
+                out.extend(tbc_rows(t, names))
         return out
 
     def completed_matches(where="", args=(), all_protocols=False):
@@ -394,13 +406,14 @@ def create_app(start_scheduler: bool = True) -> Flask:
     def api_tournaments():
         names = models_by_id()
         out = []
-        for t in db.rows("SELECT * FROM tournaments ORDER BY created_at DESC, id DESC"):
+        for t in db.rows("SELECT * FROM tournaments WHERE status!='merged' ORDER BY created_at DESC, id DESC"):
             c = db.row("SELECT COUNT(*) AS total, SUM(status='completed') AS done FROM matches WHERE tournament_id=?",
                        (t["id"],))
             table = ratings.standings(completed_matches("AND tournament_id=?", (t["id"],)))
             leader = table[0]["model"] if table else None
             t.pop("settings", None)
-            out.append({**t, "total": c["total"], "done": c["done"] or 0,
+            cohort = [names.get(m["model_id"], {}).get("name", m["model_id"]) for m in bench.placement_members(t["id"])]
+            out.append({**t, "newcomers": cohort, "total": c["total"], "done": c["done"] or 0,
                         "leader": names.get(leader, {}).get("name") if leader else None,
                         "focus_name": names.get(t["focus_model"], {}).get("name") if t["focus_model"] else None})
         return jsonify(out)
@@ -411,16 +424,25 @@ def create_app(start_scheduler: bool = True) -> Flask:
         if t is None:
             abort(404)
         names = models_by_id()
-        base, maybe = placement_base(t), bench.possible_top_ups(t)
         t["settings"] = json.loads(t["settings"] or "{}")
         table = ratings.standings(completed_matches("AND tournament_id=?", (tid,)))
         for r in table:
             r["name"] = names.get(r["model"], {}).get("name", r["model"])
-        matches = [{**match_summary(m, names), "top_up": base is not None and m["seq"] >= base} for m in db.rows(
+        links = placement_links(tid) if t["kind"] == "placement" else {}
+        matches = [with_links(m, names, links) for m in db.rows(
             "SELECT * FROM matches WHERE tournament_id=? ORDER BY seq", (tid,))]
-        if maybe:
-            matches.append(tbc_row(t, names, maybe))
-        return jsonify({"tournament": t, "standings": table, "matches": matches})
+        matches += tbc_rows(t, names)
+        members = []
+        if t["kind"] == "placement":
+            progress, left = bench.placement_progress(tid), bench.member_top_ups(t)
+            for mem in bench.placement_members(tid):
+                mid = mem["model_id"]
+                members.append({"model": mid, "name": names.get(mid, {}).get("name", mid),
+                                "enabled": bool(names.get(mid, {}).get("enabled", True)),
+                                "adaptive": bool(mem["adaptive"]), "top_ups_possible": left.get(mid, 0),
+                                **{k: progress.get(mid, {}).get(k, 0) for k in (
+                                    "anchor_done", "anchor_total", "top_up_done", "top_up_total", "cancelled")}})
+        return jsonify({"tournament": t, "standings": table, "matches": matches, "members": members})
 
     # ---- API: dataset export --------------------------------------------------------------------------
     @app.route("/api/matches/<match_id>/transcript")

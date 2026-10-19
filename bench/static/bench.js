@@ -65,10 +65,11 @@ const BB = (() => {
     }
     let score = "vs", tag = h("span", { class: "badge tag" }, m.status);
     if (m.status === "queued" && m.top_up) tag = h("span", { class: "badge tag", title: "A placement top-up: opponent picked from the placement results" }, "top-up");
+    const shared = m.for_names && m.for_names.length > 1 ? ` (counts for ${m.for_names.join(" and ")})` : "";
     if (m.status === "completed") { score = `${m.home_score} – ${m.away_score}`; tag = h("span", { class: "muted tag" }, fmt.ago(m.finished_at)); }
     else if (m.status === "running") { score = m.home_score != null ? `${m.home_score} – ${m.away_score}` : "vs"; tag = h("span", { class: "badge live tag" }, "LIVE"); }
     const hw = m.winner === "home", aw = m.winner === "away";
-    return h("a", { class: "match-row", href: `/match/${m.id}` },
+    return h("a", { class: "match-row", href: `/match/${m.id}`, title: shared.trim() || null },
       h("span", { class: "home", style: { fontWeight: hw ? 700 : 400 } }, m.home_name),
       h("span", { class: "score" }, score),
       h("span", { class: "away", style: { fontWeight: aw ? 700 : 400 } }, m.away_name),

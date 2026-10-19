@@ -38,6 +38,16 @@ DEFAULT_SETTINGS = {
 }
 
 
+# settings that only steer scheduling, not how a game is played (and the bookkeeping keys of a tournament snapshot)
+_NON_EXECUTION = {"pause_between_matches", "pinned", "protocol_version"}
+
+
+def exec_settings(settings: dict) -> dict:
+    """The part of a settings dict that decides how games are played and fixtures are made: what has to be equal for
+    two placements to share a tournament, and what a cohort's games run under."""
+    return {k: v for k, v in settings.items() if k not in _NON_EXECUTION and not k.startswith("placement_")}
+
+
 def data_dir() -> str:
     d = os.environ.get("DATA_DIR") or os.path.join(os.getcwd(), "data")
     os.makedirs(d, exist_ok=True)
