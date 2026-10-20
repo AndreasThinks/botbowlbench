@@ -13,11 +13,13 @@
 {% block scripts %}
 <script src="/bench-static/board.js"></script>
 <script src="/bench-static/think.js"></script>
+<script src="/bench-static/idle.js"></script>
 <script>
 const { h, api, fmt } = BB;
 let liveId = null;
 
 let board = null;
+let idle = null;   // BBIdle view while no game is live
 
 // "Inside the coaches' heads": a live taste of the match centre beside the board, so it's clear what
 // opening it gets you. Keeps only each coach's latest thought, the latest play and the plans, not the whole
@@ -103,17 +105,14 @@ function renderNow(s) {
   if (!m) {
     if (board) board.stop();
     liveId = null; board = null; T.id = null;
-    box.innerHTML = "";
-    const last = s.recent[0];
-    box.append(h("div", { class: "card" },
-      h("h1", {}, "No game in progress"),
-      h("p", { class: "secondary" }, s.detail || ""),
-      last ? h("p", {}, "Last result: ", h("a", { href: `/match/${last.id}` }, `${last.away_name} ${last.away_score ?? ""} – ${last.home_score ?? ""} ${last.home_name}`),
-        " · ", h("a", { href: `/match/${last.id}` }, "watch the replay")) : null));
+    // nothing live (credits out, tournament over, paused): replays of good past games and the podiums
+    if (!idle) { box.innerHTML = ""; idle = BBIdle.create(box); }
+    idle.show(s);
     return;
   }
   if (liveId === m.id) return;
   liveId = m.id;
+  if (idle) { idle.stop(); idle = null; }
   box.innerHTML = "";
   const stadiumEl = h("div", {}, h("div", { class: "stadium-empty" }, "Loading the board…"));
   box.append(h("div", { class: "card stadium-card" },
