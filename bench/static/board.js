@@ -121,6 +121,20 @@ const BBBoard = (() => {
     }
     const balls = (st.pitch && st.pitch.balls) || st.balls || [];
     const b0 = balls.find((b) => b.position);
+    // A kick stays in the air through the kick-off event (a Blitz! gives the kicking team a free turn) and lands
+    // after it. One that lands off the pitch or short of halfway is a touchback, not a throw-in. botbowl keeps
+    // the ball at its off-pitch square meanwhile, so draw it on the nearest edge square and say what happens.
+    const board = game.arena.board, W = board[0].length - 2, H = board.length - 2;
+    let ball = null, kick = null;
+    if (b0) {
+      const { x, y } = b0.position;
+      ball = [Math.min(Math.max(x, 1), W), Math.min(Math.max(y, 1), H), b0.is_carried ? "c" : b0.on_ground ? "g" : "a"];
+      if (ball[2] === "a" && (game.stack || []).includes("LandKick")) {
+        const tile = (board[y] || [])[x] || "CROWD";
+        const recv = st.receiving_this_drive === st.home_team.team_id ? "HOME" : "AWAY";
+        kick = tile === "CROWD" ? "out" : tile.startsWith(recv) ? "in" : "short";
+      }
+    }
     const full = (game.bench && game.bench.log) || [];
     let log;
     if (prev) {
@@ -142,7 +156,7 @@ const BBBoard = (() => {
       cur: st.current_team_id === st.home_team.team_id ? "H" : st.current_team_id === st.away_team.team_id ? "A" : null,
       act: ids[st.active_player_id] || null, at: st.player_action_type,
       sm: (game.squares_moved || []).map((q) => [q.x, q.y]),
-      ball: b0 ? [b0.position.x, b0.position.y, b0.is_carried ? "c" : b0.on_ground ? "g" : "a"] : null,
+      ball, kick,
       p, info, log, full, over: !!st.game_over, blizzard: st.weather === "BLIZZARD",
     };
   }
@@ -173,6 +187,7 @@ const BBBoard = (() => {
   }
   function stepBall(a, b) {
     if (!a.ball || !b.ball || sameSq(a.ball, b.ball)) return null;
+    if (a.kick === "out" || a.kick === "short") return null;   // a touchback: the ball is handed over, it doesn't travel
     const c0 = carrierOf(a), c1 = carrierOf(b);
     if (c0 && c0 === c1) return { kind: "carried", by: c1, from: a.ball, to: b.ball };
     const thrown = a.at === "PASS" || a.at === "HANDOFF" || b.log.some((t) => /pass|throw|hand-?off|catch|caught|intercept/i.test(t));
@@ -610,7 +625,8 @@ const BBBoard = (() => {
           svg("circle", { cx: cx(bx), cy: cy(by), r: 0.47, class: "st-halo" }, under);
         } else {
           svg("circle", { cx: cx(bx), cy: cy(by), r: 0.42, class: "st-loose" }, under);
-          svg("text", { x: cx(bx), y: by >= H ? cy(by) - 0.62 : cy(by) + 0.7, class: "st-loose-tx" }, over).textContent = "LOOSE BALL";
+          svg("text", { x: cx(bx), y: by >= H ? cy(by) - 0.62 : cy(by) + 0.7, class: "st-loose-tx" }, over).textContent =
+            f.kick === "out" ? "KICKED OUT · TOUCHBACK" : f.kick === "short" ? "SHORT KICK · TOUCHBACK" : f.kick ? "KICK IN THE AIR" : "LOOSE BALL";
         }
       }
       const n = hist.length - 1;
@@ -744,6 +760,10 @@ const BBBoard = (() => {
         possess.append(h("span", `st-pos-lbl ${sideCls}`, `● ${sideName(carrier)} has the ball`),
           h("span", "st-pos-sub", longName(carrier) + (dist == null ? "" : dist ? ` · ${dist} ${dist === 1 ? "square" : "squares"} from the end zone` : " · in the end zone")),
           h("span", `st-pos-meter ${sideCls}`, fill));
+      } else if (f.kick) {
+        possess.append(h("span", "st-pos-lbl", "○ The kick is in the air"), h("span", "st-pos-sub",
+          f.kick === "out" ? "going out of bounds · touchback to the receiving team"
+            : f.kick === "short" ? "landing short of halfway · touchback to the receiving team" : "lands once the kick-off is resolved"));
       } else if (f.ball) {
         possess.append(h("span", "st-pos-lbl", "○ The ball is loose"), h("span", "st-pos-sub", f.ball[2] === "a" ? "in the air" : "nobody has it"));
       } else {
@@ -833,7 +853,7 @@ const BBBoard = (() => {
       // header: away (red, left) - score - home (blue, right), matching the pitch orientation
       head.innerHTML = "";
       const turn = Math.max(home.state.turn || 0, away.state.turn || 0);
-      const phase = st.game_over ? "Full time" : (turn ? `Half ${st.half} · Turn ${turn}` : `Half ${st.half || 1} · Kick-off`);
+      const phase = st.game_over ? "Full time" : (turn && !f.kick ? `Half ${st.half} · Turn ${turn}` : `Half ${st.half || 1} · Kick-off`);
       const w = WEATHER[st.weather] || "nice";
       const centre = h("div", "st-centre",
         h("div", "st-score", h("span", "away", String(away.state.score)), h("span", "dash", "–"), h("span", "home", String(home.state.score))),
@@ -858,7 +878,6 @@ const BBBoard = (() => {
       drawOverlays(under, over, f, H, W);
       layer.append(under);
       const activeId = st.active_player_id;
-      const balls = (st.pitch && st.pitch.balls) || st.balls || [];
       const els = {};
       for (const [side, team] of [["home", home], ["away", away]]) {
         for (const p of Object.values(team.players_by_id)) {
@@ -878,10 +897,10 @@ const BBBoard = (() => {
         }
       }
       let ballEl = null;
-      balls.filter((b) => b.position).forEach((b) => {
-        ballEl = place(h("div", `st-ballsq ${b.is_carried ? "carried" : ""}`, h("span", `st-ball ${b.is_carried || b.on_ground ? "" : "air"}`)), b.position.x, b.position.y);
+      if (f.ball) {
+        ballEl = place(h("div", `st-ballsq ${f.ball[2] === "c" ? "carried" : ""}`, h("span", `st-ball ${f.ball[2] === "a" ? "air" : ""}`)), f.ball[0], f.ball[1]);
         layer.append(ballEl);
-      });
+      }
       layer.append(over);
       pitch.append(hz);
 
