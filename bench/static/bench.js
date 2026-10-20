@@ -76,13 +76,25 @@ const BB = (() => {
       tag);
   }
 
+  // Why nothing is live: "outage" (OpenRouter credits / key limit: the scheduler retries and the interrupted game
+  // resumes by itself), "over" (nothing queued), or "other" (paused, starting, between games, errors).
+  function idleKind(s) {
+    if (s.live.length) return "live";
+    if (s.status === "waiting" && /OpenRouter|credit|Key limit/i.test(s.detail || "")) return "outage";
+    if (!s.queued.length) return "over";
+    return "other";
+  }
+
   function statusPill() {
     const pill = document.getElementById("status-pill");
     if (!pill) return;
     const update = () => api("/api/status").then((s) => {
       pill.innerHTML = "";
       let cls = "idle", txt = s.detail || s.status;
+      const kind = idleKind(s);
       if (s.live.length) { cls = "live"; const m = s.live[0]; txt = `Live: ${m.home_name} vs ${m.away_name}`; }
+      else if (kind === "outage") { cls = "wait"; txt = "Paused · back soon"; pill.title = s.detail; }
+      else if (kind === "over") txt = "No games scheduled";
       else if (s.status === "waiting" || s.status === "paused" || s.status === "error") cls = "wait";
       pill.append(h("span", { class: "dot " + cls }), h("span", { class: "txt" }, txt));
       if (s.live.length) pill.onclick = () => (location.href = `/match/${s.live[0].id}`), (pill.style.cursor = "pointer");
@@ -167,7 +179,7 @@ const BB = (() => {
     hit.addEventListener("mouseleave", () => { tip.style.display = "none"; cross.setAttribute("visibility", "hidden"); });
   }
 
-  return { api, h, fmt, matchRow, statusPill, cellbar, takeRate, lineChart, setModelOrder, modelColor };
+  return { api, h, fmt, matchRow, statusPill, idleKind, cellbar, takeRate, lineChart, setModelOrder, modelColor };
 })();
 document.addEventListener("DOMContentLoaded", BB.statusPill);
 

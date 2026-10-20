@@ -498,7 +498,7 @@ def test_web_endpoints(bench_env):
                 "/models/random-baseline", "/health", "/api/status", "/api/leaderboard", "/api/tournaments",
                 "/api/tournaments/1", f"/api/matches/{m['id']}", f"/api/matches/{m['id']}/events",
                 f"/api/matches/{m['id']}/state", f"/replays/{m['id']}", f"/steps/{m['id']}/0/5",
-                "/api/models/random-baseline", "/bench-static/bench.css"]:
+                "/api/models/random-baseline", "/bench-static/bench.css", "/bench-static/idle.js"]:
         r = c.get(url)
         assert r.status_code == 200, url
     state = json.loads(c.get(f"/api/matches/{m['id']}/state").data)
