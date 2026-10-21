@@ -3,8 +3,8 @@
 {% block content %}
 <h1>Tournaments</h1>
 <p class="secondary">A <b>round robin</b> pits every model against every other one. A <b>placement</b> is scheduled automatically whenever a new model joins: the newcomer plays five anchors spread across the table, then a few top-up games against the opponents closest to it. Newcomers that haven't started yet share one <b>placement cohort</b>: their games are interleaved, a game they have in common is played once and counts for both, and each keeps its own anchors and top-up allowance. Older <b>gauntlets</b> had newcomers play everyone.</p>
-<div class="card"><div class="table-wrap"><table id="t">
-  <thead><tr><th>Tournament</th><th>Type</th><th>Status</th><th class="num">Progress</th><th>Leader</th><th>Started</th></tr></thead><tbody></tbody>
+<div class="card"><div class="table-wrap"><table id="t" class="two-line">
+  <thead><tr><th>Tournament</th><th>Status</th><th class="num">Progress</th></tr></thead><tbody></tbody>
 </table></div></div>
 {% endblock %}
 {% block scripts %}
@@ -12,14 +12,16 @@
 const { h, api, fmt } = BB;
 api("/api/tournaments").then((ts) => {
   const tb = document.querySelector("#t tbody");
-  if (!ts.length) tb.append(h("tr", {}, h("td", { colspan: 6, class: "empty" }, "No tournaments yet. Add at least two models to models.yaml.")));
-  ts.forEach((t) => tb.append(h("tr", {},
-    h("td", {}, h("a", { href: `/tournaments/${t.id}` }, t.name)),
-    h("td", {}, t.kind === "placement" && t.newcomers.length > 1 ? `Placement cohort (${t.newcomers.length})` : ({ gauntlet: "Gauntlet", placement: "Placement" })[t.kind] || "Round robin"),
-    h("td", {}, h("span", { class: "badge " + (t.status === "running" ? "live" : "") }, t.status)),
-    h("td", { class: "num" }, BB.cellbar(t.done, t.total, `${t.done}/${t.total}`)),
-    h("td", {}, t.leader || "–"),
-    h("td", { class: "muted" }, fmt.ago(t.started_at || t.created_at)))));
+  if (!ts.length) tb.append(h("tr", {}, h("td", { colspan: 3, class: "empty" }, "No tournaments yet. Add at least two models to models.yaml.")));
+  ts.forEach((t) => {
+    const kind = t.kind === "placement" && t.newcomers.length > 1 ? `Placement cohort (${t.newcomers.length})` : ({ gauntlet: "Gauntlet", placement: "Placement" })[t.kind] || "Round robin";
+    tb.append(h("tr", {},
+      h("td", { class: "model" }, h("a", { href: `/tournaments/${t.id}` }, t.name),
+        h("span", { class: "strip" }, h("span", {}, kind), " ", h("span", {}, "leader ", h("b", {}, t.leader || "–")), " ",
+          h("span", {}, "started ", fmt.ago(t.started_at || t.created_at)))),
+      h("td", {}, h("span", { class: "badge " + (t.status === "running" ? "live" : "") }, t.status)),
+      h("td", { class: "num" }, BB.cellbar(t.done, t.total, `${t.done}/${t.total}`))));
+  });
 });
 </script>
 {% endblock %}

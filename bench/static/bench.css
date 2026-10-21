@@ -127,6 +127,41 @@ table.kv td:first-child { white-space: normal; }
 .rank { font-family: var(--mono); font-weight: 500; color: var(--text-muted); width: 2em; }
 #lb tbody tr:first-child td, #top tbody tr:first-child td { font-weight: 600; }
 #lb tbody tr:first-child .rank, #top tbody tr:first-child .rank { color: var(--accent); }
+/* two-line rows (leaderboard, tournaments): headline numbers in columns, the rest as a wrapping stat line
+   under the name, so the table fits any width without a sideways scroll bar */
+table.two-line td { vertical-align: middle; }
+table.two-line td.model { white-space: normal; width: 100%; }
+.strip { display: block; margin-top: 2px; font-family: var(--mono); font-size: .74rem; color: var(--text-muted); line-height: 1.5; }
+.strip span { white-space: nowrap; margin-right: 12px; }
+.strip b { color: var(--text-secondary); font-weight: 500; }
+.sub { display: block; font-family: var(--mono); font-size: .72rem; font-weight: 400; color: var(--text-muted); line-height: 1.35; }
+.range-txt { display: none; }
+.rangecell { width: 220px; min-width: 220px; }
+.rlab { display: flex; justify-content: space-between; gap: 6px; }
+.rbar { position: relative; height: 18px; }
+.rbar .ln { position: absolute; top: 8px; height: 2px; background: var(--text-muted); opacity: .55; }
+.rbar .pt { position: absolute; top: 4px; width: 10px; height: 10px; margin-left: -5px; background: var(--ink); }
+.rbar .mid { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); }
+#lb tbody tr:first-child .rbar .pt { background: var(--accent); }
+@media (max-width: 640px) {
+  table.two-line th, table.two-line td { padding: 8px 6px; }
+  .rangecell { display: none; }
+  .range-txt { display: block; }
+  .strip span { margin-right: 8px; }
+  table.two-line .cellbar .track { display: none; }
+}
+@media (max-width: 1100px) { table.stack .cellbar .track { width: 32px; } table.stack th { white-space: normal; vertical-align: bottom; } table.stack th, table.stack td { padding: 8px 6px; } }
+/* smaller stat tables on a phone: each model becomes its name plus a wrapping line of labelled values */
+@media (max-width: 900px) {
+  table.stack thead { display: none; }
+  table.stack, table.stack tbody, table.stack tr { display: block; }
+  table.stack tr { padding: 8px 0; border-bottom: 1px solid var(--grid); }
+  table.stack td { display: inline-block; border: 0; padding: 0 14px 0 0; text-align: left; font-size: .82rem; line-height: 1.6; }
+  table.stack td:first-child { display: block; font-size: .92rem; padding-bottom: 2px; }
+  table.stack td[data-label]::before { content: attr(data-label) " "; font: .68rem var(--mono); text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+  table.stack .cellbar { display: inline; }
+  table.stack .cellbar .track { display: none; }
+}
 
 /* chips and badges */
 .badge { display: inline-block; font-family: var(--mono); font-size: .7rem; padding: 1px 8px; background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--border); }
