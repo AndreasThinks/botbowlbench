@@ -107,3 +107,6 @@ models:
 
   - name: Nemotron 3.5 Super VL
     model: nvidia/nemotron-3.5-super-vl
+
+  - name: Flint
+    model: recursive/flint-v1.0:free
