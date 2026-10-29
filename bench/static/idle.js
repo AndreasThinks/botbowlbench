@@ -1,6 +1,7 @@
 // BotBowl Bench - the homepage when no game is live (credits ran out, the tournament is over, or the bench is
 // paused): a short plain-language status, a wall of small pitches each replaying a good past game, and podiums
-// for the latest tournament and all time. Clicking a game opens a story panel under its row: a bigger board,
+// for the latest tournament and all time (after a placement, a result card for the newcomer instead of a podium,
+// since its standings only count games against the newcomer). Clicking a game opens a story panel under its row: a bigger board,
 // key moments that jump into the replay, and both coaches' final game plans.
 const BBIdle = (() => {
   const { h, api, fmt } = BB;
@@ -8,14 +9,18 @@ const BBIdle = (() => {
   const WALL_SIZE = 6;
 
   const short = (t) => (t || "").split(":")[0];
+  const ord = (n) => n + (n % 100 > 10 && n % 100 < 14 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th");
   const sideName = (m, side) => (side === "home" ? m.home_name : m.away_name);
   const turnOf = (p) => (p.side === "home" ? p.ht : p.at);
   // the replay a few moves before frame i, so the build-up is visible
   const deep = (m, i) => `/match/${m.id}#f=${Math.max(0, i - 8)}`;
 
-  function copy(kind, s, tour) {
+  function copy(kind, s, tour, plc) {
     if (kind === "outage") return { badge: "PAUSED", cls: "paused", title: "Back shortly",
       body: "Live games are paused while the model budget is topped up. The interrupted game picks up from its last turn, so nothing is lost." };
+    if (kind === "over" && plc && plc.out.length) return { badge: "PLACEMENT DONE", cls: "over",
+      title: plc.out.length === 1 ? `New model rated: ${plc.out[0].me.name}` : `${plc.out.length} new models rated`,
+      body: `${PLACEMENT_WHAT} Nothing is scheduled now; new games start when a model is added.` };
     if (kind === "over") return { badge: "SEASON OVER", cls: "over", title: tour ? `${short(tour.name)}: complete` : "No games scheduled",
       body: "New games start automatically when a model is added to the bench." };
     return { badge: "NO GAME LIVE", cls: "paused", title: "No game in progress", body: "" };
@@ -88,6 +93,65 @@ const BBIdle = (() => {
   }
   const startNear = (tl, back) => Math.max(1, (tl.tds[0] ? tl.tds[0].i : 60) - back);
 
+  // A placement's standings only count games against the newcomer, so each opponent shows 2 games and the
+  // newcomer usually "wins" on points. Summarise it from the newcomer's side instead: its overall rank among real
+  // models, rating and range, record, and both legs against each opponent.
+  const PLACEMENT_WHAT = "A placement rates a newly added model: it plays opponents picked from across the table, home and away, and gets a rating from those results. Only the newcomer was being ranked; the other models just played it twice each.";
+  let plcCache = { key: null, p: null };
+  function placementSummary(t) {
+    const key = `${t.id}:${t.done}`;
+    if (plcCache.key !== key) plcCache = { key, p: summarise(t).catch((e) => { plcCache.key = null; throw e; }) };
+    return plcCache.p;
+  }
+  async function summarise(t) {
+    const [d, lb] = await Promise.all([api(`/api/tournaments/${t.id}`), api("/api/leaderboard")]);
+    const models = lb.models.slice().sort((a, b) => b.elo - a.elo);
+    const real = models.filter((m) => !isBaseline(m.name));
+    const out = (t.newcomers || []).map((n) => models.find((m) => m.name === n)).filter(Boolean).map((me) => {
+      const row = d.standings.find((x) => x.model === me.id) || { wins: 0, draws: 0, losses: 0 }, opp = new Map();
+      (d.matches || []).filter((m) => m.status === "completed" && (m.home_model === me.id || m.away_model === me.id)).forEach((m) => {
+        const home = m.home_model === me.id, oid = home ? m.away_model : m.home_model;
+        const f = home ? m.home_score : m.away_score, a = home ? m.away_score : m.home_score;
+        if (!opp.has(oid)) {
+          const om = models.find((x) => x.id === oid) || { id: oid, name: home ? m.away_name : m.home_name, elo: 0 };
+          opp.set(oid, { id: oid, name: om.name, elo: om.elo, base: isBaseline(om.name), rank: real.indexOf(om) + 1, legs: [] });
+        }
+        opp.get(oid).legs.push({ id: m.id, f, a, r: f > a ? "W" : f < a ? "L" : "D" });
+      });
+      const opps = [...opp.values()].sort((a, b) => b.elo - a.elo);
+      return { me, row, rank: real.indexOf(me) + 1, of: real.length, opps };
+    });
+    return { t, out };
+  }
+  function verdict(p) {
+    const beat = p.opps.filter((o) => o.legs.some((l) => l.r === "W"));
+    const realBeat = beat.filter((o) => !o.base).map((o) => o.name), baseBeat = beat.some((o) => o.base);
+    const realFaced = p.opps.filter((o) => !o.base).length;
+    if (!realFaced) return "";
+    if (!realBeat.length) return `It lost or drew against all ${realFaced} language models it faced${baseBeat ? "; its wins came against baselines" : ""}.`;
+    if (realBeat.length === realFaced) return `It beat every language model it faced at least once.`;
+    return `Its wins against language models came against ${realBeat.join(", ")}${baseBeat ? "; the rest came against baselines" : ""}.`;
+  }
+  const legChip = (l) => h("a", { class: `lg ${l.r}`, href: `/match/${l.id}`, title: "Open the match" }, `${l.r} ${l.f}–${l.a}`);
+  function placementCard(plc, p) {
+    const ci = p.me.elo_ci || {};
+    return h("div", { class: "pd-card plc" },
+      h("h2", {}, "Placement result", h("a", { href: `/tournaments/${plc.t.id}` }, "All games →")),
+      h("div", { class: "plc-hd" },
+        h("a", { class: "plc-nm", href: `/models/${p.me.id}` }, p.me.name),
+        p.rank ? h("div", { class: "plc-rank" }, h("b", {}, ord(p.rank)), h("span", {}, `of ${p.of} models`)) : null),
+      h("div", { class: "plc-figs" },
+        h("span", {}, h("b", {}, fmt.num(p.me.elo)), " Elo"),
+        ci.lo != null ? h("span", { class: "muted" }, `range ${fmt.num(ci.lo)}–${fmt.num(ci.hi)}`) : null,
+        h("span", {}, `${p.row.wins}W ${p.row.draws}D ${p.row.losses}L`)),
+      h("p", { class: "plc-v" }, verdict(p)),
+      h("div", { class: "plc-opps" }, ...p.opps.map((o) => h("div", { class: `plc-o${o.base ? " base" : ""}` },
+        h("span", { class: "r" }, o.base ? "–" : o.rank),
+        h("a", { href: `/models/${o.id}` }, o.name),
+        h("span", { class: "lgs" }, ...o.legs.map(legChip))))),
+      h("p", { class: "muted pd-note" }, "Opponents in table order; the number is their overall rank. Baselines are scripted or random bots."));
+  }
+
   // 2nd, 1st, 3rd left to right: name and figures above a stepped block with the place in it
   function podium(rows, name, href, figs) {
     return h("div", { class: "pd" }, ...rows.slice(0, 3).map((x, i) => h("div", { class: `pd-step s${i + 1}` },
@@ -109,7 +173,7 @@ const BBIdle = (() => {
     }
 
     function drawStrip(s, tour) {
-      const c = copy(kind, s, tour);
+      const c = copy(kind, s, tour, strip._plc);
       strip.replaceChildren(...[h("span", { class: `badge ${c.cls}` }, c.badge), h("h1", {}, c.title),
         c.body ? h("p", { class: "secondary" }, c.body) : null,
         kind !== "over" && s.detail ? h("details", { class: "why" }, h("summary", {}, "Technical detail"), h("code", {}, s.detail)) : null].filter(Boolean));
@@ -119,7 +183,11 @@ const BBIdle = (() => {
       const [ts, lb] = await Promise.all([api("/api/tournaments"), api("/api/leaderboard")]);
       const t = ts.find((x) => x.status === "completed") || ts[0];
       const allTime = lb.models.filter((m) => m.played >= ALL_TIME_MIN_GAMES && !isBaseline(m.name));
-      if (t) {
+      const plc = t && t.kind === "placement" ? await placementSummary(t).catch(() => null) : null;
+      if (plc && plc.out.length) {
+        side.parentElement.classList.add("side-first");
+        side.append(...plc.out.map((p) => placementCard(plc, p)));
+      } else if (t) {
         const d = await api(`/api/tournaments/${t.id}`);
         const latest = (d.matches || []).filter((m) => m.status === "completed").sort((a, b) => b.finished_at - a.finished_at).slice(0, 5);
         side.append(
@@ -128,7 +196,7 @@ const BBIdle = (() => {
           h("div", { class: "pd-card" }, h("h2", {}, "Latest results", h("a", { href: "/matches" }, "All →")),
             h("div", { class: "res" }, ...latest.map(resultRow))));
       }
-      side.append(h("div", { class: "pd-card" }, h("h2", {}, "All-time best", h("a", { href: "/leaderboard" }, "Leaderboard →")),
+      side.append(h("div", { class: "pd-card" }, h("h2", {}, plc ? "Overall ranking" : "All-time best", h("a", { href: "/leaderboard" }, "Leaderboard →")),
         podium(allTime, (x) => x.name, (x) => `/models/${x.id}`, (x) => `${fmt.num(x.elo)} Elo`),
         h("div", { class: "pd-rest" }, ...allTime.slice(3, 8).map((x, i) => h("a", { href: `/models/${x.id}` },
           h("span", { class: "r" }, i + 4), h("span", {}, x.name), h("span", { class: "v" }, fmt.num(x.elo))))),
@@ -203,8 +271,10 @@ const BBIdle = (() => {
         h("div", {}, h("div", { class: "wl-h" }, h("h2", {}, "Best games · click one for its story"), h("a", { href: "/matches" }, "All matches →")), wallBox),
         side));
       drawStrip(s, null);
-      if (kind === "over") api("/api/tournaments").then((ts) => {
-        strip._tour = ts.find((x) => x.status === "completed") || null;
+      if (kind === "over") api("/api/tournaments").then(async (ts) => {
+        const t = ts.find((x) => x.status === "completed") || null;
+        strip._plc = t && t.kind === "placement" ? await placementSummary(t).catch(() => null) : null;
+        strip._tour = t;
         if (kind === "over") drawStrip(s, strip._tour);
       }).catch(() => {});
       wall(wallBox).catch(() => wallBox.append(h("div", { class: "empty" }, "No replays to show yet.")));

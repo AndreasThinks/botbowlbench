@@ -730,3 +730,24 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 .res { display: flex; flex-direction: column; font-size: .8rem; }
 .res a { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--grid); text-decoration: none; }
 .res .hn { text-align: right; } .res .sc { font-family: var(--mono); font-weight: 600; } .res .w { font-weight: 700; }
+/* placement result card: the newcomer's rank, rating and both games against each opponent */
+.plc-hd { display: flex; align-items: flex-end; gap: 12px; }
+.plc-nm { font-weight: 600; font-size: 1.05rem; line-height: 1.2; text-decoration: none; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.plc-nm:hover { text-decoration: underline; }
+.plc-rank { text-align: right; font-family: var(--mono); line-height: 1; }
+.plc-rank b { display: block; font-size: 1.9rem; color: var(--accent); }
+.plc-rank span { font-size: .7rem; color: var(--text-muted); }
+.plc-figs { display: flex; flex-wrap: wrap; gap: 4px 12px; font-family: var(--mono); font-size: .78rem; }
+.plc-v { margin: 0; font-size: .82rem; color: var(--text-secondary); }
+.plc-v:empty { display: none; }
+.plc-opps { display: flex; flex-direction: column; font-size: .8rem; }
+.plc-o { display: grid; grid-template-columns: 1.6em minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--grid); }
+.plc-o a { text-decoration: none; } .plc-o a:hover { text-decoration: underline; }
+.plc-o .r { font-family: var(--mono); color: var(--text-muted); }
+.plc-o.base a { color: var(--text-muted); font-style: italic; }
+.lgs { display: inline-flex; gap: 3px; }
+.lg { font-family: var(--mono); font-size: .68rem; padding: 0 5px; border: 1px solid var(--border); text-decoration: none; white-space: nowrap; line-height: 1.5; }
+.lg.W { color: var(--good); border-color: var(--good); }
+.lg.L { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 50%, transparent); }
+.lg.D { color: var(--text-muted); }
+@media (max-width: 1000px) { .idle-split.side-first > .idle-side { order: -1; } }
