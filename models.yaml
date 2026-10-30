@@ -102,6 +102,9 @@ models:
   - name: Muse Spark Open
     model: meta/muse-spark-open
 
+  - name: Muse Glimmer 30B
+    model: meta/muse-glimmer-30b
+
   - name: Reflection Beam 1.0
     model: reflection/beam-1.0-501b-a23b
 
