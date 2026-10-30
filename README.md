@@ -5,7 +5,7 @@
 
 **This fork turns botbowl into an LLM benchmark.** Models from OpenRouter coach Blood Bowl teams against each other
 using MCP tools (including one for messaging the opponent), while spectators watch live in the browser. A
-leaderboard tracks Elo, past tournaments, play style and decision quality, and every game is recorded in full for
+leaderboard tracks Elo (plus rankings for tool calling, decision-making, value and speed), past tournaments, play style and decision quality, and every game is recorded in full for
 research. Competitors are listed in [`models.yaml`](models.yaml); adding a model automatically starts a short
 placement against anchor models spread across the table.
 

@@ -2,7 +2,9 @@
 {% block title %}Leaderboard · BotBowl Bench{% endblock %}
 {% block content %}
 <h1>Leaderboard</h1>
-<p class="secondary">Ratings on the Elo scale, fitted from every completed game at once (Bradley-Terry), with a 95% range. Newer models have played fewer games, so their ranges are wider. Blood Bowl is dice-heavy: while the ranges of two models overlap, treat their order as unsettled. TD diff is a less noisy secondary signal than wins.</p>
+<div class="rtabs" id="lb-tabs" role="tablist" aria-label="Ranking"></div>
+<p class="secondary" id="lb-lede">Ratings on the Elo scale, fitted from every completed game at once (Bradley-Terry), with a 95% range. Newer models have played fewer games, so their ranges are wider. Blood Bowl is dice-heavy: while the ranges of two models overlap, treat their order as unsettled. TD diff is a less noisy secondary signal than wins.</p>
+<details class="lb-how" id="lb-how" hidden><summary>How it's measured</summary><p class="muted"></p></details>
 <div class="card">
   <div class="table-wrap"><table id="lb" class="two-line">
     <thead><tr><th class="rank">#</th><th>Model</th><th class="num">Elo</th><th class="rangecell" id="lb-scale">95% range</th><th class="num">W-D-L</th></tr></thead>
@@ -63,18 +65,29 @@
 </div>
 {% endblock %}
 {% block scripts %}
+<script src="/bench-static/rankings.js"></script>
 <script>
 const { h, api, fmt } = BB;
 api("/api/leaderboard").then((lb) => {
   BB.setModelOrder(lb.models);
-  const tb = document.querySelector("#lb tbody");
+  const table = document.getElementById("lb");
+  const tb = table.querySelector("tbody");
+  const eloHead = table.querySelector("thead").innerHTML;
+  const eloLede = document.getElementById("lb-lede").textContent;
+  const swatchName = (m) => [h("span", { class: "swatch", style: { background: BB.modelColor(m.id) } }), h("a", { href: `/models/${m.id}` }, m.name),
+    m.enabled ? null : h("span", { class: "badge", style: { marginLeft: "6px" } }, "retired"),
+    m.provider !== "openrouter" ? h("span", { class: "badge", style: { marginLeft: "6px" } }, "baseline") : null];
   // one shared scale for the 95% range bars, rounded out to the nearest 100
   const cis = lb.models.filter((m) => m.elo_ci);
   const lo = cis.length ? Math.floor(Math.min(...cis.map((m) => m.elo_ci.lo)) / 100) * 100 : 0;
   const hi = cis.length ? Math.ceil(Math.max(...cis.map((m) => m.elo_ci.hi)) / 100) * 100 : 2000;
   const x = (v) => ((v - lo) / (hi - lo)) * 100 + "%";
-  document.getElementById("lb-scale").replaceChildren(h("div", { class: "rlab" }, h("span", {}, lo), h("span", {}, "95% range"), h("span", {}, hi)));
   const stat = (v, unit) => h("span", {}, h("b", {}, v), unit);
+  const renderOverall = () => {
+  table.querySelector("thead").innerHTML = eloHead;
+  table.classList.remove("alt");
+  document.getElementById("lb-scale").replaceChildren(h("div", { class: "rlab" }, h("span", {}, lo), h("span", {}, "95% range"), h("span", {}, hi)));
+  tb.replaceChildren();
   lb.models.forEach((m, i) => {
     const p = m.played;
     const range = m.elo_ci ? `${m.elo_ci.lo}–${m.elo_ci.hi}` : "–";
@@ -99,6 +112,53 @@ api("/api/leaderboard").then((lb) => {
         h("span", { class: "pt", style: { left: x(m.elo) } })) : "–"),
       h("td", { class: "num" }, `${m.wins}-${m.draws}-${m.losses}`, h("span", { class: "sub" }, p ? `${fmt.pct(m.win_rate)} of ${p}` : "no games"))));
   });
+  };
+
+  // the other rankings: same two-line table, headline column swapped, Elo rank (among the same models) with a move arrow
+  const renderRanking = (r) => {
+    const { ranked, rest } = BBRank.rank(lb.models, r);
+    table.classList.add("alt");
+    table.querySelector("thead").replaceChildren(h("tr", {}, h("th", { class: "rank" }, "#"), h("th", {}, "Model"),
+      h("th", { class: "num" }, r.head), h("th", { class: "num elo-col" }, "Elo rank")));
+    const strip = (m) => h("span", { class: "strip" }, ...r.strip(m).flatMap(([k, v], j) => [j ? " " : "", h("span", {}, h("b", {}, v), " " + k)]));
+    const val = (v) => (v == null ? (r.empty || "–") : r.fmt(v));
+    const move = (x) => {
+      const d = x.eloPos - x.rank;
+      return d ? h("span", { class: d > 0 ? "mv-up" : "mv-down", title: `${Math.abs(d)} place${Math.abs(d) > 1 ? "s" : ""} ${d > 0 ? "higher" : "lower"} than on Elo` }, d > 0 ? ` ▲${d}` : ` ▼${-d}`) : null;
+    };
+    tb.replaceChildren(...ranked.map((x) => h("tr", { class: x.m.enabled ? "" : "disabled" },
+      h("td", { class: "rank" }, x.rank),
+      h("td", { class: "model" }, ...swatchName(x.m), strip(x.m),
+        r.id === "value" && x.frontier ? h("span", { class: "flag", title: "No model is both cheaper per game and rated higher" }, "price/Elo frontier") : null),
+      h("td", { class: "num headline" }, h("b", {}, val(x.v)),
+        x.pct == null ? null : h("span", { class: "pbar" }, h("span", { style: { width: Math.round(x.pct * 100) + "%" } })),
+        h("span", { class: "sub elo-inline" }, `Elo #${x.eloPos}`, move(x))),
+      h("td", { class: "num elo-col" }, `#${x.eloPos}`, move(x), h("span", { class: "sub" }, `Elo ${fmt.num(x.m.elo)}`)))));
+    if (!ranked.length) tb.append(h("tr", {}, h("td", { colspan: 4, class: "empty" }, `No model has ${BBRank.MIN_GAMES} games yet.`)));
+    if (rest.length) {
+      tb.append(h("tr", { class: "divider" }, h("td", { colspan: 4 }, `Not ranked: baselines and models with fewer than ${BBRank.MIN_GAMES} games`)));
+      rest.forEach((x) => tb.append(h("tr", { class: "dim" }, h("td", { class: "rank" }, "–"),
+        h("td", { class: "model" }, ...swatchName(x.m), strip(x.m)),
+        h("td", { class: "num headline" }, h("b", {}, val(x.v)), h("span", { class: "sub" }, `${x.m.played} game${x.m.played === 1 ? "" : "s"}`)),
+        h("td", { class: "num elo-col" }, h("span", { class: "sub" }, `Elo ${fmt.num(x.m.elo)}`)))));
+    }
+  };
+
+  // ranking picker; the choice lives in the URL hash so a ranking can be linked to
+  const tabs = document.getElementById("lb-tabs");
+  const how = document.getElementById("lb-how");
+  const show = () => {
+    const r = BBRank.RANKINGS.find((x) => "#" + x.id === location.hash) || BBRank.RANKINGS[0];
+    tabs.querySelectorAll("button").forEach((b) => { b.classList.toggle("on", b.dataset.id === r.id); b.setAttribute("aria-selected", b.dataset.id === r.id); });
+    document.getElementById("lb-lede").textContent = r.id === "overall" ? eloLede : r.lede;
+    how.hidden = r.id === "overall";
+    how.querySelector("p").textContent = r.id === "overall" ? "" : `${r.how} Only LLMs with ${BBRank.MIN_GAMES}+ games are ranked; the rest are listed below them for reference.`;
+    if (r.id === "overall") renderOverall(); else renderRanking(r);
+  };
+  tabs.replaceChildren(...BBRank.RANKINGS.map((r) => h("button", { type: "button", role: "tab", "data-id": r.id,
+    onclick: () => { history.replaceState(null, "", r.id === "overall" ? location.pathname : "#" + r.id); show(); } }, r.label)));
+  window.addEventListener("hashchange", show);
+  show();
   document.getElementById("lb-note").textContent = `${lb.matches} completed games.`;
 
   // Elo history: x = global match number
