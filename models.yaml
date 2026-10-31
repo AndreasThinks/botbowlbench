@@ -111,8 +111,30 @@ models:
   - name: Nemotron 3.5 Super VL
     model: nvidia/nemotron-3.5-super-vl
 
-  - name: Nemotron 3 Ultra
+  - name: Nemotron 3 Ultra (forced tools)
+    id: nemotron-3-ultra          # preserve the original placement and rating
     model: nvidia/nemotron-3-ultra-550b-a55b
+    enabled: false
+    tool_choice: required
+    description: >-
+      Original forced-tool condition. Reasoning was requested, but BaseTen returned
+      no substantive reasoning under required tool choice. Historical results are
+      retained; one game also encountered provider rate limits and fallback play.
+      Retired from further scheduling in favour of the separate reasoning entry.
+
+  - name: Nemotron 3 Ultra (reasoning)
+    id: nemotron-3-ultra-reasoning
+    model: nvidia/nemotron-3-ultra-550b-a55b
+    enabled: true
+    tool_choice: auto
+    extra:
+      reasoning:
+        effort: high
+    description: >-
+      Separate reasoning condition with automatic tool choice and explicit high
+      reasoning effort. Saved-position probes on BaseTen returned substantive
+      reasoning with these settings. Starts a fresh placement; the forced-tool
+      condition's historical results remain under its original competitor ID.
 
   - name: Flint
     model: recursive/flint-v1.0:free
