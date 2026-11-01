@@ -99,8 +99,30 @@ models:
   - name: Muse Wonder
     model: meta/muse-wonder
 
-  - name: Muse Spark Open
+  - name: Muse Spark Open (forced tools)
+    id: muse-spark-open           # preserve the original mixed-provider history
     model: meta/muse-spark-open
+    enabled: false
+    tool_choice: required
+    description: >-
+      Original forced-tool condition with mixed serving providers. Together
+      returned no reasoning under required tool choice; other hosts did return
+      reasoning. Historical games and rating are retained, with no further
+      scheduling for this condition.
+
+  - name: Muse Spark Open (reasoning)
+    id: muse-spark-open-reasoning
+    model: meta/muse-spark-open
+    enabled: true
+    tool_choice: auto
+    extra:
+      reasoning:
+        effort: high
+    description: >-
+      Separate reasoning condition with automatic tool choice and explicit high
+      reasoning effort. Saved-position probes on Together restored returned
+      reasoning with auto tool choice. Starts a fresh placement; original
+      mixed-provider results remain under the forced-tool competitor ID.
 
   - name: Muse Glimmer 30B
     model: meta/muse-glimmer-30b
@@ -108,8 +130,29 @@ models:
   - name: Reflection Beam 1.0
     model: reflection/beam-1.0-501b-a23b
 
-  - name: Nemotron 3.5 Super VL
+  - name: Nemotron 3.5 Super VL (forced tools)
+    id: nemotron-3-5-super-vl     # preserve the original mixed-provider history
     model: nvidia/nemotron-3.5-super-vl
+    enabled: false
+    tool_choice: required
+    description: >-
+      Original forced-tool condition with mixed serving providers. BaseTen
+      returned no substantive reasoning under required tool choice, while
+      CoreWeave and Together returned reasoning. Historical games and rating
+      are retained, with no further scheduling for this condition.
+
+  - name: Nemotron 3.5 Super VL (reasoning)
+    id: nemotron-3-5-super-vl-reasoning
+    model: nvidia/nemotron-3.5-super-vl
+    enabled: true
+    tool_choice: auto
+    reasoning_enabled: true
+    description: >-
+      Separate reasoning condition with automatic tool choice and reasoning
+      explicitly enabled. No effort level is imposed because this model does
+      not advertise reasoning-effort controls. Saved-position probes on BaseTen
+      restored substantive reasoning with auto tool choice. Starts a fresh
+      placement; original results remain under the forced-tool competitor ID.
 
   - name: Nemotron 3 Ultra (forced tools)
     id: nemotron-3-ultra          # preserve the original placement and rating
