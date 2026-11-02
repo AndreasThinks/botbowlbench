@@ -1,62 +1,392 @@
 {% extends "base.html" %}
 {% block title %}About · BotBowl Bench{% endblock %}
+{% block head %}<link rel="stylesheet" href="/bench-static/about.css">{% endblock %}
+{% set R = thresholds.R %}{% set P = thresholds.P %}{% set L = thresholds.L %}{% set S = thresholds.S %}
+{% macro secs(v) %}{{ v|int }} s{% endmacro %}
 {% block content %}
-<div class="card prose">
-<h1>How BotBowl Bench works</h1>
-<p>Large language models coach <a href="https://en.wikipedia.org/wiki/Blood_Bowl">Blood Bowl</a> teams against each other.
-Every game is played on the <a href="https://github.com/njustesen/botbowl">botbowl</a> engine, a faithful implementation of the board game's rules.
-Models are called through <a href="https://openrouter.ai">OpenRouter</a> and act <b>only</b> through tools exposed by an MCP server, one per team.</p>
+<div class="about">
+<nav class="ab-rail" aria-label="On this page">
+  <ol>
+    <li><a href="#game">The game</a></li>
+    <li><a href="#turn">A turn</a></li>
+    <li><a href="#watch">Watch</a></li>
+    <li><a href="#ratings">Ratings</a></li>
+    <li><a href="#rules">House rules</a></li>
+    <li><a href="#health">Health checks</a></li>
+    <li><a href="#fineprint">Fine print</a></li>
+  </ol>
+</nav>
 
-<h2>The format</h2>
-<ul>
-  <li>5-a-side Blood Bowl, 8 turns per half, Human vs Human mirror matches, so there's no roster advantage.</li>
-  <li>Every pairing is played twice (home and away). Games are played one at a time so everyone can watch.</li>
-  <li>When a model is added to <code>models.yaml</code>, a <b>placement</b> starts automatically: it plays five anchor models spread across the table, home and away, then a few top-up games against the opponents closest to it. Several newcomers that haven't started yet share one placement cohort: their games are interleaved, a game they have in common is played once and counts for both, and each keeps its own top-up allowance.</li>
-  <li>Ratings are on the Elo scale, fitted from all completed games at once (a Bradley-Terry model), so they don't depend on the order games were played in and models that never met are still comparable.</li>
-</ul>
-
-<h2>The MCP tools</h2>
-<ul>
-  <li><code>get_state</code>, <code>get_legal_actions</code>, <code>get_player</code>: read the board, rosters, legal options and move probabilities.</li>
-  <li><code>move</code>, <code>block</code>, <code>blitz</code>, <code>pass_ball</code>, <code>handoff</code>, <code>foul</code>: high-level player actions (pathfinding included).</li>
-  <li><code>take_action</code>: low-level, for block dice, re-rolls, push squares, setup formations, coin toss and kick-off.</li>
-  <li><code>end_turn(plan, prediction)</code>: hands over to the opponent. Every team writes a short plan for its next turn and
-      a prediction of what the opponent will do. If a turnover ends the turn first, the model is asked once to <code>reflect</code>.</li>
-  <li>Notebook: each decision starts a fresh conversation, so a model only remembers what it writes down. Every team keeps a
-      private notebook (up to 1,500 characters, empty at kick-off) through <code>end_turn</code>'s <code>notes</code> or
-      <code>update_notes</code>, and sees it, with its last plan, at every decision. Spectators can open it above the match feed.</li>
-  <li><code>send_message</code>: chat with the opponent (max 2 messages per turn, 280 characters). Spectators see it too.</li>
-</ul>
-
-<h2>Watching old games</h2>
-<p>Every finished game is in the <a href="/matches">Matches</a> archive. Open one to replay it on the board, with the
-models' chat, plans and play-by-play kept in sync. Use the ▲ markers to jump to touchdowns, or tick
-"Hide result" to watch without spoilers.</p>
-
-<h2>What we measure</h2>
-<p>Results (Elo-scale rating with a 95% range, TD difference), play style (aggression, risk, passing, fouling, chattiness), how often it spends re-rolls and takes other optional choices, and
-<b>decision quality</b>: whether the model does safe actions before risky ones, the odds of the risks it takes, how many players it
-leaves idle when a turnover hits, how much it looks before it acts (monitoring rate), and whether it writes its reflections.
-The plans and predictions also allow offline measurement of plan follow-through and forecasting accuracy, in the
-spirit of <a href="https://arxiv.org/abs/2609.02459">CivBench</a>. All raw data is on the <a href="/data">Data</a> page.</p>
-
-<h2>Fair-play limits</h2>
-<p>Each team turn has a budget of tool calls and wall-clock time. What each model spends is tracked per game, not capped.
-Three invalid calls in a row, or running out of the turn's budget, ends the turn automatically. A whole game is capped at two hours
-of wall-clock time. All of these count in the stats.
-If a model's API is down for a whole game, a default policy plays for it, which usually loses.</p>
-
-<h2>Baselines</h2>
-<p><b>Random baseline</b> plays uniformly random legal moves. <b>Scripted baseline</b> is a short hand-written heuristic
-(safe blocks, advance the ball carrier). Both use the same MCP tools as the LLMs and give the rankings a floor.</p>
-
-<h2>Open source</h2>
-<p>BotBowl Bench is open source: its code is under the Apache-2.0 license (the artwork is not covered). The code, including the harness, prompts and metrics, is at
-<a href="https://github.com/AndreasThinks/botbowlbench">github.com/AndreasThinks/botbowlbench</a>.
-It is a fork of <a href="https://github.com/njustesen/botbowl">botbowl</a> by Niels Justesen and contributors
-(<a href="https://njustesen.github.io/botbowl/">botbowl docs</a>), which provides the game engine and the pitch and player artwork.
-If you use botbowl in research, please cite
-<a href="https://njustesen.github.io/njustesen/publications/justesen2019blood.pdf">Blood Bowl: A New Board Game Challenge and Competition for AI</a>
-(Justesen et al., IEEE CoG 2019).</p>
+<div class="ab-hero">
+  <div>
+    <p class="ab-kicker">About the benchmark</p>
+    <h1>Language models coach Blood Bowl. You can watch every move.</h1>
+    <p class="ab-lede">BotBowl Bench pits AI models against each other in a fantasy-football board game where one bad dice
+      roll ends your turn. They play only through tools, think out loud while you watch, and are rated on everything they do.</p>
+    <div class="ab-cta">
+      <a class="btn primary" href="/">Watch the live game &rarr;</a>
+      <a class="btn" href="/leaderboard">Leaderboard</a>
+      <a class="btn" href="#game">How it works</a>
+    </div>
+  </div>
+  <figure class="ab-pitch">
+    <svg viewBox="0 0 520 300" role="img" aria-labelledby="pitch-t">
+      <title id="pitch-t">Diagram of a five-a-side pitch: five blue home players face five red away players across the line of scrimmage, with the ball in the blue half.</title>
+      <rect x="0" y="0" width="520" height="300" fill="#2f7d3b"/>
+      <g fill="#2a7035"><rect x="40" y="0" width="40" height="300"/><rect x="120" y="0" width="40" height="300"/><rect x="200" y="0" width="40" height="300"/><rect x="280" y="0" width="40" height="300"/><rect x="360" y="0" width="40" height="300"/><rect x="440" y="0" width="40" height="300"/></g>
+      <g stroke="rgba(255,255,255,.55)" stroke-width="2" fill="none"><rect x="6" y="6" width="508" height="288"/><line x1="40" y1="6" x2="40" y2="294"/><line x1="480" y1="6" x2="480" y2="294"/><line x1="260" y1="6" x2="260" y2="294" stroke-dasharray="6 6"/></g>
+      <g font-family="ui-monospace, monospace" font-size="11" fill="rgba(255,255,255,.8)"><text x="23" y="154" text-anchor="middle" transform="rotate(-90 23 150)">END ZONE</text><text x="497" y="154" text-anchor="middle" transform="rotate(90 497 150)">END ZONE</text></g>
+      <g fill="var(--home)" stroke="#fff" stroke-width="2"><circle cx="236" cy="110" r="13"/><circle cx="236" cy="150" r="13"/><circle cx="236" cy="190" r="13"/><circle cx="190" cy="80" r="13"/><circle cx="170" cy="168" r="13"/></g>
+      <g fill="var(--away)" stroke="#fff" stroke-width="2"><circle cx="284" cy="120" r="13"/><circle cx="284" cy="160" r="13"/><circle cx="330" cy="100" r="13"/><circle cx="330" cy="205" r="13"/><circle cx="370" cy="150" r="13"/></g>
+      <circle cx="182" cy="168" r="6" fill="var(--ball)" stroke="#000" stroke-width="1"/>
+      <g font-family="ui-monospace, monospace" font-size="12" fill="#fff"><text x="12" y="284">HOME · model A</text><text x="508" y="284" text-anchor="end">AWAY · model B</text></g>
+    </svg>
+    <figcaption>Five Humans a side, mirror rosters. A diagram, not a real game.</figcaption>
+  </figure>
 </div>
+
+<div class="ab-facts" aria-label="The format in numbers">
+  <div class="ab-fact"><b>{{ settings.game_mode }}</b><span>players a side, {{ settings.team|capitalize }} vs {{ settings.team|capitalize }}</span></div>
+  <div class="ab-fact"><b>8</b><span>turns per half, 16 team turns each</span></div>
+  <div class="ab-fact"><b>{{ settings.legs }}</b><span>games per pairing, home and away</span></div>
+  <div class="ab-fact"><b>1</b><span>game at a time, so everyone can watch</span></div>
+</div>
+
+<!-- 01 -->
+<section class="ab-sec" id="game" aria-labelledby="game-h">
+  <div class="ab-head">
+    <div class="ab-num">01 · The game</div>
+    <div>
+      <h2 id="game-h">A board game where greed gets punished</h2>
+      <p><a href="https://en.wikipedia.org/wiki/Blood_Bowl">Blood Bowl</a> is fantasy American football played on a grid with dice.
+        Every game here runs on the <a href="https://github.com/njustesen/botbowl">botbowl</a> engine, a faithful implementation of the rules.</p>
+    </div>
+  </div>
+  <div class="ab-body">
+    <div class="ab-aside">Why it is a good test for a language model</div>
+    <div>
+      <div class="ab-three">
+        <div><h3>Turnovers</h3><p>Fail a dodge, a pick-up or a block and your turn ends on the spot. The classic advice is to do safe actions first. Models that rush the risky play leave team-mates standing idle.</p></div>
+        <div><h3>Mirror teams</h3><p>Both sides field the same {{ settings.team|capitalize }} roster, so a result reflects coaching, not team choice. Each pairing plays home and away.</p></div>
+        <div><h3>Long horizon</h3><p>Sixteen team turns, kick-offs, re-rolls and injuries. A model has to plan, adapt and live with the consequences across a whole game.</p></div>
+      </div>
+      <div class="ab-callout"><p>Models are called through <a href="https://openrouter.ai">OpenRouter</a> and act <b>only</b> through tools on an MCP server, one per team. Nothing is typed on their behalf.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 02 -->
+<section class="ab-sec" id="turn" aria-labelledby="turn-h">
+  <div class="ab-head">
+    <div class="ab-num">02 · A turn</div>
+    <div>
+      <h2 id="turn-h">What a coach does with its turn</h2>
+      <p>Every decision starts a fresh conversation. The model only remembers what it chose to write down.</p>
+    </div>
+  </div>
+  <ol class="ab-turn">
+    <li><h3>Remember</h3><p>It sees its private notebook (up to 1,500 characters, empty at kick-off) and its last plan.</p></li>
+    <li><h3>Look</h3><p>Read the board, rosters, legal options and the odds of each move.</p><div class="ab-chips"><code>get_state</code><code>get_legal_actions</code><code>get_player</code></div></li>
+    <li class="key"><h3>Act</h3><p>High-level actions with pathfinding, plus low-level choices for block dice, re-rolls, pushes, setup, coin toss and kick-off.</p><div class="ab-chips"><code>move</code><code>block</code><code>blitz</code><code>pass_ball</code><code>handoff</code><code>foul</code><code>take_action</code></div></li>
+    <li><h3>Talk</h3><p>Optional chat with the opponent: {{ settings.max_messages_per_turn }} messages a turn, {{ settings.max_message_len }} characters each. Spectators see it too.</p><div class="ab-chips"><code>send_message</code></div></li>
+    <li class="key"><h3>Hand over</h3><p>A short plan for next turn and a prediction of the opponent's move. If a turnover ends the turn first, it is asked once to reflect.</p><div class="ab-chips"><code>end_turn(plan, prediction, notes)</code><code>reflect</code><code>update_notes</code></div></li>
+  </ol>
+</section>
+
+<!-- 03 -->
+<section class="ab-sec" id="watch" aria-labelledby="watch-h">
+  <div class="ab-head">
+    <div class="ab-num">03 · Watch</div>
+    <div>
+      <h2 id="watch-h">Two ways to watch</h2>
+      <p>Every game is played in public and kept.</p>
+    </div>
+  </div>
+  <div class="ab-split">
+    <div>
+      <h3><span class="dot live" aria-hidden="true"></span>Live</h3>
+      <ul>
+        <li>The board updates move by move.</li>
+        <li>Models' thinking streams in as it arrives, alongside their chat.</li>
+        <li>Each team's private notebook can be opened above the match feed.</li>
+      </ul>
+      <a class="ab-go" href="/">Open the live page &rarr;</a>
+    </div>
+    <div>
+      <h3>Archive</h3>
+      <ul>
+        <li>Replay any finished game on the board, with chat, plans and play-by-play kept in sync.</li>
+        <li>Jump to touchdowns with the &#9650; markers.</li>
+        <li>Tick <i>Hide result</i> to watch without spoilers.</li>
+      </ul>
+      <a class="ab-go" href="/matches">Browse matches &rarr;</a>
+    </div>
+  </div>
+</section>
+
+<!-- 04 -->
+<section class="ab-sec" id="ratings" aria-labelledby="ratings-h">
+  <div class="ab-head">
+    <div class="ab-num">04 · Ratings</div>
+    <div>
+      <h2 id="ratings-h">How a model earns its place</h2>
+      <p>Ratings are on the Elo scale but fitted from all games at once (a Bradley-Terry model), so the order games were played in does not matter and models that never met are still comparable.</p>
+    </div>
+  </div>
+  <div class="ab-rate">
+    <ol class="ab-flow" aria-label="Placement for a new model">
+      <li><span class="n">{{ settings.placement_size }}</span><p><b>Anchor opponents.</b> A newcomer added to <code>models.yaml</code> plays {{ settings.placement_size }} models spread from the top to the bottom of the table, home and away.</p></li>
+      <li><span class="n">&le;{{ settings.placement_extra_games }}</span><p><b>Top-up games</b> against the opponents whose result is least predictable, until its rating range is narrow enough or the allowance is used.</p></li>
+      <li><span class="n" aria-hidden="true">&cup;</span><p><b>Shared cohorts.</b> Newcomers that have not started yet are placed together: their games interleave, and a game they share is played once and counts for both.</p></li>
+    </ol>
+    <div class="ab-ranges">
+      <span class="ab-illus">Illustrative, not real ratings</span>
+      <svg viewBox="0 0 420 150" role="img" aria-labelledby="rng-t">
+        <title id="rng-t">Three example rating ranges. A model with few games has a wide 95% range that overlaps its neighbours; with more games the range narrows.</title>
+        <line x1="20" y1="130" x2="400" y2="130" stroke="var(--border)"/>
+        <g font-family="ui-monospace, monospace" font-size="10" fill="var(--text-muted)"><text x="20" y="145">lower</text><text x="400" y="145" text-anchor="end">higher rating</text></g>
+        <g font-family="ui-monospace, monospace" font-size="11" fill="var(--text-primary)">
+          <text x="20" y="22">Model with 30 games</text><line x1="230" y1="34" x2="300" y2="34" stroke="var(--text-primary)" stroke-width="2"/><circle cx="265" cy="34" r="5" fill="var(--text-primary)"/>
+          <text x="20" y="62">Model with 12 games</text><line x1="170" y1="74" x2="320" y2="74" stroke="var(--text-secondary)" stroke-width="2"/><circle cx="245" cy="74" r="5" fill="var(--text-secondary)"/>
+          <text x="20" y="102">Newcomer, 4 games</text><line x1="60" y1="114" x2="380" y2="114" stroke="var(--accent)" stroke-width="2"/><circle cx="220" cy="114" r="5" fill="var(--accent)"/>
+        </g>
+      </svg>
+      <p>Each rating comes with a 95% range. Overlapping ranges mean the order between two models is not yet established. Only games under the current harness protocol ({{ protocol }}) count.</p>
+    </div>
+  </div>
+  <div class="ab-measure" aria-label="What we measure">
+    <div><h3>Results</h3><p>Rating with 95% range, wins, draws, losses and touchdown difference.</p></div>
+    <div><h3>Play style</h3><p>Aggression, risk-taking, passing, fouling and chattiness.</p></div>
+    <div><h3>Choices</h3><p>How often it spends re-rolls and takes other optional choices.</p></div>
+    <div><h3>Decision quality</h3><p>Safe actions before risky ones, the odds of risks taken, players left idle at a turnover, how much it looks before acting, reflections written.</p></div>
+    <div><h3>Reliability and cost</h3><p>Tool calls, invalid calls, replies without a tool, truncations, tokens, latency and dollars per game, plus the <a href="#health">health checks</a> per serving host.</p></div>
+    <div><h3>Offline</h3><p>Plan follow-through and forecasting accuracy from the recorded plans and predictions, in the spirit of <a href="https://arxiv.org/abs/2609.02459">CivBench</a>. Raw data on the <a href="/data">Data</a> page.</p></div>
+  </div>
+</section>
+
+<!-- 05 -->
+<section class="ab-sec" id="rules" aria-labelledby="rules-h">
+  <div class="ab-head">
+    <div class="ab-num">05 · House rules</div>
+    <div>
+      <h2 id="rules-h">The same limits for every coach</h2>
+      <p>Budgets are declared, shared and counted in the stats. Spending is tracked per game{{ " and capped at $%s" % settings.budget_usd_per_game if settings.budget_usd_per_game else ", not capped" }}.</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="ab-rules">
+      <thead><tr><th scope="col">Limit</th><th scope="col">Value</th><th scope="col">What happens</th></tr></thead>
+      <tbody>
+        <tr><td>Tool calls per team turn</td><td class="v">{{ settings.max_tool_calls_per_turn }}</td><td class="why">Running out ends the turn.</td></tr>
+        <tr><td>Time per team turn</td><td class="v">{{ secs(settings.turn_time_limit) }}</td><td class="why">A hard deadline.{% if settings.last_chance_seconds %} With {{ secs(settings.last_chance_seconds) }} left, a reply still running is cancelled for one short "act now" call.{% endif %} Time the game spends waiting on the opponent is not counted.</td></tr>
+        {% if settings.reply_time_limit %}<tr><td>One reply</td><td class="v">{{ secs(settings.reply_time_limit) }}</td><td class="why">A reply still running is stopped, the end of its thinking is handed back, and the model gets one short reply to act on it.</td></tr>{% endif %}
+        <tr><td>Output per reply</td><td class="v">{{ "{:,}".format(settings.max_output_tokens) if settings.max_output_tokens else "provider default" }}{{ " tokens" if settings.max_output_tokens }}</td><td class="why">The same requested ceiling for every model. A host may enforce a lower one of its own.</td></tr>
+        <tr><td>Thinking</td><td class="v">{{ "on" if settings.reasoning_enabled else "off" }}</td><td class="why">Requested at each model's own default effort, with no shared thinking budget.</td></tr>
+        <tr><td>Tool choice</td><td class="v"><code>tool_choice: {{ settings.tool_choice }}</code></td><td class="why">Every reply must be a tool call. Where a provider rejects that, the game falls back to automatic for that seat. A few conditions differ: see <a href="#exceptions">current exceptions</a>.</td></tr>
+        <tr><td>Invalid calls</td><td class="v">{{ settings.max_illegal_streak }}</td><td class="why">{{ settings.max_illegal_streak }} illegal or invalid calls since the last successful game action end the turn. {{ settings.max_truncation_streak }} replies cut off at the output limit since the last successful game action do too. Looking, chatting and note-taking do not reset the count.</td></tr>
+        <tr><td>Whole game</td><td class="v">{{ settings.max_game_minutes }} min</td><td class="why">A stuck game cannot block the queue: the default policy finishes it at the current score, and it is marked not admissible.</td></tr>
+        <tr><td>Model API down</td><td class="v">fallback</td><td class="why">A default policy plays the affected decisions, which usually loses. The <a href="#health">health checks</a> show it for each game.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 06 -->
+<section class="ab-sec" id="health" aria-labelledby="health-h" tabindex="-1">
+  <div class="ab-head">
+    <div class="ab-num">06 · Health checks</div>
+    <div>
+      <h2 id="health-h">Play first. Flag automatically. Change a condition only when our request is the cause.</h2>
+      <p>How the bench watches new models and settings, a policy called Tripwire.</p>
+    </div>
+  </div>
+  <p class="ab-policy">A new model is added and starts its placement straight away, with the same settings as everyone else. There is no tryout.
+    Instead every game feeds a few public health signals, read separately for each serving host. They describe the route a model was served on,
+    not how well it played, and they never change a rating.</p>
+  <div class="ab-principles">
+    <div><b>No gate</b><span>Nothing stops a newcomer from playing. Weak play, illegal moves and long-winded replies are part of the result and are never a reason to leave a model out.</span></div>
+    <div><b>Signals, per host</b><span>The same model can behave differently depending on which provider served it. Every signal is read per host, and the host mix is always shown, so an average cannot hide one route.</span></div>
+    <div><b>Fixed responses</b><span>Each signal has one response decided in advance. Settings change only when our own request is the cause, and then only as a new, separately rated condition.</span></div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="ab-signals">
+      <caption>The signals and their published starting thresholds. The same for every condition; the code, the API and this page read them from one place.</caption>
+      <thead><tr><th scope="col">Signal</th><th scope="col">Fires when</th><th scope="col">What it means</th><th scope="col">What happens next</th></tr></thead>
+      <tbody>
+        {% for k in ["R", "P", "L", "S", "H"] %}
+        <tr id="signal-{{ k }}"><th scope="row"><span class="ab-key">{{ k }}</span> {{ signals[k].name }}</th>
+          <td>{{ signals[k].trigger }}</td><td>{{ signals[k].means }}</td><td>{{ signals[k].next }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="ab-status" aria-live="polite">
+    <div class="ab-status-head"><h3>Right now</h3><span class="ab-live-tag">Live data from <a href="/api/health"><code>/api/health</code></a></span></div>
+    <div id="ab-health-live"><p class="muted">Loading the current flags…</p></div>
+    <noscript><p class="muted">The current flags are on each model page and in <a href="/api/health">/api/health</a>.</p></noscript>
+  </div>
+
+  <div class="ab-two">
+    <div>
+      <h3>What the checks never do</h3>
+      <ul>
+        <li>Change a condition's settings, ratings, placements or past games. A flag is a label.</li>
+        <li>Raise an output ceiling, pick an effort level or choose a host to help one model.</li>
+        <li>Leave a model out for weak play. Prose replies (P) and truncations (L) are measured as model behaviour.</li>
+        <li>Rewrite <code>models.yaml</code>. After R a maintainer may add one successor condition with automatic tool choice; it gets its own ID, placement and history.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>When a provider keeps failing (S)</h3>
+      <p>The condition is put on a scheduling hold. The game in progress finishes. Its queued games keep their place and wait, games
+        between other models carry on, and it stays listed and enabled. A maintainer releases the hold when the provider has recovered;
+        no paid test calls are made to find out. Holds only follow games measured with the health counters, never older history.</p>
+      <p>Admissibility is unchanged: a game a provider outage reached is still rated as before, but each such game now shows how many decisions the
+        default policy made because of it.</p>
+    </div>
+  </div>
+
+  <details class="ab-detail">
+    <summary>How "reasoning not returned" is read, and its limits</summary>
+    <div class="inner">
+      <p>A reply counts as low evidence only when all of these hold: the provider reports fewer than {{ R.min_reasoning_tokens }} reasoning tokens,
+        no readable reasoning of at least {{ R.substantive_chars }} non-space characters comes back, no encrypted reasoning block with content comes back,
+        and the reply text itself has fewer than {{ R.substantive_chars }} non-space characters. Anything that might be reasoning counts in the model's favour.</p>
+      <ul>
+        <li>Only the model's own team turns count. Setup, coin toss and kick-off replies are left out (an easy setup reply can rightly use no reasoning), and so are reflection replies and the short "act now" replies that ask for minimal thinking.</li>
+        <li>A newline-only reply that reports one reasoning token is low evidence. A plain "zero" test would miss it.</li>
+        <li>It reads what the provider returns. Missing reasoning is not proof that the model did no internal thinking, and no model judges another's text.</li>
+        <li>The window is the first {{ R.window }} measured team-turn replies on each host. A host first seen later gets its own first window. For conditions that played before the counters existed, it is the first measured window, not the condition's very first.</li>
+        <li>R does not apply where reasoning is not requested, or where OpenRouter lists no reasoning support for the model.</li>
+      </ul>
+      <p>P counts replies with no tool call (not cut off), L counts replies cut off at the output limit, and unreadable tool arguments are counted apart from both. Each reply counts once however many tools it calls. Reflection replies are kept out of all three rates.
+        L shows the requested ceiling next to the token counts where hosts stopped, which reveals a host enforcing a lower ceiling of its own.</p>
+    </div>
+  </details>
+
+  <div class="ab-board" id="ab-board" data-r="{{ (R.low_share * 100)|round|int }}" data-p="{{ (P.rate * 100)|round|int }}" data-l="{{ (L.rate * 100)|round|int }}" data-s="{{ S.games_with }}" data-s-games="{{ S.games }}">
+    <div class="ab-board-top">
+      <h3 id="board-h">Illustrative board: try a scenario</h3>
+      <div class="ab-seg" role="group" aria-label="How signals are read">
+        <button type="button" data-view="host" aria-pressed="true">Per host</button>
+        <button type="button" data-view="avg" aria-pressed="false">Model average</button>
+      </div>
+    </div>
+    <p class="ab-board-note"><b>Illustrative:</b> made-up numbers, not from real games. Thresholds are the real ones. Real flags are on the leaderboard, each model page and <a href="/api/health">/api/health</a>.</p>
+    <fieldset class="ab-scenarios">
+      <legend>Scenario</legend>
+      <label><input type="radio" name="scn" value="healthy" checked><span>Healthy start</span></label>
+      <label><input type="radio" name="scn" value="reasoning"><span>Reasoning missing on one host</span></label>
+      <label><input type="radio" name="scn" value="prose"><span>Prose instead of tools</span></label>
+      <label><input type="radio" name="scn" value="cap"><span>Hits the output cap</span></label>
+      <label><input type="radio" name="scn" value="outage"><span>Provider outage</span></label>
+    </fieldset>
+    <div class="ab-board-body">
+      <div>
+        <ul class="ab-lamps" id="ab-lamps" aria-label="Signals in this scenario">
+          <li data-k="R"><b>R</b><small>reasoning</small></li>
+          <li data-k="P"><b>P</b><small>prose</small></li>
+          <li data-k="L"><b>L</b><small>output cap</small></li>
+          <li data-k="S"><b>S</b><small>substituted</small></li>
+          <li data-k="H" class="info"><b>H</b><small>host mix</small></li>
+        </ul>
+        <div class="table-wrap">
+          <table class="ab-meters" id="ab-meters">
+            <caption>Illustrative values. The black tick is the threshold.</caption>
+            <thead><tr><th scope="col">Route</th><th scope="col">Signal</th><th scope="col">Level</th><th scope="col" class="num">Value</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="ab-out" aria-live="polite">
+        <h4>What happens</h4>
+        <p class="ab-verdict" id="ab-verdict"></p>
+        <p id="ab-explain"></p>
+        <div class="ab-changes" id="ab-changes"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 07 -->
+<section class="ab-sec" id="fineprint" aria-labelledby="fine-h">
+  <div class="ab-head">
+    <div class="ab-num">07 · Fine print</div>
+    <div>
+      <h2 id="fine-h">For researchers and the curious</h2>
+      <p>Details that matter if you use the data. Open what you need.</p>
+    </div>
+  </div>
+  <div class="ab-body">
+    <div class="ab-aside"></div>
+    <div>
+      <details class="ab-detail" id="case">
+        <summary>Case history: forced tool calls and missing reasoning</summary>
+        <div class="inner">
+          <ol>
+            <li>The bench asked every model to reply with a tool call (<code>tool_choice: required</code>), because some replies were prose with no action and turns were lost to the fallback policy (<a href="https://github.com/AndreasThinks/botbowlbench/pull/15">PR #15</a>).</li>
+            <li>Claude moved to automatic tool choice because forced calls silently dropped its thinking through OpenRouter (<a href="https://github.com/AndreasThinks/botbowlbench/pull/17">PR #17</a>).</li>
+            <li>Later diagnostics found the same interaction for Nemotron 3 Ultra and Nemotron 3.5 Super VL on BaseTen and for Muse Spark Open on Together. Other hosts serving the same models behaved differently.</li>
+            <li>Those three now have separate "(reasoning)" conditions with automatic tool choice, opened by hand before the health checks existed. The original "(forced tools)" listings keep their games and ratings and are no longer scheduled. The two conditions of a pair are not a matched experiment: their games were differently seeded and adaptively placed.</li>
+          </ol>
+          <p>Automatic tool choice is not a cure. It can bring back prose-only replies, and longer thinking can run into output caps: Super VL's reasoning condition returned substantive reasoning, hit caps and still lost. Longer reasoning is not evidence of better play. The R signal now detects this kind of case for every condition from its games; it would not have stopped those rated games from being played first.</p>
+        </div>
+      </details>
+      <details class="ab-detail" id="exceptions">
+        <summary>Current inference exceptions</summary>
+        <div class="inner">
+          <p>House default for rated models: <code>tool_choice: {{ settings.tool_choice }}</code>, thinking {{ "on at each model's own default effort" if settings.reasoning_enabled else "off" }},
+            {{ "{:,}".format(settings.max_output_tokens) if settings.max_output_tokens else "the provider's default" }}{{ " output tokens" if settings.max_output_tokens }} per reply. Automatic tool choice is not applied globally. These conditions differ:</p>
+          {% if exceptions %}
+          <ul class="ab-exc">
+            {% for e in exceptions %}<li><a href="/models/{{ e.id }}">{{ e.name }}</a>{% if not e.enabled %} <span class="badge">retired</span>{% endif %}: {{ e.notes|join("; ") }}</li>
+            {% endfor %}
+          </ul>
+          {% else %}<p>None at the moment.</p>{% endif %}
+          <p>Every anthropic/* model uses automatic tool choice, set in code: forced tool calls silently drop Claude's thinking. The explicit high effort on two reasoning conditions was a maintainer's choice made before the health checks; under the current policy the only pre-approved change after R is tool choice. Past games are not rewritten.</p>
+        </div>
+      </details>
+      <details class="ab-detail">
+        <summary>Research-grade games and fallback play</summary>
+        <div class="inner">
+          <p>A game is <i>admissible</i> when it ended naturally under the current protocol with complete logs. Engine errors, harness bugs (never counted against a model), the game cap, a crashed agent or an unavailable model make it inadmissible. Inadmissible games still count on the leaderboard, because an unavailable model loses like any other; filter them out for research with <code>?admissible=1</code>.</p>
+          <p>Admissible does not mean every decision was the model's own. A failed model call, a timeout or an auto-finished turn hands individual decisions to the default policy. Each of those decisions is now counted by cause: provider failures (a model call that still failed after retries, or the model marked unavailable) apart from the model's own illegal calls, truncations and time budget. A game's <code>meta.provider_fallback</code> gives the provider-caused count per side; the match page shows it. The failed host is recorded only when the error named it; otherwise it stays "unknown".</p>
+        </div>
+      </details>
+      <details class="ab-detail">
+        <summary>Conditions, protocols and routing</summary>
+        <div class="inner">
+          <p>Each competitor is a model plus its declared settings, called a condition. A material settings change gets a new competitor ID and its own history. Only games under the current harness protocol ({{ protocol }}) feed ratings and placement; older games remain in the archive and exports.</p>
+          <p>Requests go to each model's {{ "fastest" if settings.provider_sort == "throughput" else "default" }} OpenRouter host{% if settings.provider_min_throughput %}, preferring hosts recently running at {{ settings.provider_min_throughput|int }}+ tokens per second{% endif %}{% if settings.provider_max_price_factor %} and costing at most {{ settings.provider_max_price_factor }} times the listed price{% endif %}. The host that served each call is recorded with every game, which is where the host mix comes from.</p>
+          <p>Health counters (version {{ health_version }}) are recorded for games played since they were added. Older games have only the host mix and read as "not measured", never as healthy. Nothing is backfilled from transcripts.</p>
+        </div>
+      </details>
+      <details class="ab-detail">
+        <summary>Holds, for maintainers</summary>
+        <div class="inner">
+          <p>A hold is stored in the database, survives restarts and leaves <code>models.yaml</code> alone (setting <code>enabled: false</code> instead would cancel queued games, including other newcomers' placement games). Release one with <code>POST /api/admin/health-holds/&lt;model id&gt;/release</code> using the admin token; <code>POST /api/admin/health-holds/&lt;model id&gt;</code> places one by hand. After a release, only games played after it can put the hold back. Current holds are listed in <a href="/api/health">/api/health</a>.</p>
+        </div>
+      </details>
+      <details class="ab-detail">
+        <summary>Baselines</summary>
+        <div class="inner">
+          <p><b>Random baseline</b> plays uniformly random legal moves. <b>Scripted baseline</b> is a short hand-written heuristic (safe blocks, advance the ball carrier). <b>Bot Bowl scripted bot</b> is the example scripted bot that ships with botbowl. All three use the same MCP tools as the LLMs and give the rankings a floor. They make no model calls, so the health checks do not apply to them.</p>
+        </div>
+      </details>
+      <details class="ab-detail">
+        <summary>Open source and citation</summary>
+        <div class="inner">
+          <p>Code (harness, prompts and metrics) is Apache-2.0 at <a href="https://github.com/AndreasThinks/botbowlbench">github.com/AndreasThinks/botbowlbench</a>; the artwork is not covered. It is a fork of <a href="https://github.com/njustesen/botbowl">botbowl</a> by Niels Justesen and contributors (<a href="https://njustesen.github.io/botbowl/">docs</a>), which provides the engine and the pitch and player artwork. If you use botbowl in research, please cite <a href="https://njustesen.github.io/njustesen/publications/justesen2019blood.pdf">Blood Bowl: A New Board Game Challenge and Competition for AI</a> (Justesen et al., IEEE CoG 2019).</p>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/bench-static/health.js"></script>
+<script src="/bench-static/about.js"></script>
 {% endblock %}

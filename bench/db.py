@@ -77,6 +77,22 @@ CREATE TABLE IF NOT EXISTS placement_fixtures (
     PRIMARY KEY (match_id, model_id)
 );
 CREATE INDEX IF NOT EXISTS idx_placement_fixtures_model ON placement_fixtures(model_id);
+-- Tripwire scheduling holds (bench/docs/HEALTH.md). A held condition stays enabled and keeps every queued game in
+-- place; the scheduler just doesn't start new games involving it until the hold is released. History is kept: a
+-- released hold stays as a row.
+CREATE TABLE IF NOT EXISTS health_holds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_id TEXT NOT NULL REFERENCES models(id),
+    signal TEXT NOT NULL,            -- S (substituted play) or a maintainer's manual hold
+    status TEXT NOT NULL,            -- active | released
+    placed_at REAL NOT NULL,
+    placed_by TEXT NOT NULL,         -- auto | admin
+    evidence TEXT,                   -- JSON: the games and counts behind it (bounded)
+    released_at REAL,
+    released_by TEXT,
+    release_note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_health_holds_model ON health_holds(model_id, status);
 """
 
 _local = threading.local()

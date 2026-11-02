@@ -16,8 +16,8 @@ from typing import Optional
 import anyio
 from mcp import Client
 
-from bench import render
-from bench.llm import LLMError
+from bench import health, render
+from bench.llm import LLMError, RandomPolicy
 from bench.session import NOTES_MAX_CHARS, GameSession, Seat
 from bench.tools import INTERNAL_ERROR, RULES_PRIMER, SeatTools, build_mcp_server, is_trivial
 
@@ -79,6 +79,12 @@ class SeatDriver:
                       "no_tool_replies": 0, "output_truncations": 0, "http_timeouts": 0,
                       "uncertain_spend_calls": 0, "content_filter_retries": 0, "slow_host_skips": 0, "deadline_cutoffs": 0, "last_chance_calls": 0, "thinking_cuts": 0, "budget_exhausted": 0, "episodes": 0,
                       "served": {}}
+        # Tripwire counters per served host (bench.health); the offline baselines make no model calls
+        self.measured = not isinstance(llm, RandomPolicy)
+        self.usage["health"] = health.new_record(
+            reasoning_requested=bool(getattr(llm, "reasoning_requested", False)),
+            reasoning_listed=getattr(llm, "reasoning_listed", None), tool_choice=getattr(llm, "tool_choice", None),
+            max_tokens=getattr(llm, "max_tokens", None))
         self.unavailable = False
         self._oa_tools = []
         self.consecutive_llm_errors = 0
@@ -98,6 +104,9 @@ class SeatDriver:
 
     def restore(self, state: dict):
         self.usage.update(copy.deepcopy(state["usage"]))
+        if "health" not in state["usage"]:
+            # a checkpoint from before the health counters: the game so far was never counted
+            self.usage["health"]["coverage"] = "partial"
         self.unavailable = state["unavailable"]
         self.crashed = state["crashed"]
         self.consecutive_llm_errors = state["consecutive_llm_errors"]
@@ -117,12 +126,16 @@ class SeatDriver:
             self.session.log_event(self.seat.side, "error", {"text": f"Agent crashed: {self.crashed}. "
                                                                      "Default actions will be used."})
         finally:
-            self._autopilot()
+            self._autopilot("agent_crash" if self.crashed else "other")
 
-    def _autopilot(self):
-        with self.seat.cond:
-            self.seat.autopilot = True
-            self.seat.cond.notify_all()
+    def _autopilot(self, reason: str):
+        self.seat.set_autopilot(reason)
+
+    def _hand_over(self, key, cause: str):
+        """Let the fallback policy finish this episode, recording why (see bench.health.FALLBACK_CAUSES)."""
+        with self.seat.cond:   # the cause is in place before the game thread can see the key
+            self.seat.fallback_cause = cause
+            self.seat.force_episode(key)
 
     # ---- main loop -------------------------------------------------------------------------------
     async def run(self):
@@ -183,6 +196,16 @@ class SeatDriver:
 
     def _over_budget(self) -> bool:
         return self.limits.budget_usd is not None and self.usage["cost"] >= self.limits.budget_usd
+
+    def _note_health(self, resp, kind: str, hurried: bool):
+        """Count one response for the Tripwire signals (see bench.health.note_response)."""
+        if not self.measured:
+            return
+        health.note_response(
+            self.usage["health"], host=resp.provider, kind=kind, hurried=hurried, content=resp.content,
+            reasoning=resp.reasoning, details=(resp.raw_message or {}).get("reasoning_details"),
+            reasoning_tokens=resp.reasoning_tokens, finish_reason=resp.finish_reason, tool_calls=len(resp.tool_calls),
+            bad_args=sum(1 for tc in resp.tool_calls if tc.parse_error), completion_tokens=resp.completion_tokens)
 
     def _record_usage(self, resp):
         u = self.usage
@@ -283,27 +306,28 @@ class SeatDriver:
         hurry = False   # set once a reply ran into the last-chance reserve: short replies only from then on
         short = False   # set after reply_time_limit stopped a reply: the next reply only is short, to act on its thinking
         while not self._episode_over(key):
-            reason = None
+            reason = cause = None
             if calls >= self.limits.max_tool_calls_per_turn:
-                reason = f"tool-call budget ({self.limits.max_tool_calls_per_turn}) used up"
+                reason, cause = f"tool-call budget ({self.limits.max_tool_calls_per_turn}) used up", "tool_budget"
             elif time.time() - t0 > self.limits.turn_time_limit:
-                reason = f"time limit ({int(self.limits.turn_time_limit)}s) exceeded"
+                reason, cause = f"time limit ({int(self.limits.turn_time_limit)}s) exceeded", "turn_time"
             elif illegal_streak >= self.limits.max_illegal_streak:
-                reason = f"{illegal_streak} illegal/invalid calls since last game action"
+                reason, cause = f"{illegal_streak} illegal/invalid calls since last game action", "illegal_streak"
             elif truncation_streak >= self.limits.max_truncation_streak:
                 reason = (f"{truncation_streak} output truncations since last game action "
                           f"(output length limit reached before a tool call)")
+                cause = "truncation_streak"
             elif self._over_budget():
-                reason = f"cost budget ${self.limits.budget_usd} for this game exhausted"
+                reason, cause = f"cost budget ${self.limits.budget_usd} for this game exhausted", "cost_budget"
             if reason:
                 self.seat.counters["budget_exhausted"] += 1
                 self.usage["budget_exhausted"] += 1
                 self.session.log_event(self.seat.side, "system", {"text": f"Auto-finishing: {reason}."})
                 self.session.transcript.write("system", self.seat.side, episode=key, text=f"auto-finish: {reason}")
                 if self._over_budget():
-                    self._autopilot()
+                    self._autopilot("cost_budget")
                 else:
-                    self.seat.force_episode(key)
+                    self._hand_over(key, cause)
                 return
             # until the model is hurried, its replies must finish before the last-chance reserve starts, and no
             # single reply may run longer than reply_time_limit
@@ -367,9 +391,12 @@ class SeatDriver:
                                                   waited=round(time.time() - t0, 1))
                     self.session.transcript.write("system", self.seat.side, episode=key,
                                                   text=f"auto-finish: {reason}")
-                    self.seat.force_episode(key)
+                    self._hand_over(key, "turn_time")
                     return
                 self.usage["llm_errors"] += 1
+                if self.measured:
+                    # the failed host only if the error named it: never the host of an earlier reply
+                    health.note_error(self.usage["health"], kind=e.kind, host=e.host)
                 self.consecutive_llm_errors += 1
                 self.session.log_event(self.seat.side, "error", {"text": str(e)[:500]})
                 self.session.transcript.write("llm_error", self.seat.side, episode=key, error=str(e)[:2000],
@@ -383,10 +410,11 @@ class SeatDriver:
                     self.session.log_event(self.seat.side, "system",
                                            {"text": "Model unavailable - default actions for the rest of the game."})
                     self.unavailable = True
-                    self._autopilot()
+                    self._autopilot("unavailable")
                 else:
-                    self.seat.force_episode(key)
+                    self._hand_over(key, "llm_error")
                 return
+            self._note_health(resp, "turn" if d.our_turn else "decision", hurried=hurry or was_short)
             thought = (resp.content or "").strip() or (resp.reasoning or "").strip()
             if thought:
                 # how long the reply took and how many tokens it spent, so the feed can show each thought's weight
@@ -471,6 +499,7 @@ class SeatDriver:
         except LLMError as e:
             self.session.transcript.write("llm_error", self.seat.side, episode=key + "#reflect", error=str(e)[:500])
             return
+        self._note_health(resp, "reflection", hurried=True)
         if not resp.tool_calls:
             if (resp.finish_reason or "").lower() == "length":
                 self.usage["output_truncations"] += 1

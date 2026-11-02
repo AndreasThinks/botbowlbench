@@ -17,6 +17,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
+from bench.health import clean_host
+
 OPENROUTER_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1") + "/chat/completions"
 
 
@@ -71,13 +73,42 @@ def is_empty_filtered(resp: "LLMResponse") -> bool:
 
 
 class LLMError(Exception):
-    def __init__(self, msg, fatal=False, infra=False, timeout=False, uncertain_spend=False, deadline=False):
+    def __init__(self, msg, fatal=False, infra=False, timeout=False, uncertain_spend=False, deadline=False,
+                 kind=None, status=None, host=None):
         super().__init__(msg)
         self.fatal = fatal
         self.infra = infra  # our problem (bad key / no credits), not the model's
         self.timeout = timeout  # HTTP timeout: the request was sent and never answered
         self.uncertain_spend = uncertain_spend  # the provider may have generated (and billed) a reply we never saw
         self.deadline = deadline  # cut off at the turn deadline: the turn's time ran out, not a model fault
+        # what went wrong on the last attempt, for health telemetry (bench.health.ERROR_KINDS), its HTTP status, and
+        # the host that failed, only when the error itself named it (never guessed from an earlier reply)
+        self.kind = kind or ("deadline" if deadline else "timeout" if timeout else "other")
+        self.status = status
+        self.host = host
+
+
+def error_host(body) -> Optional[str]:
+    """The upstream host an OpenRouter error names (``error.metadata.provider_name``), if it looks like a host name.
+    Nothing else from an error body is kept."""
+    try:
+        data = json.loads(body) if isinstance(body, str) else body
+        meta = (data.get("error") or {}).get("metadata") or {}
+        return clean_host(meta.get("provider_name")) if isinstance(meta, dict) else None
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def status_kind(status: int) -> str:
+    if status == 429:
+        return "rate_limited"
+    if status >= 500:
+        return "server_error"
+    if status == 404:
+        return "not_found"
+    if 400 <= status < 500:
+        return "rejected"
+    return "other"
 
 
 def with_cache_breakpoints(messages: List[dict]) -> List[dict]:
@@ -186,6 +217,16 @@ class OpenRouterLLM:
             (self.provider_prefs or {}).get("preferred_min_throughput"))
         self.host_speeds: Dict[str, List[float]] = {}
         self.client = httpx.AsyncClient(timeout=timeout)
+        self.reasoning_listed: Optional[bool] = None   # does OpenRouter list reasoning for this model (None: unknown)
+
+    @property
+    def reasoning_requested(self) -> bool:
+        """Whether ordinary (unhurried) requests ask for reasoning that comes back with the reply."""
+        r = self.extra.get("reasoning")
+        if isinstance(r, dict):
+            return not (r.get("enabled") is False or r.get("exclude") or r.get("effort") == "none"
+                        or r.get("max_tokens") == 0)
+        return bool(self.reasoning_enabled or self.reasoning_max_tokens)
 
     async def aclose(self):
         await self.client.aclose()
@@ -296,6 +337,7 @@ class OpenRouterLLM:
         }
         delay = 2.0
         last_err = None
+        last = {"kind": None, "status": None, "host": None}   # the last failed attempt, for health telemetry
         filtered = 0
         for attempt in range(self.max_retries + 1):
             t0 = time.time()
@@ -314,21 +356,26 @@ class OpenRouterLLM:
                     raise LLMError(f"turn time limit reached after {budget:.0f}s without a reply (request cancelled)",
                                    uncertain_spend=True, deadline=True)
                 raise LLMError(f"no reply within {budget:.0f}s, request cancelled", timeout=True,
-                               uncertain_spend=True)
+                               uncertain_spend=True, kind="timeout")
             except httpx.ReadTimeout as e:
                 # The request went out and the reply never came: the provider may still be generating (and billing)
                 # it. Retrying would stack up unseen spend, so fail this call instead.
                 raise LLMError(f"HTTP read timeout after {self.timeout:g}s: {type(e).__name__}",
-                               timeout=True, uncertain_spend=True)
+                               timeout=True, uncertain_spend=True, kind="timeout")
             except httpx.HTTPError as e:
                 last_err = f"network error: {e}"
+                last = {"kind": "network", "status": None, "host": None}
             else:
                 if r.status_code == 200:
                     if data is None:
                         last_err = "invalid JSON from OpenRouter"
+                        last = {"kind": "invalid_response", "status": 200, "host": None}
                     else:
                         if "error" in data and not data.get("choices"):
                             last_err = f"provider error: {data['error']}"
+                            # a streamed reply names its host in every chunk, the failing one included
+                            last = {"kind": "provider_error", "status": 200,
+                                    "host": error_host(data) or clean_host(data.get("provider"))}
                         else:
                             self.tool_choice = body["tool_choice"]
                             resp = self._parse(data, time.time() - t0)
@@ -339,6 +386,7 @@ class OpenRouterLLM:
                             filtered += 1
                             last_err = (f"provider content filter returned an empty reply (0 tokens, "
                                         f"{resp.provider or 'unknown provider'})")
+                            last = {"kind": "content_filter", "status": 200, "host": clean_host(resp.provider)}
                             if await self._skip_host(body, resp.provider):
                                 continue   # another host can take the same request at once: no back-off
                 elif r.status_code == 400 and "cache_control" in body and "cache_control" not in self.extra:
@@ -367,15 +415,17 @@ class OpenRouterLLM:
                     raise LLMError(f"OpenRouter HTTP {r.status_code}: {r.text[:500]}",
                                    fatal=r.status_code in (401, 402, 403, 404),
                                    infra=r.status_code in (401, 402) or (r.status_code == 403
-                                                                         and is_account_limit(r.text)))
+                                                                         and is_account_limit(r.text)),
+                                   kind=status_kind(r.status_code), status=r.status_code, host=error_host(r.text))
                 else:
                     last_err = f"OpenRouter HTTP {r.status_code}: {r.text[:300]}"
+                    last = {"kind": status_kind(r.status_code), "status": r.status_code, "host": error_host(r.text)}
             if attempt < self.max_retries:
                 if deadline is not None and time.time() + delay >= deadline:
-                    raise LLMError(f"{last_err or 'unknown error'} (no time left to retry)")
+                    raise LLMError(f"{last_err or 'unknown error'} (no time left to retry)", **last)
                 await asyncio.sleep(delay)
                 delay *= 2
-        raise LLMError(last_err or "unknown error")
+        raise LLMError(last_err or "unknown error", **last)
 
     async def _post(self, body: dict, headers: dict):
         """POST one request: (response, decoded body or None). A streamed reply (server-sent events) is put back

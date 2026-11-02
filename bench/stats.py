@@ -1,4 +1,6 @@
 """Per-side match statistics: what happened on the pitch, how the model played, and what it cost."""
+import copy
+
 from botbowl.core.table import OutcomeType, Skill
 
 # outcome -> (stat name, attributed to: "player" team of report.player, "opp" team of report.opp_player, "team")
@@ -154,6 +156,13 @@ def side_stats(session, side: str, driver) -> dict:
         if s["rerolls_available"] else None
     s.update({k: v for k, v in driver.usage.items()})
     s["cost"] = round(s.get("cost", 0.0), 6)
+    # Tripwire record (bench.health): why the default policy played, and the tool choice the game ended on (a
+    # provider that refuses "required" drops the client to "auto")
+    rec = s["health"] = copy.deepcopy(driver.usage.get("health") or {})
+    if rec:
+        rec["fallback"] = {k[len("forced:"):]: v for k, v in seat.counters.items() if k.startswith("forced:") and v}
+        if rec.get("tool_choice") is not None and hasattr(driver.llm, "tool_choice"):
+            rec["tool_choice"]["effective"] = driver.llm.tool_choice
     s["crashed"] = driver.crashed
     tool_use = {k[5:]: v for k, v in seat.counters.items() if k.startswith("tool:")}
     s["tool_usage"] = tool_use
