@@ -4,7 +4,7 @@ import threading
 import time
 from typing import Callable, Optional
 
-from bench import model_info, version
+from bench import health, model_info, version
 from bench.transcript import Transcript
 from bench.driver import DriverLimits, SeatDriver
 from bench.llm import BotbowlAgentPolicy, OpenRouterLLM, RandomPolicy, ScriptedPolicy
@@ -23,7 +23,7 @@ def make_llm(model_cfg: dict, seat, api_key: Optional[str]):
                                   delay=float(model_cfg.get("delay", 0)))
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set")
-    return OpenRouterLLM(model_cfg["model"], api_key,
+    llm = OpenRouterLLM(model_cfg["model"], api_key,
                          temperature=model_cfg.get("temperature"),
                          max_tokens=model_cfg.get("max_tokens"),
                          extra=model_cfg.get("extra") or {},
@@ -35,6 +35,8 @@ def make_llm(model_cfg: dict, seat, api_key: Optional[str]):
                          hurry_max_tokens=int(model_cfg.get("last_chance_max_tokens") or 2048),
                          provider_prefs=provider_prefs(model_cfg),
                          session_id=f"{seat.session.match_id}:{seat.side}"[:256] if seat else None)
+    llm.reasoning_listed = model_info.reasoning_listed(model_cfg["model"])
+    return llm
 
 
 def provider_prefs(model_cfg: dict) -> dict:
@@ -210,9 +212,7 @@ class MatchRunner:
                 self.session.log_event(None, "system", {"text": "Game time limit reached - remaining turns are "
                                                                 "played by the default policy."})
                 for seat in (self.session.home, self.session.away):
-                    with seat.cond:
-                        seat.autopilot = True
-                        seat.cond.notify_all()
+                    seat.set_autopilot("time_cap")
                 return
             time.sleep(2)
 
@@ -278,6 +278,11 @@ class MatchRunner:
                      "inadmissible_reasons": reasons,
                      "resumes": self.resumes,
                      "served": {side: d.usage.get("served", {}) for side, d in self.drivers.items()},
+                     # Tripwire: decisions the default policy made because a provider failed. Shown, not scored:
+                     # admissibility above is unchanged (see bench/docs/HEALTH.md)
+                     "health_version": health.HEALTH_VERSION,
+                     "provider_fallback": {side: health.provider_fallback(result[f"{side}_stats"].get("health"))
+                                           for side in self.drivers},
                      "transcript_records": self.session.transcript.records})
         result["meta"] = meta
         self.session.transcript.write("result", None, **{k: v for k, v in result.items()

@@ -531,6 +531,12 @@ function renderStats() {
   }
   ml.append(parts.join(" · "));
   if (meta.admissible === false) ml.append(h("span", { class: "badge", style: { marginLeft: "6px" } }, "not admissible: " + (meta.inadmissible_reasons || []).join(", ")));
+  // Tripwire: decisions the default policy made because a provider failed (shown even when the game is admissible)
+  for (const side of ["away", "home"]) {
+    const n = (meta.provider_fallback || {})[side];
+    if (n) ml.append(h("span", { class: "badge", style: { marginLeft: "6px" }, title: "The model's provider failed, so the default policy made these decisions. Admissibility is unchanged; see About, health checks." },
+      `${match[side + "_name"]}: ${n} decisions played by the fallback after provider errors`));
+  }
   if (match.has_transcript) ml.append(" · ", h("a", { href: `/api/matches/${MATCH_ID}/transcript` }, "download full transcript (.jsonl.gz)"));
 }
 

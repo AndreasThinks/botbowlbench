@@ -130,6 +130,10 @@ class Seat(Agent):
         self._action: Optional[Action] = None
         self.autopilot = False                     # every decision uses the fallback
         self.autopilot_key: Optional[str] = None   # decisions in this episode use the fallback
+        # why the fallback plays (bench.health.FALLBACK_CAUSES): each forced action is also counted as
+        # counters["forced:<cause>"], so provider outages can be told apart from the model's own budget limits
+        self.autopilot_reason: Optional[str] = None
+        self.fallback_cause: Optional[str] = None  # for autopilot_key
         self.counters = Counter()
         self.report_cursor = 0                     # reports already shown to this seat
         self.msg_cursor = 0                        # opponent messages already shown to this seat
@@ -159,6 +163,7 @@ class Seat(Agent):
             self.session.maybe_checkpoint(self.side, key)
         if self.autopilot or self.autopilot_key == key or self.session.aborted:
             self.counters["forced_actions"] += 1
+            self.counters["forced:" + self._forced_cause(key)] += 1
             return fallback_action(game, self.team)
         with self.cond:
             self._seq += 1
@@ -175,6 +180,9 @@ class Seat(Agent):
             self.cond.notify_all()
         if action is None:
             self.counters["forced_actions"] += 1
+            timed_out = time.time() >= deadline and not (self.autopilot or self.autopilot_key == key
+                                                         or self.session.aborted)
+            self.counters["forced:" + ("decision_timeout" if timed_out else self._forced_cause(key))] += 1
             if time.time() >= deadline:
                 self.counters["timeouts"] += 1
                 self.session.log_event(self.side, "system", {"text": "Decision timed out - default action taken."})
@@ -182,6 +190,13 @@ class Seat(Agent):
         self.counters["actions"] += 1
         self.counters["action:" + action.action_type.name] += 1
         return action
+
+    def _forced_cause(self, key: str) -> str:
+        if self.autopilot:
+            return self.autopilot_reason or "other"
+        if self.autopilot_key == key:
+            return self.fallback_cause or "other"
+        return "aborted" if self.session.aborted else "other"
 
     # ---- driver-thread side ----------------------------------------------------------------
     def wait_for_decision(self, timeout: Optional[float] = None) -> Optional[Decision]:
@@ -206,10 +221,19 @@ class Seat(Agent):
                 self.cond.wait(1.0)
             return self.decision
 
-    def force_episode(self, key: str):
+    def force_episode(self, key: str, cause: Optional[str] = None):
         """Let the fallback policy finish the current episode (e.g. end the turn)."""
         with self.cond:
+            if cause is not None:
+                self.fallback_cause = cause
             self.autopilot_key = key
+            self.cond.notify_all()
+
+    def set_autopilot(self, reason: str = "other"):
+        """The fallback policy plays every remaining decision. The first reason given is kept."""
+        with self.cond:
+            self.autopilot = True
+            self.autopilot_reason = self.autopilot_reason or reason
             self.cond.notify_all()
 
     def is_pending(self) -> bool:
@@ -345,7 +369,8 @@ class GameSession:
                 "harness_errors": self.harness_errors, "frames": self.frames, "timeline": self.timeline,
                 "time_capped": self.time_capped}, protocol=pickle.HIGHEST_PROTOCOL)
         seats = {s.side: {"counters": dict(s.counters), "report_cursor": s.report_cursor,
-                          "msg_cursor": s.msg_cursor, "autopilot": s.autopilot, "notes": s.notes}
+                          "msg_cursor": s.msg_cursor, "autopilot": s.autopilot, "notes": s.notes,
+                          "autopilot_reason": s.autopilot_reason}
                  for s in (self.home, self.away)}
         return {"game": self.dump_game(), "shared": shared, "seats": seats, "key": self.last_checkpoint_key}
 
@@ -371,6 +396,7 @@ class GameSession:
             seat.report_cursor = st["report_cursor"]
             seat.msg_cursor = st["msg_cursor"]
             seat.autopilot = st["autopilot"]
+            seat.autopilot_reason = st.get("autopilot_reason")
             seat.notes = st.get("notes", "")
         self.last_checkpoint_key = state["key"]
         self.resumed = True

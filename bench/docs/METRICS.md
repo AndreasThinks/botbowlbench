@@ -82,6 +82,17 @@ These are computed from the **action log**. Every move, block, pass, hand-off or
 | `served` | `{"<model>@<provider>": calls}`: what OpenRouter actually routed to |
 | `restart_cost` | Only after a server restart mid-game: USD spent on the part of a turn that was played again. Not included in `cost` or the game budget. |
 
+## Condition health (Tripwire)
+
+From games played with the health counters (`health.v` = 1), each side's stats carry a bounded `health` record per
+served host: `responses`, `no_tool`, `truncated`, `tool_calls`, `bad_args`, the R window counters (`r_eligible`,
+`r_low`, `r_seq`), `truncated_at` (lowest and highest completion tokens of cut-off replies) and `reflection.*`
+counted apart; plus `errors` (failed gameplay calls by host and kind, host `unknown` unless the error named it) and
+`fallback` (decisions the default policy made, by cause: `llm_error`, `unavailable`, `illegal_streak`,
+`truncation_streak`, `tool_budget`, `turn_time`, `cost_budget`, `time_cap`, `agent_crash`, `decision_timeout`,
+`aborted`). These counters are not the same as `no_tool_replies` / `output_truncations` above, which also include
+reflection replies. Signals, thresholds and states: [HEALTH.md](HEALTH.md).
+
 ## Offline metrics (from the dataset)
 
 These need a judge model or extra analysis, so they are computed from the [dataset](DATA.md) rather than live:

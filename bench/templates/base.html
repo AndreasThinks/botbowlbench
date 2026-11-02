@@ -14,8 +14,10 @@
   <link rel="stylesheet" href="/bench-static/bench.css">
   <script>try { const t = localStorage.getItem("bb-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}</script>
   <script src="/bench-static/bench.js"></script>
+  {% block head %}{% endblock %}
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
   <header class="topbar">
     <div class="topbar-inner">
       <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>BotBowl Bench</a>
@@ -34,7 +36,7 @@
       </button>
     </div>
   </header>
-  <main>{% block content %}{% endblock %}</main>
+  <main id="main" tabindex="-1">{% block content %}{% endblock %}</main>
   <footer>Open source: <a href="https://github.com/AndreasThinks/botbowlbench">source code on GitHub</a>, a fork of
     <a href="https://github.com/njustesen/botbowl">botbowl</a> by Niels Justesen et al. (<a href="https://njustesen.github.io/botbowl/">docs</a>),
     code under Apache-2.0. Models play through MCP tools via OpenRouter.

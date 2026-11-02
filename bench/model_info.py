@@ -51,6 +51,9 @@ def _fetch() -> Dict[str, dict]:
                         "context_length": m.get("context_length"), "created": m.get("created"),
                         "knowledge_cutoff": m.get("knowledge_cutoff"),
                         "prompt_price": pricing.get("prompt"), "completion_price": pricing.get("completion")}
+        params = m.get("supported_parameters")
+        if isinstance(params, list):    # older cached catalogs lack this: reasoning support then reads as unknown
+            entry["reasoning"] = "reasoning" in params
         if m.get("canonical_slug"):  # a dated id (openai/gpt-5-mini-2025-08-07) finds its listing too
             out.setdefault(m["canonical_slug"], entry)
         out[m["id"]] = entry
@@ -77,6 +80,25 @@ def catalog() -> Dict[str, dict]:
             except (httpx.HTTPError, OSError, ValueError):
                 _failed_at = now
         return _catalog or {}
+
+
+def cached() -> Dict[str, dict]:
+    """The catalog as already loaded or cached on disk, without going to the network."""
+    with _lock:
+        if _catalog is not None:
+            return _catalog
+    try:
+        with open(_cache_path(), encoding="utf-8") as f:
+            return json.load(f)["models"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
+def reasoning_listed(model_id: str):
+    """True/False when OpenRouter's listing says whether the model takes reasoning parameters, None when unknown.
+    Read from the cached catalog only, so starting a game never waits on a fetch."""
+    v = (cached().get(model_id) or {}).get("reasoning")
+    return v if isinstance(v, bool) else None
 
 
 def about(cfg: dict) -> dict:

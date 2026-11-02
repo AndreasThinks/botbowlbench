@@ -776,3 +776,43 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 .lg.L { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 50%, transparent); }
 .lg.D { color: var(--text-muted); }
 @media (max-width: 1000px) { .idle-split.side-first > .idle-side { order: -1; } }
+
+/* Tripwire condition health (health.js): leaderboard chips and the model page card */
+.hflag { display: inline-flex; gap: 4px; align-items: baseline; margin-left: 6px; font: .7rem var(--mono); color: var(--text-primary); border: 1px solid var(--warning); background: var(--surface-1); padding: 0 6px; text-decoration: none; white-space: nowrap; }
+.hflag b { font-weight: 600; }
+.hflag.hold { border-style: dashed; border-color: var(--text-muted); color: var(--text-secondary); }
+.hflag:hover { background: var(--accent-soft); }
+.hflag:focus-visible, .hsig summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hlegend { font-size: .8rem; max-width: 900px; margin: 6px 0 0; }
+.hstate { display: inline-block; font: 500 .7rem var(--mono); text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border: 1px solid var(--border); color: var(--text-secondary); white-space: nowrap; }
+.hstate.s-flagged { border-color: var(--warning); color: var(--text-primary); background: var(--accent-soft); }
+.hstate.s-flagged::before { content: "! "; }
+.hstate.s-clear { border-color: var(--good); color: var(--good); }
+.hstate.s-unknown, .hstate.s-unmeasured, .hstate.s-warming_up, .hstate.s-insufficient_data { border-style: dashed; }
+.hhead { margin: 2px 0 6px; font-size: .95rem; }
+.hcov { font-size: .82rem; margin: 0 0 10px; }
+.hhold { border-left: 3px solid var(--warning); background: var(--surface-2); padding: 8px 12px; margin: 0 0 12px; font-size: .88rem; max-width: 900px; }
+.hsigs { border-top: 1px solid var(--border); }
+.hsig { border-bottom: 1px solid var(--border); }
+.hsig summary { cursor: pointer; display: flex; align-items: center; gap: 10px; padding: 8px 0; list-style: none; }
+.hsig summary::-webkit-details-marker { display: none; }
+.hsig summary::after { content: "+"; font-family: var(--mono); color: var(--text-muted); margin-left: auto; }
+.hsig[open] summary::after { content: "\2212"; }
+.hkey { font: 600 .9rem var(--mono); width: 1.4em; }
+.hname { font-size: .92rem; }
+.hsig-body { padding: 0 0 10px 0; }
+.hnote { font-size: .84rem; margin: 4px 0 8px; max-width: 900px; white-space: normal; }
+.hnext { font-size: .82rem; margin: 6px 0 0; }
+table.htable { font-size: .84rem; max-width: 760px; }
+table.htable td, table.htable th { padding: 5px 8px; }
+.hsub { font: 500 .78rem var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin: 16px 0 4px; }
+.hmix { list-style: none; padding: 0; margin: 0; max-width: 760px; }
+.hmix li { display: grid; grid-template-columns: minmax(90px, 160px) 1fr auto; gap: 10px; align-items: center; padding: 4px 0; font-size: .86rem; }
+.hmix-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hmix-bar { height: 6px; background: var(--surface-2); min-width: 40px; }
+.hmix-bar span { display: block; height: 100%; background: var(--bar); }
+.hsucc pre.hyaml { font: .8rem var(--mono); background: var(--surface-2); padding: 8px 10px; overflow-x: auto; max-width: 760px; }
+@media (max-width: 640px) { .hmix li { grid-template-columns: minmax(70px, 110px) 1fr; } .hmix li .num { grid-column: 1 / -1; text-align: left; } }
+.skip-link { position: absolute; left: -9999px; top: 8px; z-index: 50; background: var(--ink); color: var(--ink-text); padding: 8px 12px; font: .85rem var(--mono); }
+.skip-link:focus { left: 8px; }
+main:focus { outline: none; }

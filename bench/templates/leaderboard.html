@@ -11,6 +11,9 @@
     <tbody></tbody>
   </table></div>
   <div class="muted" id="lb-note" style="font-size:.82rem;margin-top:8px"></div>
+  <p class="muted hlegend" id="lb-health">Health flags describe how a condition's serving route behaved, not how well it plays:
+    <b>R</b> reasoning missing on a host, <b>P</b> prose replies, <b>L</b> output cap, <b>S</b> play substituted after provider failures.
+    They never change a rating. <a href="/about#health">How the health checks work</a>.</p>
 </div>
 <div class="card section">
   <h2>Elo over time</h2>
@@ -66,6 +69,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="/bench-static/rankings.js"></script>
+<script src="/bench-static/health.js"></script>
 <script>
 const { h, api, fmt } = BB;
 api("/api/leaderboard").then((lb) => {
@@ -76,7 +80,8 @@ api("/api/leaderboard").then((lb) => {
   const eloLede = document.getElementById("lb-lede").textContent;
   const swatchName = (m) => [h("span", { class: "swatch", style: { background: BB.modelColor(m.id) } }), h("a", { href: `/models/${m.id}` }, m.name),
     m.enabled ? null : h("span", { class: "badge", style: { marginLeft: "6px" } }, "retired"),
-    m.provider !== "openrouter" ? h("span", { class: "badge", style: { marginLeft: "6px" } }, "baseline") : null];
+    m.provider !== "openrouter" ? h("span", { class: "badge", style: { marginLeft: "6px" } }, "baseline") : null,
+    ...BBHealth.chips(m)];
   // one shared scale for the 95% range bars, rounded out to the nearest 100
   const cis = lb.models.filter((m) => m.elo_ci);
   const lo = cis.length ? Math.floor(Math.min(...cis.map((m) => m.elo_ci.lo)) / 100) * 100 : 0;
@@ -104,6 +109,7 @@ api("/api/leaderboard").then((lb) => {
       h("td", { class: "model" }, h("span", { class: "swatch", style: { background: BB.modelColor(m.id) } }), h("a", { href: `/models/${m.id}` }, m.name),
         m.enabled ? null : h("span", { class: "badge", style: { marginLeft: "6px" } }, "retired"),
         m.provider !== "openrouter" ? h("span", { class: "badge", style: { marginLeft: "6px" } }, "baseline") : null,
+        ...BBHealth.chips(m),
         h("span", { class: "strip" }, ...strip)),
       h("td", { class: "num" }, h("b", {}, fmt.num(m.elo)), h("span", { class: "sub range-txt" }, range)),
       h("td", { class: "rangecell", title: `95% range ${range}` }, m.elo_ci ? h("div", { class: "rbar" },

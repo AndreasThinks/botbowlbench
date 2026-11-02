@@ -12,7 +12,8 @@ import time
 from flask import (Flask, Response, abort, jsonify, render_template, request, send_file, send_from_directory,
                    stream_with_context)
 
-from bench import db, export, model_info, ratings, version
+from bench import config, db, export, model_info, ratings, version
+from bench import health as tripwire
 from bench.transcript import transcript_path
 from bench.scheduler import delete_checkpoint, frame_json, get_bench, load_frames, load_timeline
 
@@ -60,11 +61,13 @@ def create_app(start_scheduler: bool = True) -> Flask:
             out.setdefault(r["match_id"], {})[r["model_id"]] = r["role"]
         return out
 
-    def with_links(m, names, links):
-        """A match summary with whether it is a top-up and which newcomers it counts for."""
+    def with_links(m, names, links, held=()):
+        """A match summary with whether it is a top-up, which newcomers it counts for and whether it waits on a
+        health hold."""
         who = links.get(m["id"], {})
         return {**match_summary(m, names), "top_up": "top_up" in who.values(),
-                "for_models": list(who), "for_names": [names.get(x, {}).get("name", x) for x in who]}
+                "for_models": list(who), "for_names": [names.get(x, {}).get("name", x) for x in who],
+                "held": m["home_model"] in held or m["away_model"] in held}
 
     def tbc_rows(t, names):
         """Stand in for a placement's top-up games, which aren't scheduled until a newcomer's queued games are done:
@@ -76,6 +79,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
     def upcoming(names, limit=12):
         """The next queued games in play order, with top-ups marked, plus a row for top-ups not yet scheduled."""
         out = []
+        held = bench.held_models()
         for t in db.rows("SELECT * FROM tournaments WHERE status IN ('queued','running') ORDER BY created_at, id"):
             if len(out) >= limit:
                 break
@@ -83,7 +87,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
                            (t["id"],))
             links = placement_links(t["id"]) if t["kind"] == "placement" else {}
             for m in rows[:limit - len(out)]:
-                out.append(with_links(m, names, links))
+                out.append(with_links(m, names, links, held))
             if not rows or out[-1]["id"] == rows[-1]["id"]:
                 out.extend(tbc_rows(t, names))
         return out
@@ -93,6 +97,54 @@ def create_app(start_scheduler: bool = True) -> Flask:
         ms = db.rows(f"SELECT * FROM matches WHERE status='completed' {where} ORDER BY finished_at", args)
         ms = [db.decode_match(m) for m in ms]
         return ms if all_protocols else [m for m in ms if version.is_current_protocol(m)]
+
+    _health_cache = {}
+
+    def all_health(names=None):
+        """Tripwire signals of every condition, recomputed only when a game finishes or a hold changes. Reads the
+        stored per-game records only: no transcripts, no network."""
+        names = names or models_by_id()
+        holds = bench.held_models()
+        sig = db.row("SELECT COUNT(*) AS n, MAX(finished_at) AS t FROM matches WHERE status='completed'")
+        key = (sig["n"], sig["t"], tuple(sorted((k, h["id"]) for k, h in holds.items())), tuple(sorted(names)))
+        if _health_cache.get("key") != key:
+            by = {mid: [] for mid in names}
+            for m in db.rows("SELECT id, home_model, away_model, home_stats, away_stats, meta, finished_at "
+                             "FROM matches WHERE status='completed'"):
+                m = db.decode_match(m)
+                for mid in (m["home_model"], m["away_model"]):
+                    if mid in by:
+                        by[mid].append(m)
+            data = {mid: bench.condition_health(mid, by[mid], holds) for mid in names}
+            _health_cache.update(key=key, data=data)
+        return _health_cache["data"]
+
+    def inference_exceptions():
+        """Rated LLM conditions whose request differs from the house default, for the About page."""
+        s = bench.settings
+        out = []
+        for m in bench.models.values():
+            if m.get("provider", "openrouter") != "openrouter":
+                continue
+            notes = []
+            tc = m.get("tool_choice")
+            if (m.get("model") or "").startswith("anthropic/") and (tc or s.get("tool_choice")) == "required":
+                notes.append("automatic tool choice, set in code for every anthropic/* model")
+            elif tc and tc != s.get("tool_choice"):
+                notes.append(f"tool_choice: {tc}")
+            reasoning = (m.get("extra") or {}).get("reasoning")
+            if isinstance(reasoning, dict) and reasoning.get("effort"):
+                notes.append(f"reasoning effort {reasoning['effort']}")
+            elif isinstance(reasoning, dict):
+                notes.append("own reasoning setting")
+            for k, label in (("reasoning_max_tokens", "thinking budget"), ("max_tokens", "output ceiling")):
+                if m.get(k) is not None and m.get(k) != s.get({"max_tokens": "max_output_tokens"}.get(k, k)):
+                    notes.append(f"{label} {m[k]}")
+            if "provider" in (m.get("extra") or {}):
+                notes.append("own provider routing")
+            if notes:
+                out.append({"id": m["id"], "name": m["name"], "enabled": bool(m.get("enabled", True)), "notes": notes})
+        return out
 
     def require_admin():
         token = os.environ.get("ADMIN_TOKEN")
@@ -131,7 +183,11 @@ def create_app(start_scheduler: bool = True) -> Flask:
 
     @app.route("/about")
     def about_page():
-        return render_template("about.html", page="about")
+        s = bench.settings
+        return render_template("about.html", page="about", settings=s, defaults=config.DEFAULT_SETTINGS,
+                               thresholds=tripwire.THRESHOLDS, signals=tripwire.SIGNALS,
+                               health_version=tripwire.HEALTH_VERSION, protocol=version.PROTOCOL_VERSION,
+                               exceptions=inference_exceptions())
 
     @app.route("/matches")
     def matches_page():
@@ -173,7 +229,10 @@ def create_app(start_scheduler: bool = True) -> Flask:
             "SELECT * FROM matches WHERE status IN ('completed','error') ORDER BY finished_at DESC LIMIT 12")]
         counts = db.row("SELECT SUM(status='queued') AS queued, SUM(status='completed') AS completed, "
                         "SUM(status='running') AS running FROM matches")
+        holds = [{"model_id": k, "name": names.get(k, {}).get("name", k), "signal": h["signal"],
+                  "placed_at": h["placed_at"]} for k, h in bench.held_models().items()]
         return jsonify({"status": bench.status, "detail": bench.status_detail, "live": live, "queued": queued,
+                        "holds": holds,
                         "recent": recent, "counts": counts,
                         "settings": {k: bench.settings.get(k) for k in ("game_mode", "team", "legs",
                                                                         "max_tool_calls_per_turn",
@@ -218,6 +277,9 @@ def create_app(start_scheduler: bool = True) -> Flask:
             sm["tournament_name"] = tours.get(m["tournament_id"])
             sm["admissible"] = bool(m.get("admissible")) if m.get("admissible") is not None else None
             sm["time_capped"] = bool(meta.get("time_capped"))
+            # Tripwire: decisions the default policy made because a provider failed (None: not measured)
+            pf = meta.get("provider_fallback")
+            sm["provider_fallback"] = sum(pf.values()) if isinstance(pf, dict) else None
             out.append(sm)
         return jsonify({"matches": out, "next_before": rows[-1]["finished_at"] if more and rows else None})
 
@@ -340,6 +402,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
         ms = completed_matches()
         elo = fitted_ratings(ms)
         agg = ratings.aggregate(ms)
+        hl = all_health(names)
         rows = []
         for mid, info in names.items():
             a = agg.get(mid)
@@ -351,11 +414,36 @@ def create_app(start_scheduler: bool = True) -> Flask:
                          "elo": elo.get(mid, {}).get("elo", ratings.START_ELO),
                          "elo_ci": rating_range(elo.get(mid)),
                          "history": elo.get(mid, {}).get("history", []),
+                         "health": tripwire.compact(hl[mid]),
                          **(a or {"played": 0, "wins": 0, "draws": 0, "losses": 0, "td_for": 0, "td_against": 0, "td_diff": 0,
                                   "style": {}, "sums": {}, "avg_cost": 0, "avg_tokens": 0, "win_rate": 0,
                                   "avg_latency": 0, "cas_per_game": 0})})
         rows.sort(key=lambda r: (-r["elo"], -r["played"], r["name"]))
         return jsonify({"models": rows, "matches": len(ms), "protocol_version": version.PROTOCOL_VERSION})
+
+    @app.route("/api/models")
+    def api_models():
+        """Every condition with its Tripwire summary."""
+        names = models_by_id()
+        hl = all_health(names)
+        return jsonify({"models": [{**info, "enabled": bool(info["enabled"]), "health": tripwire.compact(hl[mid])}
+                                   for mid, info in sorted(names.items(), key=lambda kv: kv[1]["added_at"])]})
+
+    @app.route("/api/health")
+    def api_health():
+        """The published Tripwire rules and every condition's current flags and holds."""
+        names = models_by_id()
+        hl = all_health(names)
+        holds = [{"model_id": k, "name": names.get(k, {}).get("name", k), **{x: h[x] for x in (
+            "signal", "placed_at", "placed_by", "evidence")}} for k, h in bench.held_models().items()]
+        conditions = {mid: {"name": names[mid]["name"], "enabled": bool(names[mid]["enabled"]),
+                            **tripwire.compact(h)} for mid, h in hl.items()}
+        summary = {}
+        for c in conditions.values():
+            summary[c["status"]] = summary.get(c["status"], 0) + 1
+        return jsonify({"version": tripwire.HEALTH_VERSION, "thresholds": tripwire.THRESHOLDS,
+                        "signals": tripwire.SIGNALS, "fallback_causes": tripwire.FALLBACK_CAUSES, "holds": holds,
+                        "conditions": conditions, "summary": summary})
 
     @app.route("/api/models/<model_id>")
     def api_model(model_id):
@@ -397,8 +485,11 @@ def create_app(start_scheduler: bool = True) -> Flask:
             refl.append({**p, "match_id": e["match_id"], "opponent": names.get(opp, {}).get("name", opp)})
         row = db.row("SELECT config FROM models WHERE id=?", (model_id,))
         cfg = json.loads(row["config"]) if row and row["config"] else dict(info)
+        h = dict(all_health(names)[model_id])
+        h["text"] = tripwire.SIGNALS
+        h["fallback_causes"] = tripwire.FALLBACK_CAUSES
         return jsonify({"model": info, "about": model_info.about(cfg), "elo": elo, "elo_ci": rating_range(fit),
-                        "stats": agg,
+                        "stats": agg, "health": h,
                         "reflections": refl, "head_to_head": sorted(h2h.values(), key=lambda r: r["name"]),
                         "recent": recent, "messages": msgs})
 
@@ -500,6 +591,24 @@ def create_app(start_scheduler: bool = True) -> Flask:
                    "matches WHERE id=?) AND status='completed'", (match_id,))
         bench.wake()
         return jsonify({"ok": True})
+
+    @app.route("/api/admin/health-holds/<model_id>", methods=["POST"])
+    def api_admin_place_hold(model_id):
+        """Hold a condition by hand (the safe pause: unlike enabled: false it cancels nothing)."""
+        require_admin()
+        if db.row("SELECT id FROM models WHERE id=?", (model_id,)) is None:
+            abort(404)
+        if not bench.place_hold(model_id, signal="manual", placed_by="admin"):
+            return jsonify({"error": "already held"}), 409
+        return jsonify({"held": True})
+
+    @app.route("/api/admin/health-holds/<model_id>/release", methods=["POST"])
+    def api_admin_release_hold(model_id):
+        require_admin()
+        note = str((request.get_json(silent=True) or {}).get("note") or request.args.get("note") or "")
+        if not bench.release_hold(model_id, released_by="admin", note=note):
+            return jsonify({"error": "no active hold"}), 404
+        return jsonify({"released": True})
 
     @app.after_request
     def no_cache_api(resp):

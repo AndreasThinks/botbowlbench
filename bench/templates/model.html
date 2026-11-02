@@ -3,6 +3,7 @@
 {% block content %}
 <div id="head"></div>
 <div class="tiles section" id="tiles"></div>
+<section class="card section" id="health" aria-labelledby="health-h" tabindex="-1"><h2 id="health-h">Condition health</h2><div id="health-body"><p class="muted">Loading…</p></div></section>
 <div class="grid grid-2 section">
   <div class="card"><h2>Play style</h2><div class="table-wrap"><table id="style" class="kv"><tbody></tbody></table></div></div>
   <div class="card"><h2>Head to head</h2><div class="table-wrap"><table id="h2h"><thead><tr><th>Opponent</th><th class="num">W</th><th class="num">D</th><th class="num">L</th></tr></thead><tbody></tbody></table></div></div>
@@ -15,6 +16,7 @@
 </div>
 {% endblock %}
 {% block scripts %}
+<script src="/bench-static/health.js"></script>
 <script>
 const { h, api, fmt } = BB;
 const MODEL_ID = {{ model_id|tojson }};
@@ -45,6 +47,8 @@ Promise.all([api(`/api/models/${MODEL_ID}`), api("/api/leaderboard")]).then(([d,
         ...facts.flatMap((f, i) => (i ? [" · ", f] : [f])),
         a.source === "openrouter" ? " · description from OpenRouter" : null) : null);
   }
+  BBHealth.card(document.getElementById("health-body"), d.health, m);
+  if (location.hash === "#health") document.getElementById("health").scrollIntoView();
   const tile = (label, value) => h("div", { class: "tile" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value));
   document.getElementById("tiles").append(
     tile("Elo", fmt.num(d.elo.elo)), tile("95% range", d.elo_ci ? `${d.elo_ci.lo}–${d.elo_ci.hi}` : "–"), tile("Rank", rank ? `#${rank}` : "–"), tile("Record", `${s.wins}-${s.draws}-${s.losses}`),

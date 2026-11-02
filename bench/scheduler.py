@@ -10,6 +10,8 @@ after the other in a background thread.
   one *placement cohort*: their games are interleaved so all of them play early, a game two newcomers have in common
   is played once and counts for both, and each newcomer keeps its own anchors, top-up budget and stopping rule.
 * A model is disabled/removed -> its queued matches are cancelled (history is kept).
+* A condition under a Tripwire health hold (bench/health.py) keeps its queued matches, in order: the scheduler plays
+  the others and starts none involving it until an admin releases the hold. Unlike enabled: false, nothing is cancelled.
 * Admins can also queue a fresh full round robin from the web API or CLI.
 """
 import itertools
@@ -24,7 +26,7 @@ import uuid
 import zlib
 from typing import Dict, List, Optional
 
-from bench import config, db, ratings, version
+from bench import config, db, health, ratings, version
 from bench.match import CHECKPOINT_VERSION, MatchRunner
 from bench.session import timeline_point
 from bench.transcript import transcript_path
@@ -659,10 +661,104 @@ class Bench:
                 if left == 0:
                     db.execute("UPDATE tournaments SET status='completed', finished_at=? WHERE id=?", (time.time(), t["id"]))
 
+    # ---- Tripwire health holds ---------------------------------------------------------------------------
+    @staticmethod
+    def held_models() -> Dict[str, dict]:
+        """Active holds by model id."""
+        out = {}
+        for h in db.rows("SELECT * FROM health_holds WHERE status='active' ORDER BY placed_at, id"):
+            try:
+                h["evidence"] = json.loads(h["evidence"]) if h["evidence"] else None
+            except ValueError:
+                h["evidence"] = None
+            out.setdefault(h["model_id"], h)
+        return out
+
+    def place_hold(self, model_id: str, signal: str = "S", placed_by: str = "admin",
+                   evidence: Optional[dict] = None) -> bool:
+        """Hold a condition: no new game involving it starts until :meth:`release_hold`. A game it is playing finishes,
+        its queued games keep their ids, order and placement roles, and it stays enabled. False if the model is unknown
+        or already held."""
+        with self._lock, db.transaction() as c:
+            if not c.execute("SELECT 1 FROM models WHERE id=?", (model_id,)).fetchone():
+                return False
+            if c.execute("SELECT 1 FROM health_holds WHERE model_id=? AND status='active'", (model_id,)).fetchone():
+                return False
+            c.execute("INSERT INTO health_holds(model_id, signal, status, placed_at, placed_by, evidence) "
+                      "VALUES(?,?,'active',?,?,?)", (model_id, signal, time.time(), placed_by,
+                                                     json.dumps(evidence) if evidence is not None else None))
+        self.wake()
+        return True
+
+    def release_hold(self, model_id: str, released_by: str = "admin", note: str = "") -> bool:
+        """Lift a hold; its queued games are played again in their original order. False if there was none."""
+        with self._lock, db.transaction() as c:
+            n = c.execute("UPDATE health_holds SET status='released', released_at=?, released_by=?, release_note=? "
+                          "WHERE model_id=? AND status='active'",
+                          (time.time(), released_by, (note or "")[:500], model_id)).rowcount
+        self.wake()
+        return n > 0
+
+    def condition_health(self, model_id: str, matches: Optional[List[dict]] = None,
+                         holds: Optional[Dict[str, dict]] = None) -> dict:
+        """The Tripwire signals of one condition from its completed games (any protocol: they describe the route,
+        not the rating)."""
+        if matches is None:
+            matches = [db.decode_match(m) for m in db.rows(
+                "SELECT * FROM matches WHERE status='completed' AND (home_model=? OR away_model=?)",
+                (model_id, model_id))]
+        holds = self.held_models() if holds is None else holds
+        return health.condition_health(health.games_for(model_id, matches), model_id=model_id,
+                                       llm=self._model_cfg(model_id).get("provider", "openrouter") == "openrouter",
+                                       hold=holds.get(model_id))
+
+    def check_health_holds(self, model_ids: List[str]) -> List[str]:
+        """After a game: hold any of these LLM conditions whose S signal fires on instrumented games finished since
+        its last release. Only S places a hold; R, P and L are flags and never change anything. Returns held ids."""
+        placed = []
+        held = self.held_models()
+        for mid in dict.fromkeys(model_ids):
+            if mid in held or self._model_cfg(mid).get("provider", "openrouter") != "openrouter":
+                continue
+            last = db.row("SELECT MAX(released_at) AS t FROM health_holds WHERE model_id=?", (mid,))["t"]
+            matches = [db.decode_match(m) for m in db.rows(
+                "SELECT * FROM matches WHERE status='completed' AND (home_model=? OR away_model=?)", (mid, mid))]
+            evidence = health.s_hold_evidence(health.games_for(mid, matches), since=last)
+            if evidence and self.place_hold(mid, signal="S", placed_by="auto", evidence=evidence):
+                print(f"health hold on {mid}: provider-caused substituted play in {len(evidence['games'])} of the "
+                      f"latest {len(evidence['window'])} games", flush=True)
+                placed.append(mid)
+        return placed
+
+    def queue_state(self) -> dict:
+        """Queued games, and how many of them wait on a hold."""
+        held = self.held_models()
+        queued = db.rows("SELECT home_model, away_model FROM matches WHERE status='queued'")
+        waiting = [m for m in queued if m["home_model"] in held or m["away_model"] in held]
+        return {"queued": len(queued), "held": len(waiting), "playable": len(queued) - len(waiting),
+                "held_models": sorted({x for m in waiting for x in (m["home_model"], m["away_model"]) if x in held})}
+
+    def idle_status(self):
+        """(status, detail) for the status pill: honest about a queue that only waits on holds."""
+        q = self.queue_state()
+        if q["playable"]:
+            return "ready", ""
+        if q["held"]:
+            names = ", ".join(self._model_cfg(x).get("name", x) for x in q["held_models"])
+            return "held", (f"{q['held']} queued game{'s' if q['held'] != 1 else ''} wait on a health hold ({names}). "
+                            "They keep their place; a maintainer can release the hold.")
+        return "idle", "No matches queued. Add a model to models.yaml to start its placement."
+
     # ---- main loop ------------------------------------------------------------------------------------
     def next_match(self) -> Optional[dict]:
+        """The first queued game in play order that involves no held condition."""
+        held = list(self.held_models())
+        skip = ""
+        if held:
+            marks = ",".join("?" * len(held))
+            skip = f" AND m.home_model NOT IN ({marks}) AND m.away_model NOT IN ({marks})"
         return db.row("SELECT m.* FROM matches m JOIN tournaments t ON t.id=m.tournament_id "
-                      "WHERE m.status='queued' ORDER BY t.created_at, t.id, m.seq LIMIT 1")
+                      f"WHERE m.status='queued'{skip} ORDER BY t.created_at, t.id, m.seq LIMIT 1", tuple(held) * 2)
 
     def _loop(self):
         while not self._stop.is_set():
@@ -684,8 +780,7 @@ class Bench:
                             self._wake.clear()
                             continue
                     else:
-                        self.status = "idle"
-                        self.status_detail = "No matches queued. Add a model to models.yaml to start its placement."
+                        self.status, self.status_detail = self.idle_status()
             except Exception as e:
                 traceback.print_exc()
                 self.status = "error"
@@ -714,6 +809,9 @@ class Bench:
             m = db.row("SELECT * FROM matches WHERE id=? AND status='queued'", (match_id,))
             if m is None:
                 return {"error": None, "skipped": True}
+            held = self.held_models()
+            if m["home_model"] in held or m["away_model"] in held:   # held since it was picked: leave it queued
+                return {"error": None, "skipped": True, "held": True}
             restarted = m.get("started_at") is not None   # an earlier attempt was interrupted
             db.execute("UPDATE matches SET status='running', started_at=COALESCE(started_at, ?) WHERE id=?",
                        (now, match_id))
@@ -747,6 +845,11 @@ class Bench:
                         json.dumps(result["home_stats"]), json.dumps(result["away_stats"]), result["error"],
                         time.time(), result["duration"], len(runner.session.frames),
                         json.dumps(result["meta"], default=str), 1 if result["meta"]["admissible"] else 0, match_id))
+            if status == "completed":
+                try:
+                    self.check_health_holds([m["home_model"], m["away_model"]])
+                except Exception:
+                    traceback.print_exc()   # health checks never cost a finished game
             return result
         except Exception as e:
             traceback.print_exc()

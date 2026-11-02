@@ -40,11 +40,15 @@ One JSON object per game:
     "models": {"home": { … model config … }, "away": { … }},
     "served": {"home": {"openai/gpt-5-mini-2025-08-07@OpenAI": 212}, "away": { … }},
     "time_capped": false, "harness_errors": [], "inadmissible_reasons": [], "transcript_records": 4211,
-    "resumes": []
+    "resumes": [],
+    "health_version": 1,                   // games with condition-health counters (see HEALTH.md); absent before
+    "provider_fallback": {"home": 0, "away": 20}   // decisions the default policy made because a provider failed
   },
   "has_transcript": true
 }
 ```
+
+`provider_fallback` is shown alongside admissibility, not folded into it: a game with provider-caused fallback can still be admissible. Condition health per model: `GET /api/health`, `GET /api/models/<id>` (see HEALTH.md).
 
 `resumes` lists restarts of the server during the game (normally empty). Each entry has `ts`, `checkpoint` (the
 turn the game continued from, e.g. `away:turn-2-5`, or null for a restart from kick-off), `git_sha` of the code that

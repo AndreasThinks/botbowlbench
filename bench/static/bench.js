@@ -65,6 +65,7 @@ const BB = (() => {
     }
     let score = "vs", tag = h("span", { class: "badge tag" }, m.status);
     if (m.status === "queued" && m.top_up) tag = h("span", { class: "badge tag", title: "A placement top-up: opponent picked from the placement results" }, "top-up");
+    if (m.status === "queued" && m.held) tag = h("span", { class: "badge tag", title: "Waits on a health hold: it keeps its place in the queue and is played once a maintainer releases the hold" }, "on hold");
     const shared = m.for_names && m.for_names.length > 1 ? ` (counts for ${m.for_names.join(" and ")})` : "";
     if (m.status === "completed") { score = `${m.home_score} – ${m.away_score}`; tag = h("span", { class: "muted tag" }, fmt.ago(m.finished_at)); }
     else if (m.status === "running") { score = m.home_score != null ? `${m.home_score} – ${m.away_score}` : "vs"; tag = h("span", { class: "badge live tag" }, "LIVE"); }
@@ -95,6 +96,7 @@ const BB = (() => {
       if (s.live.length) { cls = "live"; const m = s.live[0]; txt = `Live: ${m.home_name} vs ${m.away_name}`; }
       else if (kind === "outage") { cls = "wait"; txt = "Paused · back soon"; pill.title = s.detail; }
       else if (kind === "over") txt = "No games scheduled";
+      else if (s.status === "held") { cls = "wait"; txt = "Queue on health hold"; pill.title = s.detail; }
       else if (s.status === "waiting" || s.status === "paused" || s.status === "error") cls = "wait";
       pill.append(h("span", { class: "dot " + cls }), h("span", { class: "txt" }, txt));
       if (s.live.length) pill.onclick = () => (location.href = `/match/${s.live[0].id}`), (pill.style.cursor = "pointer");
