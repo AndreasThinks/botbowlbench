@@ -184,3 +184,8 @@ models:
 
   - name: Liquid LFM2.5-24B-A2B
     model: liquid/lfm-2.5-24b-a2b
+
+  - name: Inkling Small
+    id: inkling-small
+    model: thinkingmachines/inkling-small
+    enabled: true
