@@ -1,4 +1,5 @@
-// About page: section rail, in-page focus, the live health summary (real data) and the illustrative board.
+// About page: section rail, in-page focus, the illustrative request card, the live health summary (real data) and
+// the illustrative board.
 (() => {
   const { h, api } = BB;
   const reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -56,6 +57,54 @@
     }
     live.replaceChildren(...parts);
   }).catch(() => live.replaceChildren(h("p", { class: "muted" }, "The current flags could not be loaded. Each model page shows its own.")));
+
+  // ---- illustrative request card: two independent controls, changing only this example ----------------------------
+  const rq = document.getElementById("ab-rq");
+  if (rq) {
+    const st = { tc: "required", moment: "ordinary" };
+    const $ = (sel) => rq.querySelector(sel);
+    const fmt = (n) => Number(n).toLocaleString("en");
+    const reply = rq.dataset.reply, reserve = rq.dataset.reserve;
+    const when = [reply && `a reply still running at ${reply} s`, reserve && `the last ${reserve} s of a turn`].filter(Boolean).join(" or ");
+    const tag = (el, cls, text) => { el.className = "ab-rq-tag" + (cls ? " " + cls : ""); el.textContent = text; };
+    const STATUS = {
+      "required-ordinary": ["House default.", " Reasoning and a required tool call, in one request. Conditions not listed under exceptions start every game with exactly this request."],
+      "auto-ordinary": ["Compatibility exception.", " Used by Claude models, the conditions listed under exceptions with automatic tool choice, and any seat after a compatibility retry. Only the tool-call requirement changed: reasoning is still requested, exactly as before."],
+      "required-short": ["Declared timing exception.", ` After ${when}: the lowest reasoning effort the model lists and at most ${fmt(rq.dataset.shortMax)} output tokens, so it can still make its own move. Tool choice is unchanged.`],
+      "auto-short": ["Both exceptions at once.", " A condition with automatic tool choice near a time limit: the tool call is optional and the reply is short. The short reply is what reduces reasoning, not auto."],
+    };
+    const render = () => {
+      const auto = st.tc === "auto", short = st.moment === "short";
+      const tl = $('[data-rq="tool_choice"]'), rl = $('[data-rq="reasoning"]'), mt = $('[data-rq="max_tokens"]');
+      tl.textContent = `"tool_choice": "${st.tc}"`;
+      tl.classList.toggle("changed", auto);
+      rl.textContent = short ? '"reasoning": {"effort": "<lowest the model lists>"}' : '"reasoning": {"enabled": true}';
+      rl.classList.toggle("changed", short);
+      if (mt) {
+        mt.textContent = `"max_tokens": ${short ? rq.dataset.shortMax : rq.dataset.max}`;
+        mt.classList.toggle("changed", short);
+      }
+      $(".ab-rq-ph").hidden = !short;
+      tag($("#rq-tag-tools"), auto ? "changed" : (short ? "same" : ""), auto ? "changed: tool call optional" : (short ? "unchanged" : "house default"));
+      tag($("#rq-tag-reasoning"), short ? "changed" : (auto ? "same" : ""),
+        short ? "reduced: declared timing exception" : (auto ? "unchanged: still requested" : "house default"));
+      const r1 = $('[data-rq="reply-reasoning"]'), r2 = $('[data-rq="reply-tool"]');
+      r1.textContent = short ? "Little or no reasoning, by request" : "Reasoning, as far as the provider returns it";
+      r1.classList.toggle("changed", short);
+      r2.textContent = auto ? "A tool call, or prose only (prose moves no player and counts as an invalid call)"
+        : "A tool call, required: look, chat, note or game action";
+      r2.classList.toggle("changed", auto);
+      const [b, rest] = STATUS[`${st.tc}-${st.moment}`];
+      const s = $("#rq-status");
+      s.replaceChildren(h("b", {}, b), rest);
+      s.dataset.mode = `${st.tc}-${st.moment}`;
+      rq.querySelectorAll("[data-rq-tc]").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.rqTc === st.tc)));
+      rq.querySelectorAll("[data-rq-moment]").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.rqMoment === st.moment)));
+    };
+    rq.querySelectorAll("[data-rq-tc]").forEach((x) => x.addEventListener("click", () => { st.tc = x.dataset.rqTc; render(); }));
+    rq.querySelectorAll("[data-rq-moment]").forEach((x) => x.addEventListener("click", () => { st.moment = x.dataset.rqMoment; render(); }));
+    render();
+  }
 
   // ---- illustrative board: made-up numbers, real thresholds -------------------------------------------------------
   const board = document.getElementById("ab-board");
