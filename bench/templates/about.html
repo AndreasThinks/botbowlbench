@@ -12,6 +12,7 @@
     <li><a href="#watch">Watch</a></li>
     <li><a href="#ratings">Ratings</a></li>
     <li><a href="#rules">House rules</a></li>
+    <li><a href="#exceptions">Exceptions</a></li>
     <li><a href="#health">Health checks</a></li>
     <li><a href="#fineprint">Fine print</a></li>
   </ol>
@@ -76,14 +77,108 @@
 </section>
 
 <!-- 02 -->
+{% set combined = settings.tool_choice == "required" and settings.reasoning_enabled and settings.reasoning_max_tokens is none %}
+{% set short_max = [settings.last_chance_max_tokens or 2048, settings.max_output_tokens or settings.last_chance_max_tokens or 2048]|min %}
 <section class="ab-sec" id="turn" aria-labelledby="turn-h">
   <div class="ab-head">
     <div class="ab-num">02 · A turn</div>
     <div>
-      <h2 id="turn-h">What a coach does with its turn</h2>
-      <p>Every decision starts a fresh conversation. The model only remembers what it chose to write down.</p>
+      <h2 id="turn-h">We request reasoning and tool use together</h2>
+      <p>Every decision starts a fresh conversation. The model only remembers what it chose to write down. Each ordinary request asks it to reason and to call a tool,
+        and every step of a turn below is a tool call, though only some of them move a player.</p>
     </div>
   </div>
+
+  {% if combined %}
+  <div class="ab-rq" id="ab-rq" aria-labelledby="rq-k" data-max="{{ settings.max_output_tokens or '' }}" data-short-max="{{ short_max }}"
+       data-reply="{{ settings.reply_time_limit|int if settings.reply_time_limit else '' }}" data-reserve="{{ settings.last_chance_seconds|int if settings.last_chance_seconds else '' }}">
+    <div class="ab-rq-top"><h3 class="ab-rq-k" id="rq-k">One ordinary request</h3><span class="ab-rq-both">Reasoning and a tool call, asked for together</span></div>
+    <p class="ab-rq-lead">We ask models to reason and to use tools in the same request. These normally work together: a model can reason and then call a tool
+      in one reply. A few model and provider integrations stop returning reasoning when tool calls are required, so those cases have
+      explicit <a href="#exceptions">compatibility exceptions</a>.</p>
+
+    <div class="ab-rq-bar" role="group" aria-labelledby="rq-try">
+      <p class="ab-rq-k" id="rq-try">Illustrative example: change one control and see what moves</p>
+      <p class="ab-rq-note">These buttons only change this example on the page. They do not change the benchmark's settings or any game, and this is not a live view of a request.</p>
+      <div class="ab-rq-row"><span class="lab" id="rq-tc-l">Tool choice</span><span class="ab-rq-seg" role="group" aria-labelledby="rq-tc-l">
+        <button type="button" data-rq-tc="required" aria-pressed="true">required (house default)</button><button type="button" data-rq-tc="auto" aria-pressed="false">auto (compatibility exception)</button></span></div>
+      <div class="ab-rq-row"><span class="lab" id="rq-mo-l">Moment</span><span class="ab-rq-seg" role="group" aria-labelledby="rq-mo-l">
+        <button type="button" data-rq-moment="ordinary" aria-pressed="true">Ordinary reply</button><button type="button" data-rq-moment="short" aria-pressed="false">Short reply near a time limit</button></span></div>
+    </div>
+
+    <p class="ab-rq-cap">Request fields, as sent to OpenRouter (other fields left out). <span class="ab-rq-ph" hidden>Angle brackets mark a value that depends on the model.</span></p>
+    <div class="ab-rq-ctrls">
+      <div class="ab-rq-ctrl" id="rq-tools">
+        <p class="ab-rq-n">Control 1 · Tool choice</p>
+        <code class="ab-rq-line" data-rq="tool_choice">"tool_choice": "{{ settings.tool_choice }}"</code><span class="ab-rq-tag" id="rq-tag-tools">house default</span>
+        <dl><dt>Decides</dt><dd>Whether the reply must include a tool call.</dd>
+          <dt>Default</dt><dd>The reply must include a tool call. A tool call can be a look at the board, a chat message, a note or a game action, so it need not be a move.
+            It does not guarantee a legal move, a good one, or any visible reasoning.</dd>
+          <dt>Why</dt><dd class="why">Before this rule, some replies were prose with no tool call. They used turn time without touching the game, and some turns ran out
+            and were played by the default policy instead (<a href="https://github.com/AndreasThinks/botbowlbench/pull/15">PR #15</a>). Requiring a tool call asks the
+            model to interact. It is not meant to stop the model reasoning.</dd></dl>
+      </div>
+      <div class="ab-rq-plus" aria-hidden="true">+</div>
+      <div class="ab-rq-ctrl" id="rq-reasoning">
+        <p class="ab-rq-n">Control 2 · Reasoning</p>
+        <code class="ab-rq-line" data-rq="reasoning">"reasoning": {"enabled": true}</code><span class="ab-rq-tag" id="rq-tag-reasoning">house default</span>
+        <dl><dt>Decides</dt><dd>Whether the model is asked to reason, and at what effort.</dd>
+          <dt>Default</dt><dd>Reasoning is requested wherever it is optional, at each model's or provider's own default effort. There is no shared thinking-token budget
+            and no common effort level.</dd>
+          <dt>Why</dt><dd class="why">A shared thinking-token budget used to go to every model. For models that accept only an effort level, OpenRouter translated it into an
+            effort that appeared to sit below their own default, so we stopped sending it (<a href="https://github.com/AndreasThinks/botbowlbench/pull/34">PR #34</a>).
+            That was one observed case, not a proof for every model.</dd></dl>
+      </div>
+    </div>
+    <div class="ab-rq-bounds"><span class="ab-rq-k">Shared bounds</span>
+      {% if settings.max_output_tokens %}<code data-rq="max_tokens">"max_tokens": {{ settings.max_output_tokens }}</code>{% endif %}
+      <span>{{ secs(settings.turn_time_limit) }} turn</span>{% if settings.reply_time_limit %}<span>{{ secs(settings.reply_time_limit) }} reply</span>{% endif %}{% if settings.last_chance_seconds %}<span>{{ secs(settings.last_chance_seconds) }} reserve</span>{% endif %}
+      <p>The same bounds apply to everyone: {{ "up to %s output tokens per reply, reasoning included where the provider counts it as output (one ceiling, not extra thinking room)" % "{:,}".format(settings.max_output_tokens) if settings.max_output_tokens else "the provider's own output ceiling" }},
+        and {{ secs(settings.turn_time_limit) }} per team turn. These limits bound how long a reply and a turn can run. They do not give every model the same compute:
+        speed, default effort and token use still differ.</p></div>
+    <div class="ab-rq-reply"><span class="ab-rq-k">What one reply can contain (a readable summary, not the response format)</span>
+      <ol aria-label="One reply"><li class="r1" data-rq="reply-reasoning">Reasoning, as far as the provider returns it</li><li class="r2" data-rq="reply-tool">A tool call, required: look, chat, note or game action</li></ol></div>
+    <p class="ab-rq-status" id="rq-status" aria-live="polite"><b>House default.</b> Reasoning and a required tool call, in one request. Conditions not listed under
+      <a href="#exceptions">exceptions</a> start every game with exactly this request.</p>
+  </div>
+  {% else %}
+  <div class="ab-callout"><p>The current house request is <code>tool_choice: {{ settings.tool_choice }}</code> with thinking
+    {{ "on" if settings.reasoning_enabled or settings.reasoning_max_tokens else "off" }}{{ ", at a shared budget of %s tokens" % settings.reasoning_max_tokens if settings.reasoning_max_tokens }}.
+    See the <a href="#rules">house rules</a> and <a href="#exceptions">exceptions</a>.</p></div>
+  {% endif %}
+
+  <div class="ab-rq-two">
+    <p><b>What auto changes.</b> Automatic tool choice (<code>auto</code>) changes one thing: a tool call becomes optional. It leaves the reasoning request as it was,
+      and it is not a switch that turns reasoning on. On a few specific routes it brought back reasoning that a required tool call had stopped from returning.
+      On any route it also lets prose-only replies back in, which is why it is not the default.</p>
+    <p><b>When reasoning is reduced on purpose.</b> This is a separate, declared timing exception.{% if settings.reply_time_limit %} When a reply is still running at {{ secs(settings.reply_time_limit) }},
+      it is stopped, the end of its streamed thinking is handed back, and the next reply is short.{% endif %}{% if settings.last_chance_seconds %} When only {{ secs(settings.last_chance_seconds) }} of the turn remain,
+      the rest of that turn's replies are short.{% endif %} A short reply asks for the lowest reasoning effort the model lists, which can be none (or a small thinking budget where no levels are listed),
+      and at most {{ "{:,}".format(short_max) }} output tokens, so the model can still make its own move.</p>
+  </div>
+
+  <div class="ab-rq-evidence">
+    <h3>They normally work together</h3>
+    <p>Small saved-position diagnostics on the real game engine found Gemini 4 Argon, served by Google Vertex, returning reasoning on an ordinary turn and on a re-roll
+      decision with required and with automatic tool choice alike. In its first live replies, Inkling Small, served by DeepInfra, returned reasoning alongside required
+      tool calls. These are small checks, not a reliability estimate. The <a href="#health">health checks</a> read the same kind of evidence from every game, per host.</p>
+    <p>What you can read is whatever the provider returns: full reasoning, a summary, an encrypted block, only a token count, or nothing. Missing readable reasoning is
+      not proof that no internal thinking happened, and a reported token count is not readable reasoning.</p>
+    <details class="ab-detail" id="evidence-detail">
+      <summary>Snapshot details (historical maintainer diagnostics)</summary>
+      <div class="inner">
+        <ul>
+          <li><b>Gemini 4 Argon via Google Vertex.</b> Matched saved-state tests with the real engine: reasoning came back on an ordinary team turn and on a re-roll
+            interrupt, under both <code>required</code> and <code>auto</code>. A trivial setup decision did not need reasoning, which is expected.</li>
+          <li><b>Inkling Small via DeepInfra.</b> Its first seven live responses used required tool calls: seven tool calls, 247 reported reasoning tokens in total, and each
+            of the first three ordinary-turn responses showed reasoning evidence.</li>
+        </ul>
+        <p>Diagnostics run before this page was written. They are not current live totals, not a reliability estimate and not evidence of playing strength.</p>
+      </div>
+    </details>
+  </div>
+
+  <h3 class="ab-rq-sub">The steps of a turn</h3>
   <ol class="ab-turn">
     <li><h3>Remember</h3><p>It sees its private notebook (up to 1,500 characters, empty at kick-off) and its last plan.</p></li>
     <li><h3>Look</h3><p>Read the board, rosters, legal options and the odds of each move.</p><div class="ab-chips"><code>get_state</code><code>get_legal_actions</code><code>get_player</code></div></li>
@@ -107,7 +202,7 @@
       <h3><span class="dot live" aria-hidden="true"></span>Live</h3>
       <ul>
         <li>The board updates move by move.</li>
-        <li>Models' thinking streams in as it arrives, alongside their chat.</li>
+        <li>Models' thinking streams in as it arrives, as far as the provider returns it, alongside their chat.</li>
         <li>Each team's private notebook can be opened above the match feed.</li>
       </ul>
       <a class="ab-go" href="/">Open the live page &rarr;</a>
@@ -170,7 +265,8 @@
     <div class="ab-num">05 · House rules</div>
     <div>
       <h2 id="rules-h">The same limits for every coach</h2>
-      <p>Budgets are declared, shared and counted in the stats. Spending is tracked per game{{ " and capped at $%s" % settings.budget_usd_per_game if settings.budget_usd_per_game else ", not capped" }}.</p>
+      <p>Budgets are declared, shared and counted in the stats. Spending is tracked per game{{ " and capped at $%s" % settings.budget_usd_per_game if settings.budget_usd_per_game else ", not capped" }}.
+        The same bounds are not the same compute: a faster model or host fits more into a turn, and default effort and token use differ by model.</p>
     </div>
   </div>
   <div class="table-wrap">
@@ -181,20 +277,97 @@
         <tr><td>Time per team turn</td><td class="v">{{ secs(settings.turn_time_limit) }}</td><td class="why">A hard deadline.{% if settings.last_chance_seconds %} With {{ secs(settings.last_chance_seconds) }} left, a reply still running is cancelled for one short "act now" call.{% endif %} Time the game spends waiting on the opponent is not counted.</td></tr>
         {% if settings.reply_time_limit %}<tr><td>One reply</td><td class="v">{{ secs(settings.reply_time_limit) }}</td><td class="why">A reply still running is stopped, the end of its thinking is handed back, and the model gets one short reply to act on it.</td></tr>{% endif %}
         <tr><td>Output per reply</td><td class="v">{{ "{:,}".format(settings.max_output_tokens) if settings.max_output_tokens else "provider default" }}{{ " tokens" if settings.max_output_tokens }}</td><td class="why">The same requested ceiling for every model. A host may enforce a lower one of its own.</td></tr>
-        <tr><td>Thinking</td><td class="v">{{ "on" if settings.reasoning_enabled else "off" }}</td><td class="why">Requested at each model's own default effort, with no shared thinking budget.</td></tr>
-        <tr><td>Tool choice</td><td class="v"><code>tool_choice: {{ settings.tool_choice }}</code></td><td class="why">Every reply must be a tool call. Where a provider rejects that, the game falls back to automatic for that seat. A few conditions differ: see <a href="#exceptions">current exceptions</a>.</td></tr>
+        <tr><td>Thinking</td><td class="v">{{ "on" if settings.reasoning_enabled else "off" }}</td><td class="why">Requested at each model's own default effort, with no shared thinking budget, alongside the required tool call. Reduced on purpose only in a <a href="#fb-short">short reply near a time limit</a>.</td></tr>
+        <tr><td>Tool choice</td><td class="v"><code>tool_choice: {{ settings.tool_choice }}</code></td><td class="why">Every reply must include a tool call: a look, a chat message, a note or a game action. Reasoning is still requested. If a provider rejects a required tool call, the seat <a href="#fb-compat">retries with automatic tool choice</a> for that game. A few conditions differ: see <a href="#exceptions">current exceptions</a>.</td></tr>
         <tr><td>Invalid calls</td><td class="v">{{ settings.max_illegal_streak }}</td><td class="why">{{ settings.max_illegal_streak }} illegal or invalid calls since the last successful game action end the turn. {{ settings.max_truncation_streak }} replies cut off at the output limit since the last successful game action do too. Looking, chatting and note-taking do not reset the count.</td></tr>
         <tr><td>Whole game</td><td class="v">{{ settings.max_game_minutes }} min</td><td class="why">A stuck game cannot block the queue: the default policy finishes it at the current score, and it is marked not admissible.</td></tr>
-        <tr><td>Model API down</td><td class="v">fallback</td><td class="why">A default policy plays the affected decisions, which usually loses. The <a href="#health">health checks</a> show it for each game.</td></tr>
+        <tr><td>Model API down</td><td class="v">fallback</td><td class="why">After retries, a <a href="#fb-default">default policy</a> plays the affected decisions, which usually loses. The <a href="#health">health checks</a> show it for each game.</td></tr>
       </tbody>
     </table>
   </div>
 </section>
 
 <!-- 06 -->
+<section class="ab-sec" id="exceptions" aria-labelledby="exceptions-h" tabindex="-1">
+  <div class="ab-head">
+    <div class="ab-num">06 · Exceptions and fallbacks</div>
+    <div>
+      <h2 id="exceptions-h">When the ordinary request does not fit</h2>
+      <p>Separate mechanisms, each with its own trigger, its own action and its own actor. None of them tunes a setting or re-rates a model automatically.</p>
+    </div>
+  </div>
+  <p class="ab-fb-lead">Automatic tool choice is never the stand-in player. Only the default policy, a simple built-in rule and not a language model, ever plays for a model.</p>
+  <div class="ab-fbs">
+    <article class="ab-fb" id="fb-compat" aria-labelledby="fb-compat-h">
+      <h3 id="fb-compat-h">Compatibility retry</h3>
+      <div class="ab-badges"><span>Who plays: the same model</span><span class="rs">Reasoning: still requested, unchanged</span></div>
+      <dl><dt>When</dt><dd>A request with a required tool call comes back with HTTP 400 or 404. The code does not check why, so this is not a perfect detector: an unrelated
+          400 or 404 can trigger it too. Rate limits (HTTP 429) never do.</dd>
+        <dt>Action</dt><dd>The same request is sent again at once with <code>tool_choice: auto</code> and nothing else changed. If that works, the seat keeps
+          automatic tool choice for the rest of the game, under the same listing and ID.</dd>
+        <dt>Who</dt><dd>The harness, automatically, for one seat in one game.</dd>
+        <dt>Why</dt><dd class="why">Some providers refuse required tool calls. Without the retry the model would be unavailable for the game.</dd></dl>
+    </article>
+    <article class="ab-fb" id="fb-declared" aria-labelledby="fb-declared-h">
+      <h3 id="fb-declared-h">Declared exceptions and successor review</h3>
+      <div class="ab-badges"><span>Who plays: the same model, in its own listed condition</span><span class="rs">Reasoning: still requested; some set their own effort (see the list)</span></div>
+      <dl><dt>When</dt><dd>A known integration stops returning reasoning under required tool calls, or the <a href="#signal-R">R health flag</a> fires.</dd>
+        <dt>Action</dt><dd>The condition is listed with automatic tool choice from its first request. After an R flag a maintainer may add one successor whose only change
+          is automatic tool choice, with its own ID, placement and rating. The original keeps its games.</dd>
+        <dt>Who</dt><dd>A maintainer, by hand. Claude models are the one case set in code.</dd>
+        <dt>Why</dt><dd class="why">To restore the reasoning those routes return, without changing everyone's request.</dd></dl>
+    </article>
+    <article class="ab-fb" id="fb-short" aria-labelledby="fb-short-h">
+      <h3 id="fb-short-h">Short reply near a time limit</h3>
+      <div class="ab-badges"><span>Who plays: the same model</span><span class="rs">Reasoning: reduced on purpose</span></div>
+      <dl><dt>When</dt><dd>{% if settings.reply_time_limit %}A reply is still running at {{ secs(settings.reply_time_limit) }}{% endif %}{% if settings.reply_time_limit and settings.last_chance_seconds %}, or {% endif %}{% if settings.last_chance_seconds %}{{ secs(settings.last_chance_seconds) }} of the turn remain{% endif %}{% if not settings.reply_time_limit and not settings.last_chance_seconds %}Not in use with the current settings{% endif %}.</dd>
+        <dt>Action</dt><dd>A reply still running is stopped and the end of its streamed thinking is handed back. The next request asks for the lowest effort the model lists
+          (or a small thinking budget where none are listed) and at most {{ "{:,}".format(short_max) }} output tokens. Tool choice is unchanged.</dd>
+        <dt>Who</dt><dd>The harness, automatically, inside one turn.</dd>
+        <dt>Why</dt><dd class="why">To let the model make its own move with the thinking it has done, rather than the default policy making it.</dd></dl>
+    </article>
+    <article class="ab-fb" id="fb-default" aria-labelledby="fb-default-h">
+      <h3 id="fb-default-h">Default-policy play</h3>
+      <div class="ab-badges"><span class="no">Who plays: a simple built-in rule, not a language model</span><span class="rs">Reasoning: not applicable, no model call</span></div>
+      <dl><dt>When</dt><dd>In a turn: {{ settings.max_tool_calls_per_turn }} tool calls, {{ secs(settings.turn_time_limit) }}, {{ settings.max_illegal_streak }} invalid calls or
+          {{ settings.max_truncation_streak }} cut-off replies since the last game action, or a model call still failing after its retries{% if settings.budget_usd_per_game %}, or the ${{ settings.budget_usd_per_game }} game budget{% endif %}.
+          In a game: the model is unavailable, its agent crashed, or the {{ settings.max_game_minutes }}-minute cap is reached.</dd>
+        <dt>Action</dt><dd>It completes a legal setup, or ends the turn or declines the optional choice, and picks a random legal option only when nothing else is available.
+          Each such decision is counted by cause.</dd>
+        <dt>Who</dt><dd>The harness, automatically.</dd>
+        <dt>Why</dt><dd class="why">The live game has to go on. Provider-caused decisions can occur in admissible, rated games and are shown on the match page.</dd></dl>
+    </article>
+    <article class="ab-fb" id="fb-hold" aria-labelledby="fb-hold-h">
+      <h3 id="fb-hold-h">Scheduling hold and review</h3>
+      <div class="ab-badges"><span>Who plays: nobody new until released</span><span class="rs">Reasoning: request unchanged</span></div>
+      <dl><dt>When</dt><dd>The <a href="#signal-S">S health flag</a> fires after repeated provider failures, or a maintainer places a hold.</dd>
+        <dt>Action</dt><dd>Future games wait. The game in progress finishes, queued games keep their place, and settings, ratings and past games stay as they are.</dd>
+        <dt>Who</dt><dd>Tripwire places it automatically; a maintainer releases it.</dd>
+        <dt>Why</dt><dd class="why">To stop a failing provider handing more decisions to the default policy, without dropping the model.</dd></dl>
+    </article>
+  </div>
+
+  <h3 class="ab-rq-sub">Declared exceptions today</h3>
+  <p>House default for rated models: <code>tool_choice: {{ settings.tool_choice }}</code>, thinking {{ "on at each model's own default effort" if settings.reasoning_enabled else "off" }},
+    {{ "{:,}".format(settings.max_output_tokens) if settings.max_output_tokens else "the provider's default" }}{{ " output tokens" if settings.max_output_tokens }} per reply.
+    Automatic tool choice is not applied globally. These conditions differ, and unless a line says otherwise they request reasoning exactly as the house default does:</p>
+  {% if exceptions %}
+  <ul class="ab-exc">
+    {% for e in exceptions %}<li><a href="/models/{{ e.id }}">{{ e.name }}</a>{% if not e.enabled %} <span class="badge">retired</span>{% endif %}: {{ e.notes|join("; ") }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}<p>None at the moment.</p>{% endif %}
+  <p class="ab-rq-names">Every anthropic/* model uses automatic tool choice, set in code: in the known integration, a required tool call silently dropped the thinking Claude returned.
+    The explicit effort levels in this list were a maintainer's choice made before the health checks; under the current policy the only pre-approved change after R is
+    tool choice. Condition names describe what changed, not a choice between thinking and acting: the "(forced tools)" listings requested reasoning too, and on specific
+    hosts it did not come back. Past games are not rewritten.</p>
+  <p class="ab-rq-names">Not an exception: rate limits (HTTP 429), server errors and network failures are retried up to 4 times with back-off, with the request unchanged.</p>
+</section>
+
+<!-- 07 -->
 <section class="ab-sec" id="health" aria-labelledby="health-h" tabindex="-1">
   <div class="ab-head">
-    <div class="ab-num">06 · Health checks</div>
+    <div class="ab-num">07 · Health checks</div>
     <div>
       <h2 id="health-h">Play first. Flag automatically. Change a condition only when our request is the cause.</h2>
       <p>How the bench watches new models and settings, a policy called Tripwire.</p>
@@ -310,10 +483,10 @@
   </div>
 </section>
 
-<!-- 07 -->
+<!-- 08 -->
 <section class="ab-sec" id="fineprint" aria-labelledby="fine-h">
   <div class="ab-head">
-    <div class="ab-num">07 · Fine print</div>
+    <div class="ab-num">08 · Fine print</div>
     <div>
       <h2 id="fine-h">For researchers and the curious</h2>
       <p>Details that matter if you use the data. Open what you need.</p>
@@ -332,20 +505,6 @@
             <li>Those three now have separate "(reasoning)" conditions with automatic tool choice, opened by hand before the health checks existed. The original "(forced tools)" listings keep their games and ratings and are no longer scheduled. The two conditions of a pair are not a matched experiment: their games were differently seeded and adaptively placed.</li>
           </ol>
           <p>Automatic tool choice is not a cure. It can bring back prose-only replies, and longer thinking can run into output caps: Super VL's reasoning condition returned substantive reasoning, hit caps and still lost. Longer reasoning is not evidence of better play. The R signal now detects this kind of case for every condition from its games; it would not have stopped those rated games from being played first.</p>
-        </div>
-      </details>
-      <details class="ab-detail" id="exceptions">
-        <summary>Current inference exceptions</summary>
-        <div class="inner">
-          <p>House default for rated models: <code>tool_choice: {{ settings.tool_choice }}</code>, thinking {{ "on at each model's own default effort" if settings.reasoning_enabled else "off" }},
-            {{ "{:,}".format(settings.max_output_tokens) if settings.max_output_tokens else "the provider's default" }}{{ " output tokens" if settings.max_output_tokens }} per reply. Automatic tool choice is not applied globally. These conditions differ:</p>
-          {% if exceptions %}
-          <ul class="ab-exc">
-            {% for e in exceptions %}<li><a href="/models/{{ e.id }}">{{ e.name }}</a>{% if not e.enabled %} <span class="badge">retired</span>{% endif %}: {{ e.notes|join("; ") }}</li>
-            {% endfor %}
-          </ul>
-          {% else %}<p>None at the moment.</p>{% endif %}
-          <p>Every anthropic/* model uses automatic tool choice, set in code: forced tool calls silently drop Claude's thinking. The explicit high effort on two reasoning conditions was a maintainer's choice made before the health checks; under the current policy the only pre-approved change after R is tool choice. Past games are not rewritten.</p>
         </div>
       </details>
       <details class="ab-detail">

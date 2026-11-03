@@ -788,6 +788,134 @@ def test_about_page_explains_the_implemented_policy(seeded_app):
     assert "/bench-static/about.css" in html and "/bench-static/about.js" in html
 
 
+
+def _about_text(client):
+    html = client.get("/about").get_data(as_text=True)
+    return html, " ".join(html.split())
+
+
+def _about_js():
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    with open(os.path.join(root, "bench/static/about.js"), encoding="utf-8") as f:
+        return f.read()
+
+
+def test_about_shows_one_combined_request_with_its_reasons(seeded_app):
+    html, text = _about_text(seeded_app)
+    card = text.split('id="ab-rq"')[1].split('class="ab-rq-two"')[0]
+    # one card holds both controls of the ordinary request, as the JSON field names OpenRouter receives
+    assert "One ordinary request" in card and "Reasoning and a tool call, asked for together" in card
+    assert '"tool_choice": "required"' in card and '"reasoning": {"enabled": true}' in card and '"max_tokens": 16384' in card
+    assert card.index("Control 1 · Tool choice") < card.index("Control 2 · Reasoning")
+    assert "We request reasoning and tool use together" in text
+    # the reasons are on the page, not behind a disclosure
+    assert "used turn time without touching the game" in card and "PR #15" in card
+    assert "It is not meant to stop the model reasoning" in card
+    assert "no shared thinking-token budget" in card and "PR #34" in card
+    assert "They do not give every model the same compute" in card
+    # a tool call is not only a move, and does not promise visible thought or a legal move
+    assert "a look at the board, a chat message, a note or a game action" in card
+    assert "It does not guarantee a legal move, a good one, or any visible reasoning" in card
+    # returned reasoning is evidence read with care
+    assert "Missing readable reasoning is not proof that no internal thinking happened" in text
+    assert "a reported token count is not readable reasoning" in text
+
+
+def test_about_auto_changes_only_the_tool_requirement(seeded_app):
+    html, text = _about_text(seeded_app)
+    assert "It leaves the reasoning request as it was, and it is not a switch that turns reasoning on" in text
+    js = _about_js()
+    card = js.split('getElementById("ab-rq")')[1].split("illustrative board")[0]
+    # the reasoning line depends on the moment only, never on the tool choice
+    assert 'rl.textContent = short ?' in card and 'rl.classList.toggle("changed", short)' in card
+    assert '"unchanged: still requested"' in card
+    auto = card.split('"auto-ordinary"')[1].split("\n")[0]
+    assert "reasoning is still requested" in auto and "Only the tool-call requirement changed" in auto
+    assert "The short reply is what reduces reasoning, not auto" in card
+    # the compatibility retry and the R successor keep reasoning requested too
+    fb = text.split('id="fb-compat"')[1].split("</article>")[0]
+    assert "Reasoning: still requested, unchanged" in fb and "nothing else changed" in fb
+    assert "not a perfect detector" in fb and "HTTP 429" in fb and "never do" in fb
+    assert "(reasoning stays requested)" in text                     # the R signal's next step, from health.SIGNALS
+    assert "suppressing" not in health.SIGNALS["R"]["means"]
+
+
+def test_about_keeps_the_timing_exception_and_fallbacks_separate(seeded_app):
+    html, text = _about_text(seeded_app)
+    ids = ["fb-compat", "fb-declared", "fb-short", "fb-default", "fb-hold"]
+    for i in ids:
+        assert html.count(f'id="{i}"') == 1, i
+    arts = {i: text.split(f'id="{i}"')[1].split("</article>")[0] for i in ids}
+    assert "Reasoning: reduced on purpose" in arts["fb-short"] and "120 s" in arts["fb-short"] and "45 s" in arts["fb-short"]
+    assert "2,048 output tokens" in arts["fb-short"] and "Tool choice is unchanged" in arts["fb-short"]
+    assert "reduced" not in arts["fb-compat"] and "reduced" not in arts["fb-declared"]
+    assert "not a language model" in arts["fb-default"] and "not applicable, no model call" in arts["fb-default"]
+    assert "40 tool calls" in arts["fb-default"] and "180-minute cap" in arts["fb-default"]
+    assert "a maintainer releases it" in arts["fb-hold"] and "Future games wait" in arts["fb-hold"]
+    for i in ids:                                                   # every mechanism says who acts and why
+        assert "<dt>Who</dt>" in arts[i] and "<dt>Why</dt>" in arts[i] and "<dt>When</dt>" in arts[i], i
+    assert "None of them tunes a setting or re-rates a model automatically" in text
+    assert "Automatic tool choice is never the stand-in player" in text
+    two = text.split('class="ab-rq-two"')[1].split('class="ab-rq-evidence"')[0]
+    assert "When reasoning is reduced on purpose." in two and "separate, declared timing exception" in two
+
+
+def test_about_request_controls_are_illustrative_only(seeded_app):
+    html, text = _about_text(seeded_app)
+    card = text.split('id="ab-rq"')[1].split('class="ab-rq-two"')[0]
+    assert "Illustrative example" in card
+    assert "They do not change the benchmark's settings or any game, and this is not a live view of a request" in card
+    assert "<form" not in card and "<input" not in card
+    assert card.count('type="button" data-rq-tc=') == 2 and card.count('type="button" data-rq-moment=') == 2
+    assert 'data-rq-tc="required" aria-pressed="true"' in card and 'data-rq-moment="ordinary" aria-pressed="true"' in card
+    js = _about_js()
+    block = js.split('getElementById("ab-rq")')[1].split("illustrative board")[0]
+    assert "api(" not in block and "fetch(" not in block and "localStorage" not in block
+    assert "board" not in block and "scn" not in block                  # never touches the Tripwire board
+
+
+def test_about_has_no_universal_reason_every_reply_claim(seeded_app):
+    html, text = _about_text(seeded_app)
+    low = text.lower()
+    for bad in ["reason, then act", "in every reply", "every reply must be a tool call", "suppressing the model's reasoning",
+                "required disables", "auto enables"]:
+        assert bad not in low, bad
+    assert "<h2 id=\"turn-h\">We request reasoning and tool use together</h2>" in text
+
+
+def test_about_keeps_live_data_exceptions_and_board(seeded_app):
+    html, text = _about_text(seeded_app)
+    # the real, dynamic parts of the page
+    assert 'id="ab-health-live"' in html and 'href="/api/health"' in html
+    assert html.count('id="exceptions"') == 1 and '<a href="#exceptions">Exceptions</a>' in html
+    exc = text.split('id="exceptions"')[1].split("<!-- 07 -->")[0]
+    assert '<a href="/models/claude-test">Claude Test</a>: automatic tool choice, set in code' in exc
+    assert '<a href="/models/reasoner-reasoning">Reasoner (reasoning)</a>: tool_choice: auto; reasoning effort high' in exc
+    assert "unless a line says otherwise they request reasoning exactly as the house default does" in exc
+    # the illustrative Tripwire board, with the real thresholds
+    board = html.split('id="ab-board"')[1].split("</section>")[0]
+    assert f'data-r="{round(R["low_share"] * 100)}"' in board and 'name="scn" value="reasoning"' in board
+    assert "made-up numbers, not from real games" in board
+    for k in "RPLSH":
+        assert f'id="signal-{k}"' in html
+    for n, label in enumerate(["The game", "A turn", "Watch", "Ratings", "House rules", "Exceptions and fallbacks",
+                               "Health checks", "Fine print"], 1):
+        assert f"{n:02d} · {label}" in text, label
+
+
+def test_about_request_values_follow_the_settings(seeded_app):
+    from bench.scheduler import get_bench
+    s = get_bench().settings
+    s.update(last_chance_max_tokens=1500, reply_time_limit=90, last_chance_seconds=30, max_output_tokens=12000)
+    html, text = _about_text(seeded_app)
+    card = text.split('id="ab-rq"')[1].split('class="ab-rq-two"')[0]
+    assert '"max_tokens": 12000' in card and 'data-short-max="1500"' in card and 'data-reply="90"' in card
+    short = text.split('id="fb-short"')[1].split("</article>")[0]
+    assert "90 s" in short and "30 s" in short and "1,500 output tokens" in short
+    s.update(tool_choice="auto")                                      # no combined default: no card claiming one
+    html, text = _about_text(seeded_app)
+    assert 'id="ab-rq"' not in html and "The current house request is <code>tool_choice: auto</code>" in text
+
 def test_new_files_have_no_em_dashes():
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     for rel in ("bench/health.py", "bench/templates/about.html", "bench/static/about.css", "bench/static/about.js",

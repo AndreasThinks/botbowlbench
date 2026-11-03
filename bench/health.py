@@ -49,10 +49,11 @@ SIGNALS = {
                      f"the condition's first {_R['window']} ordinary team-turn replies came back with fewer than "
                      f"{_R['min_reasoning_tokens']} reasoning tokens, no readable or encrypted reasoning and nothing "
                      f"substantive in the reply text.",
-          "means": "On that host our own request (forced tool calls) may be suppressing the model's reasoning. It "
-                   "does not prove that the model did no internal thinking.",
-          "next": "Public flag. A maintainer may open one successor condition whose only change is automatic tool "
-                  "choice, with its own ID and placement. Nothing is changed automatically."},
+          "means": "On that host, requiring a tool call may be stopping the provider from returning reasoning, as it "
+                   "did on a few known routes. It does not prove that the model did no internal thinking.",
+          "next": "Public flag and a review. A maintainer may open one successor condition whose only change is "
+                  "automatic tool choice (reasoning stays requested), with its own ID and placement. Nothing is "
+                  "changed automatically."},
     "P": {"name": "Prose instead of tools",
           "trigger": f"More than {round(_P['rate'] * 100)}% of replies had no tool call over the latest {_P['games']} "
                      f"completed instrumented games, for the condition or for one host with at least "
