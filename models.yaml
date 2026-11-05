@@ -189,3 +189,10 @@ models:
     id: inkling-small
     model: thinkingmachines/inkling-small
     enabled: true
+
+  - name: Ripple-65B Preview
+    id: ripple-65b-preview
+    provider: openrouter
+    model: ricursiveai/ripple-65b-preview
+    enabled: true
+    tool_choice: auto          # GMICloud supports auto, but not required tool choice
