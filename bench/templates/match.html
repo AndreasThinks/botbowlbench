@@ -181,6 +181,7 @@ function renderReplayState() {
 
 function finalScore() { return `${match.away_name} ${match.away_score} – ${match.home_score} ${match.home_name}`; }
 function finalText() {
+  if (match.status === "archived") return "Archived: excluded from ratings";
   if (match.status !== "completed") return match.status;
   return match.winner === "draw" ? "Full time · draw" : `Full time · ${match.winner === "home" ? match.home_name : match.away_name} wins`;
 }
@@ -261,6 +262,7 @@ function renderCrumb() {
   else if (match.status === "queued") crumb.append(" · scheduled");
   if (match.duration) crumb.append(` · ${fmt.dur(match.duration)}`);
   if (match.error) crumb.append(h("span", { style: { color: "var(--critical)" } }, ` · error: ${match.error}`));
+  if (match.meta && match.meta.archive) crumb.append(h("span", { class: "badge", role: "note" }, `Excluded from ratings: ${match.meta.archive.reason}`));
   const links = document.getElementById("links"); links.innerHTML = "";
   if (match.has_transcript) links.append(h("a", { href: `/api/matches/${MATCH_ID}/transcript` }, "Transcript"));
   links.append(h("a", { href: "/matches" }, "All matches"));
@@ -268,7 +270,7 @@ function renderCrumb() {
 
 function renderHeader() {
   renderCrumb();
-  setBoard(match.status === "running" ? "live" : (match.status === "completed" || match.status === "error") && match.frames ? "replay" : "none");
+  setBoard(match.status === "running" ? "live" : ["completed", "error", "archived"].includes(match.status) && match.frames ? "replay" : "none");
 }
 
 function argStr(a) { return Object.entries(a || {}).filter(([, v]) => v != null).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", "); }

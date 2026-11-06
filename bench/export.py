@@ -8,7 +8,7 @@ from bench import db
 from bench.transcript import transcript_path
 
 
-def iter_matches(status: Optional[Iterable[str]] = ("completed", "error")) -> Iterator[dict]:
+def iter_matches(status: Optional[Iterable[str]] = ("completed", "error", "archived")) -> Iterator[dict]:
     names = {m["id"]: m["name"] for m in db.rows("SELECT id, name FROM models")}
     tours = {t["id"]: t for t in db.rows("SELECT id, name, kind FROM tournaments")}
     where = ""

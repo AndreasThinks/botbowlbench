@@ -282,6 +282,11 @@ class Bench:
                            (m["id"], m["name"], m["provider"], m.get("model"), json.dumps(m), enabled, now))
                 if enabled:
                     added.append(m["id"])
+        # Explicit operator opt-in, not ordinary disabling: remove failed-condition results from active standings
+        # while retaining records and files. Archive before cancellation so queued fixtures retain the reason too.
+        for m in cfg["models"]:
+            if m.get("archive_reason"):
+                db.archive_condition(m["id"], m["archive_reason"])
         # models removed from the file are disabled, not deleted (keeps their history)
         for mid in known:
             if mid not in self.models:

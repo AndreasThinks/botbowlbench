@@ -76,6 +76,8 @@ def load_models_file(path: str = None) -> Dict:
         m = dict(m)
         m.setdefault("provider", "openrouter")
         m.setdefault("enabled", True)
+        if m.get("archive_reason") and (m["enabled"] or not isinstance(m["archive_reason"], str)):
+            raise ValueError(f"Archived condition '{m['name']}' must be disabled and have a text reason")
         if m["provider"] == "openrouter" and not m.get("model"):
             raise ValueError(f"Model '{m['name']}' needs an OpenRouter 'model' id")
         if m["provider"] == "botbowl" and not m.get("bot"):
