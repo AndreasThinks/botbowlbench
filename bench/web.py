@@ -243,7 +243,8 @@ def create_app(start_scheduler: bool = True) -> Flask:
         """Archive of finished games, newest first. Filters: model, tournament, result (decisive|draw),
         admissible=1. Paginate with before=<finished_at of the last row>."""
         names = models_by_id()
-        where, args = ["status IN ('completed','error')"], []
+        archived = request.args.get("archived") in ("1", "true")
+        where, args = ["status='archived'" if archived else "status IN ('completed','error')"], []
         model = request.args.get("model")
         if model:
             where.append("(home_model=? OR away_model=?)")
@@ -277,6 +278,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
             sm["tournament_name"] = tours.get(m["tournament_id"])
             sm["admissible"] = bool(m.get("admissible")) if m.get("admissible") is not None else None
             sm["time_capped"] = bool(meta.get("time_capped"))
+            sm["archive"] = meta.get("archive")
             # Tripwire: decisions the default policy made because a provider failed (None: not measured)
             pf = meta.get("provider_fallback")
             sm["provider_fallback"] = sum(pf.values()) if isinstance(pf, dict) else None
@@ -580,7 +582,9 @@ def create_app(start_scheduler: bool = True) -> Flask:
     @app.route("/api/admin/requeue/<match_id>", methods=["POST"])
     def api_admin_requeue(match_id):
         require_admin()
-        m = db.row("SELECT status FROM matches WHERE id=?", (match_id,))
+        m = db.row("SELECT status, meta FROM matches WHERE id=?", (match_id,))
+        if m and (json.loads(m.get("meta") or "{}")).get("archive"):
+            return jsonify({"error": "archived conditions require a fresh competitor ID and placement"}), 400
         if m is None or m["status"] not in ("error", "cancelled"):
             return jsonify({"error": "only errored or cancelled matches can be requeued"}), 400
         db.execute("DELETE FROM events WHERE match_id=?", (match_id,))

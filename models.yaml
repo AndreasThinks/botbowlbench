@@ -194,5 +194,11 @@ models:
     id: ripple-65b-preview
     provider: openrouter
     model: ricursiveai/ripple-65b-preview
-    enabled: true
+    enabled: false
+    archive_reason: Serving-path failures on GMICloud; results excluded by maintainer decision pending a verified new provider condition.
+    description: >-
+      Archived serving-path failure condition. Its three completed games are excluded
+      from both sides' ratings and aggregates; seven unplayed fixtures are retired.
+      Replays and transcripts remain available under Matches with Archived only selected.
+      Any return requires a verified serving route, a new competitor ID and a fresh placement.
     tool_choice: auto          # GMICloud supports auto, but not required tool choice

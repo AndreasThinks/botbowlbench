@@ -119,6 +119,31 @@ def init(path: str):
     backfill_placements()
 
 
+def archive_condition(model_id: str, reason: str):
+    """Retire a failed condition without deleting evidence. Only explicit disabled configuration opts in.
+
+    Completed games become archived (not eligible for any active standings), queued fixtures become cancelled.
+    Original scores, stats, protocol, timestamps, replay and transcript files are retained. Repeat sync is a no-op.
+    """
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("An archive reason is required")
+    with transaction() as c:
+        if c.execute("SELECT 1 FROM matches WHERE status='running' AND (home_model=? OR away_model=?)",
+                     (model_id, model_id)).fetchone():
+            raise ValueError("Cannot archive a condition with a running game")
+        now = time.time()
+        matches = c.execute("SELECT id, status, meta FROM matches WHERE status IN ('completed','queued') "
+                            "AND (home_model=? OR away_model=?)", (model_id, model_id)).fetchall()
+        for m in matches:
+            meta = json.loads(m['meta']) if m['meta'] else {}
+            meta['archive'] = {'condition_id': model_id, 'reason': reason.strip(),
+                               'previous_status': m['status'], 'at': now}
+            status = 'archived' if m['status'] == 'completed' else 'cancelled'
+            c.execute("UPDATE matches SET status=?, meta=? WHERE id=?", (status, json.dumps(meta), m['id']))
+        c.execute("UPDATE health_holds SET status='released', released_at=?, released_by='archive', release_note=? "
+                  "WHERE model_id=? AND status='active'", (now, reason.strip()[:500], model_id))
+
+
 def backfill_placements():
     """Placements made before cohorts have no member or fixture rows: derive them (focus model, games before
     settings.placement_base are anchors, later ones top-ups). Idempotent: only touches placements without members."""
