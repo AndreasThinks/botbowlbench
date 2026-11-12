@@ -99,6 +99,19 @@ models:
   - name: Muse Wonder
     model: meta/muse-wonder
 
+  - name: Muse Ember
+    id: muse-ember
+    provider: openrouter
+    model: meta/muse-ember
+    enabled: true
+    tool_choice: auto          # Meta and Google advertise auto, but not required tool choice
+    reasoning_enabled: true
+    description: >-
+      Meta's efficient reasoning and tool-use model. Uses automatic tool choice
+      because its serving routes do not support required tool choice; reasoning
+      remains enabled at the provider's default effort. Other bench limits and
+      routing defaults are unchanged.
+
   - name: Muse Spark Open (forced tools)
     id: muse-spark-open           # preserve the original mixed-provider history
     model: meta/muse-spark-open
