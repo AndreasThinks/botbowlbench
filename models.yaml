@@ -198,6 +198,18 @@ models:
   - name: Liquid LFM2.5-24B-A2B
     model: liquid/lfm-2.5-24b-a2b
 
+  - name: Inkling 2 Small
+    id: inkling-2-small
+    provider: openrouter
+    model: thinkingmachines/inkling-2-small
+    enabled: true
+    extra:
+      provider:
+        only: [deepinfra]
+        allow_fallbacks: false
+    tool_choice: required
+    reasoning_enabled: true
+
   - name: Inkling Small
     id: inkling-small
     model: thinkingmachines/inkling-small
