@@ -212,7 +212,7 @@ def test_cohort_games_run_under_the_pinned_settings(env, monkeypatch):
     import bench.scheduler as sched
     env.settings = "game_mode: '3'\n  placement_size: 3\n"
     env.add("N1", "N2")
-    cohort = placements("queued")[0]
+    assert len(placements("queued")) == 1
     env.settings = "game_mode: '7'\n  placement_size: 3\n"
     env.sync()
     seen = {}
@@ -501,7 +501,7 @@ def test_merge_reads_and_writes_stay_in_one_transaction_until_it_fails(env, monk
 
     def merge(self, c, group):
         assert c.in_transaction
-        out = orig_merge(self, c, group)
+        orig_merge(self, c, group)
         assert c.in_transaction
         seen.append("merge")
         raise RuntimeError("crash after merge writes")

@@ -41,7 +41,8 @@ def cmd_models(args):
     from bench import config
     cfg = config.load_models_file()
     for m in cfg["models"]:
-        print(f"{m['id']:<28} {m['provider']:<10} {m.get('model') or '':<40} {'enabled' if m['enabled'] else 'disabled'}")
+        state = "enabled" if m["enabled"] else "disabled"
+        print(f"{m['id']:<28} {m['provider']:<10} {m.get('model') or '':<40} {state}")
 
 
 def cmd_play(args):
@@ -54,10 +55,12 @@ def cmd_play(args):
             sys.exit(f"Unknown model id '{mid}'. Run `python -m bench models`.")
 
     def sink(match_id, side, kind, payload):
-        if kind == "tool" and not args.verbose:
-            line = f"{payload['name']}({json.dumps(payload['args'])})" + ("" if payload["ok"] else "  [INVALID]")
-        elif kind in ("tool",):
-            line = f"{payload['name']}({json.dumps(payload['args'])}) ->\n      " + payload["result"].replace("\n", "\n      ")
+        if kind == "tool":
+            line = f"{payload['name']}({json.dumps(payload['args'])})"
+            if args.verbose:
+                line += " ->\n      " + payload["result"].replace("\n", "\n      ")
+            elif not payload["ok"]:
+                line += "  [INVALID]"
         else:
             line = payload.get("text") or json.dumps(payload)
         print(f"[{side or '-':>4}] {kind:<8} {line}", flush=True)
@@ -74,19 +77,24 @@ def main(argv=None):
     s = sub.add_parser("serve")
     s.add_argument("--port", type=int, default=8080)
     s.add_argument("--no-scheduler", action="store_true", help="only serve the UI, don't play games")
+    s.set_defaults(run=cmd_serve)
     r = sub.add_parser("round-robin")
     r.add_argument("--name")
-    sub.add_parser("models")
+    r.set_defaults(run=cmd_round_robin)
+    sub.add_parser("models").set_defaults(run=cmd_models)
     ex = sub.add_parser("export", help="dump the dataset (matches, events, transcripts) as JSON lines")
     ex.add_argument("out")
     ex.add_argument("--no-transcripts", action="store_true")
+    ex.set_defaults(run=cmd_export)
     pl = sub.add_parser("play")
     pl.add_argument("home")
     pl.add_argument("away")
     pl.add_argument("-v", "--verbose", action="store_true")
+    pl.set_defaults(run=cmd_play)
     args = p.parse_args(argv)
-    {"serve": cmd_serve, "round-robin": cmd_round_robin, "models": cmd_models, "play": cmd_play, "export": cmd_export,
-     None: cmd_serve}[args.cmd](args if args.cmd else p.parse_args(["serve"]))
+    if args.cmd is None:   # no subcommand: serve
+        args = p.parse_args(["serve"])
+    args.run(args)
 
 
 if __name__ == "__main__":

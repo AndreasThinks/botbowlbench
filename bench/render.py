@@ -152,9 +152,10 @@ def scoreboard(game, team) -> str:
             whose += " (kick-off Blitz!)"
         if turn.quick_snap:
             whose += " (Quick Snap)"
+    used = "yes" if team.state.reroll_used else "no"
     return (f"Score: you {team.state.score} - {opp.state.score} opponent | Half {game.state.half} | "
             f"Your turn #{team.state.turn}/{game.config.rounds}, opponent turn #{opp.state.turn} | {whose}\n"
-            f"Team rerolls left: you {team.state.rerolls} (used this turn: {'yes' if team.state.reroll_used else 'no'}), "
+            f"Team rerolls left: you {team.state.rerolls} (used this turn: {used}), "
             f"opponent {opp.state.rerolls} | Weather: {game.state.weather.name.replace('_', ' ').title()}")
 
 
@@ -223,14 +224,20 @@ _QUIET = {OutcomeType.PLAYER_PLACED, OutcomeType.PLAYER_READY, OutcomeType.PLAYE
           OutcomeType.END_PLAYER_TURN}
 
 
-def events_since(game, start_idx: int, limit: int = 40) -> List[str]:
+def report_lines(game, start: int, stop: Optional[int] = None) -> List[tuple]:
+    """(report, text) for each game report in [start, stop) that is worth a line."""
     out = []
-    for r in game.state.reports[start_idx:]:
+    for r in game.state.reports[start:stop]:
         if r.outcome_type in _QUIET:
             continue
         t = report_text(game, r)
         if t:
-            out.append(t)
+            out.append((r, t))
+    return out
+
+
+def events_since(game, start_idx: int, limit: int = 40) -> List[str]:
+    out = [t for _, t in report_lines(game, start_idx)]
     if len(out) > limit:
         out = [f"... ({len(out) - limit} earlier events omitted)"] + out[-limit:]
     return out
@@ -243,14 +250,11 @@ _TAGS = {OutcomeType.TOUCHDOWN: "td", OutcomeType.TURNOVER: "turnover", OutcomeT
          OutcomeType.FUMBLE: "fail", OutcomeType.INTERCEPTION: "fail"}
 
 
-def log_lines(game, start_idx: int) -> List[dict]:
-    """Game reports from start_idx on as [{"t": text, "k": tag}]; tag is "" for routine lines."""
+def spectator_lines(lines: List[tuple]) -> List[dict]:
+    """:func:`report_lines` output as [{"t": text, "k": tag}]; tag is "" for routine lines."""
     out = []
-    for r in game.state.reports[start_idx:]:
-        if r.outcome_type in _QUIET or r.outcome_type == OutcomeType.TURN_START:   # the UI draws turn headers
-            continue
-        t = report_text(game, r)
-        if not t:
+    for r, t in lines:
+        if r.outcome_type == OutcomeType.TURN_START:   # the UI draws turn headers
             continue
         tag = _TAGS.get(r.outcome_type) or ("fail" if r.outcome_type.name.startswith("FAILED_") else "")
         out.append({"t": t, "k": tag})

@@ -1,0 +1,11 @@
+# Lint settings for BotBowl Bench (bench/ and its tests). The botbowl engine keeps its upstream style.
+#   ruff check bench tests/bench
+line-length = 120
+target-version = "py311"
+include = ["bench/**/*.py", "tests/bench/**/*.py"]
+
+[lint]
+select = ["E", "F", "W"]
+
+[lint.per-file-ignores]
+"tests/bench/*" = ["E501", "E701", "E702", "E731", "E741"]

@@ -122,7 +122,9 @@ through the same MCP tools, so its games are scored like everyone else's:
   models.
 * **`render.py`** produces what the models read: an ASCII board, rosters, an event log and the legal options.
 * **`scheduler.py`** syncs `models.yaml`, creates tournaments and plays matches one after the other.
-  **`db.py`** stores everything in SQLite. **`transcript.py`** writes the full per-game record.
+  **`db.py`** stores everything in SQLite. **`transcript.py`** writes the full per-game record, and
+  **`storage.py`** the replay frames and the checkpoints interrupted games resume from. **`repairs.py`** puts games
+  back in the queue (the admin requeue, and games an outage spoiled).
 * **`web.py`** and `templates/` are the site. **`static/board.js`** draws the board (the "stadium"): a compact,
   responsive renderer of botbowl's game JSON that reuses botbowl's pitch images and player sprites. It shows the
   score, re-rolls and whose turn it is, the pitch, the dugouts and the last few game events. Live games poll the
@@ -257,6 +259,8 @@ OpenAI/DeepSeek/Gemini, enabled by the bench for Anthropic models) reduces it. `
 
 * The botbowl web UI is AngularJS. After editing `botbowl/web/static/js/*.js`, rebuild the bundle with
   `python bench/build_js.py`, which does the same as the original gulp task, without Node.
+* `ruff check bench tests/bench` lints the bench (settings in `ruff.toml`; the botbowl engine keeps its upstream
+  style). CI runs it with the bench tests.
 * `tests/bench/conftest.py` contains a fake OpenRouter server used by the tests. It returns tool calls, malformed
   arguments, text-only replies, `finish_reason=length` truncations, `reasoning_details` and usage data, so the full
   driver path is tested without spending money.

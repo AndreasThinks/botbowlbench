@@ -12,12 +12,14 @@ import time
 from flask import (Flask, Response, abort, jsonify, render_template, request, send_file, send_from_directory,
                    stream_with_context)
 
-from bench import config, db, export, model_info, ratings, version
+from bench import config, db, export, model_info, ratings, repairs, version
 from bench import health as tripwire
+from bench.scheduler import get_bench
+from bench.storage import frame_json, load_frames, load_timeline
 from bench.transcript import transcript_path
-from bench.scheduler import delete_checkpoint, frame_json, get_bench, load_frames, load_timeline
 
 BOTBOWL_WEB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "botbowl", "web")
+BENCH_STATIC = os.path.join(os.path.dirname(__file__), "static")
 
 
 def create_app(start_scheduler: bool = True) -> Flask:
@@ -32,17 +34,16 @@ def create_app(start_scheduler: bool = True) -> Flask:
 
     # ---- helpers -------------------------------------------------------------------------------
     def models_by_id():
-        out = {}
-        for m in db.rows("SELECT id, name, provider, model, enabled, added_at FROM models"):
-            out[m["id"]] = m
-        return out
+        return {m["id"]: m for m in db.rows("SELECT id, name, provider, model, enabled, added_at FROM models")}
+
+    def name_of(names, model_id):
+        return names.get(model_id, {}).get("name", model_id)
 
     def match_summary(m, names):
         m = dict(m)
         for k in ("home_stats", "away_stats"):
             m.pop(k, None)
-        m["home_name"] = names.get(m["home_model"], {}).get("name", m["home_model"])
-        m["away_name"] = names.get(m["away_model"], {}).get("name", m["away_model"])
+        m["home_name"], m["away_name"] = name_of(names, m["home_model"]), name_of(names, m["away_model"])
         return m
 
     def live_fields(runner):
@@ -66,14 +67,14 @@ def create_app(start_scheduler: bool = True) -> Flask:
         health hold."""
         who = links.get(m["id"], {})
         return {**match_summary(m, names), "top_up": "top_up" in who.values(),
-                "for_models": list(who), "for_names": [names.get(x, {}).get("name", x) for x in who],
+                "for_models": list(who), "for_names": [name_of(names, x) for x in who],
                 "held": m["home_model"] in held or m["away_model"] in held}
 
     def tbc_rows(t, names):
         """Stand in for a placement's top-up games, which aren't scheduled until a newcomer's queued games are done:
         one row per newcomer, with how many it may still add."""
         return [{"tbc": True, "tournament_id": t["id"], "games": n, "home_model": model,
-                 "home_name": names.get(model, {}).get("name", model)}
+                 "home_name": name_of(names, model)}
                 for model, n in bench.member_top_ups(t).items()]
 
     def upcoming(names, limit=12):
@@ -92,11 +93,46 @@ def create_app(start_scheduler: bool = True) -> Flask:
                 out.extend(tbc_rows(t, names))
         return out
 
-    def completed_matches(where="", args=(), all_protocols=False):
-        """Completed games for rankings: current protocol only unless ``all_protocols`` (archives keep the rest)."""
+    def completed_matches(where="", args=()):
+        """Completed games for rankings, oldest first: current protocol only (archives keep the rest)."""
         ms = db.rows(f"SELECT * FROM matches WHERE status='completed' {where} ORDER BY finished_at", args)
-        ms = [db.decode_match(m) for m in ms]
-        return ms if all_protocols else [m for m in ms if version.is_current_protocol(m)]
+        return [m for m in map(db.decode_match, ms) if version.is_current_protocol(m)]
+
+    _derived = {}
+
+    def per_results(name, compute):
+        """``compute()``, worked out again only once the set of completed games has changed (one finished, or was
+        archived or requeued)."""
+        sig = db.row("SELECT COUNT(*) AS n, MAX(finished_at) AS t FROM matches WHERE status='completed'")
+        hit = _derived.get(name)
+        if hit is None or hit[0] != (sig["n"], sig["t"]):
+            hit = _derived[name] = ((sig["n"], sig["t"]), compute())
+        return hit[1]
+
+    def rankings():
+        """Rating fit (with its history) and per-model aggregates over the current protocol's games."""
+        def compute():
+            ms = completed_matches()
+            return {"elo": ratings.compute_elo(ms), "agg": ratings.aggregate(ms), "matches": len(ms)}
+        return per_results("rankings", compute)
+
+    def leaders():
+        """tournament id -> the model on top of its table."""
+        def compute():
+            by_tournament = {}
+            for m in completed_matches():
+                by_tournament.setdefault(m["tournament_id"], []).append(m)
+            return {tid: ratings.standings(ms)[0]["model"] for tid, ms in by_tournament.items()}
+        return per_results("leaders", compute)
+
+    def recent_events(model_id, kind, limit):
+        """A model's latest events of one kind across its games, newest first, as (payload, match id, opponent id)."""
+        return [(json.loads(e["payload"]), e["match_id"], e["away_model"] if e["side"] == "home" else e["home_model"])
+                for e in db.rows(
+                    "SELECT e.payload, e.side, m.home_model, m.away_model, m.id AS match_id FROM events e "
+                    "JOIN matches m ON m.id=e.match_id WHERE e.kind=? AND "
+                    "((e.side='home' AND m.home_model=?) OR (e.side='away' AND m.away_model=?)) "
+                    "ORDER BY e.id DESC LIMIT ?", (kind, model_id, model_id, limit))]
 
     _health_cache = {}
 
@@ -124,7 +160,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
         s = bench.settings
         out = []
         for m in bench.models.values():
-            if m.get("provider", "openrouter") != "openrouter":
+            if not config.is_llm(m):
                 continue
             notes = []
             tc = m.get("tool_choice")
@@ -137,8 +173,9 @@ def create_app(start_scheduler: bool = True) -> Flask:
                 notes.append(f"reasoning effort {reasoning['effort']}")
             elif isinstance(reasoning, dict):
                 notes.append("own reasoning setting")
-            for k, label in (("reasoning_max_tokens", "thinking budget"), ("max_tokens", "output ceiling")):
-                if m.get(k) is not None and m.get(k) != s.get({"max_tokens": "max_output_tokens"}.get(k, k)):
+            for k, setting, label in (("reasoning_max_tokens", "reasoning_max_tokens", "thinking budget"),
+                                      ("max_tokens", "max_output_tokens", "output ceiling")):
+                if m.get(k) is not None and m.get(k) != s.get(setting):
                     notes.append(f"{label} {m[k]}")
             if "provider" in (m.get("extra") or {}):
                 notes.append("own provider routing")
@@ -204,12 +241,12 @@ def create_app(start_scheduler: bool = True) -> Flask:
 
     @app.route("/bench-static/<path:path>")
     def bench_static(path):
-        return send_from_directory(os.path.join(os.path.dirname(__file__), "static"), path)
+        return send_from_directory(BENCH_STATIC, path)
 
     @app.route("/favicon.ico")
     def favicon():
         # browsers and crawlers ask for /favicon.ico regardless of the <link> tags
-        return send_from_directory(os.path.join(os.path.dirname(__file__), "static"), "favicon-32.png", mimetype="image/png")
+        return send_from_directory(BENCH_STATIC, "favicon-32.png", mimetype="image/png")
 
     @app.route("/health")
     def health():
@@ -229,7 +266,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
             "SELECT * FROM matches WHERE status IN ('completed','error') ORDER BY finished_at DESC LIMIT 12")]
         counts = db.row("SELECT SUM(status='queued') AS queued, SUM(status='completed') AS completed, "
                         "SUM(status='running') AS running FROM matches")
-        holds = [{"model_id": k, "name": names.get(k, {}).get("name", k), "signal": h["signal"],
+        holds = [{"model_id": k, "name": name_of(names, k), "signal": h["signal"],
                   "placed_at": h["placed_at"]} for k, h in bench.held_models().items()]
         return jsonify({"status": bench.status, "detail": bench.status_detail, "live": live, "queued": queued,
                         "holds": holds,
@@ -382,18 +419,13 @@ def create_app(start_scheduler: bool = True) -> Flask:
     @app.route("/steps/<match_id>/<int:from_idx>/<int:num_steps>")
     def api_replay_steps(match_id, from_idx, num_steps):
         frames = load_frames(match_id)
-        num_steps = min(num_steps, 50)
-        return jsonify({i: json.loads(frame_json(frames[i])) for i in range(from_idx, min(len(frames), from_idx + num_steps))})
+        last = min(len(frames), from_idx + min(num_steps, 50))
+        return jsonify({i: json.loads(frame_json(frames[i])) for i in range(from_idx, last)})
 
     # ---- API: rankings ------------------------------------------------------------------------------
-    _elo_cache = {}
-
-    def fitted_ratings(ms):
-        """The rating fit (with its history), refitted only when a game has finished since the last call."""
-        key = (len(ms), ms[-1]["finished_at"] if ms else None)
-        if _elo_cache.get("key") != key:
-            _elo_cache.update(key=key, elo=ratings.compute_elo(ms))
-        return _elo_cache["elo"]
+    NO_GAMES = {"played": 0, "wins": 0, "draws": 0, "losses": 0, "td_for": 0, "td_against": 0, "td_diff": 0,
+                "style": {}, "sums": {}, "avg_cost": 0, "avg_tokens": 0, "win_rate": 0, "avg_latency": 0,
+                "cas_per_game": 0}
 
     def rating_range(r):
         return {"lo": r["lo"], "hi": r["hi"]} if r else None
@@ -401,9 +433,8 @@ def create_app(start_scheduler: bool = True) -> Flask:
     @app.route("/api/leaderboard")
     def api_leaderboard():
         names = models_by_id()
-        ms = completed_matches()
-        elo = fitted_ratings(ms)
-        agg = ratings.aggregate(ms)
+        ranked = rankings()
+        elo, agg = ranked["elo"], ranked["agg"]
         hl = all_health(names)
         rows = []
         for mid, info in names.items():
@@ -417,11 +448,10 @@ def create_app(start_scheduler: bool = True) -> Flask:
                          "elo_ci": rating_range(elo.get(mid)),
                          "history": elo.get(mid, {}).get("history", []),
                          "health": tripwire.compact(hl[mid]),
-                         **(a or {"played": 0, "wins": 0, "draws": 0, "losses": 0, "td_for": 0, "td_against": 0, "td_diff": 0,
-                                  "style": {}, "sums": {}, "avg_cost": 0, "avg_tokens": 0, "win_rate": 0,
-                                  "avg_latency": 0, "cas_per_game": 0})})
+                         **(a or NO_GAMES)})
         rows.sort(key=lambda r: (-r["elo"], -r["played"], r["name"]))
-        return jsonify({"models": rows, "matches": len(ms), "protocol_version": version.PROTOCOL_VERSION})
+        return jsonify({"models": rows, "matches": ranked["matches"],
+                        "protocol_version": version.PROTOCOL_VERSION})
 
     @app.route("/api/models")
     def api_models():
@@ -436,7 +466,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
         """The published Tripwire rules and every condition's current flags and holds."""
         names = models_by_id()
         hl = all_health(names)
-        holds = [{"model_id": k, "name": names.get(k, {}).get("name", k), **{x: h[x] for x in (
+        holds = [{"model_id": k, "name": name_of(names, k), **{x: h[x] for x in (
             "signal", "placed_at", "placed_by", "evidence")}} for k, h in bench.held_models().items()]
         conditions = {mid: {"name": names[mid]["name"], "enabled": bool(names[mid]["enabled"]),
                             **tripwire.compact(h)} for mid, h in hl.items()}
@@ -455,36 +485,24 @@ def create_app(start_scheduler: bool = True) -> Flask:
             abort(404)
         ms = completed_matches("AND (home_model=? OR away_model=?)", (model_id, model_id))
         agg = ratings.aggregate(ms).get(model_id)
-        fit = fitted_ratings(completed_matches()).get(model_id)
+        fit = rankings()["elo"].get(model_id)
         elo = {"elo": fit["elo"], "history": fit["history"]} if fit else {"elo": ratings.START_ELO, "history": []}
         # head to head
         h2h = {}
         for m in ms:
             side = "home" if m["home_model"] == model_id else "away"
             opp = m["away_model"] if side == "home" else m["home_model"]
-            r = h2h.setdefault(opp, {"opponent": opp, "name": names.get(opp, {}).get("name", opp),
+            r = h2h.setdefault(opp, {"opponent": opp, "name": name_of(names, opp),
                                      "wins": 0, "draws": 0, "losses": 0})
             r["wins" if m["winner"] == side else ("draws" if m["winner"] == "draw" else "losses")] += 1
         recent = [match_summary(m, names) for m in db.rows(
             "SELECT * FROM matches WHERE (home_model=? OR away_model=?) AND status IN ('completed','running','error') "
             "ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 30", (model_id, model_id))]
-        # a sample of the model's chat
-        msgs = []
-        for e in db.rows("SELECT e.payload, e.side, m.home_model, m.away_model, m.id AS match_id FROM events e "
-                         "JOIN matches m ON m.id=e.match_id WHERE e.kind='message' AND "
-                         "((e.side='home' AND m.home_model=?) OR (e.side='away' AND m.away_model=?)) "
-                         "ORDER BY e.id DESC LIMIT 25", (model_id, model_id)):
-            opp = e["away_model"] if e["side"] == "home" else e["home_model"]
-            msgs.append({"text": json.loads(e["payload"]).get("text"), "match_id": e["match_id"],
-                         "opponent": names.get(opp, {}).get("name", opp)})
-        refl = []
-        for e in db.rows("SELECT e.payload, e.side, m.home_model, m.away_model, m.id AS match_id FROM events e "
-                         "JOIN matches m ON m.id=e.match_id WHERE e.kind='reflection' AND "
-                         "((e.side='home' AND m.home_model=?) OR (e.side='away' AND m.away_model=?)) "
-                         "ORDER BY e.id DESC LIMIT 12", (model_id, model_id)):
-            opp = e["away_model"] if e["side"] == "home" else e["home_model"]
-            p = json.loads(e["payload"])
-            refl.append({**p, "match_id": e["match_id"], "opponent": names.get(opp, {}).get("name", opp)})
+        # a sample of the model's chat and of its end-of-turn plans
+        msgs = [{"text": p.get("text"), "match_id": match_id, "opponent": name_of(names, opp)}
+                for p, match_id, opp in recent_events(model_id, "message", 25)]
+        refl = [{**p, "match_id": match_id, "opponent": name_of(names, opp)}
+                for p, match_id, opp in recent_events(model_id, "reflection", 12)]
         row = db.row("SELECT config FROM models WHERE id=?", (model_id,))
         cfg = json.loads(row["config"]) if row and row["config"] else dict(info)
         h = dict(all_health(names)[model_id])
@@ -498,16 +516,19 @@ def create_app(start_scheduler: bool = True) -> Flask:
     @app.route("/api/tournaments")
     def api_tournaments():
         names = models_by_id()
+        counts = {c["tournament_id"]: c for c in db.rows(
+            "SELECT tournament_id, COUNT(*) AS total, SUM(status='completed') AS done FROM matches "
+            "GROUP BY tournament_id")}
+        cohorts = {}
+        for mem in db.rows("SELECT tournament_id, model_id FROM placement_members ORDER BY joined_at, model_id"):
+            cohorts.setdefault(mem["tournament_id"], []).append(name_of(names, mem["model_id"]))
+        leader = leaders()
         out = []
         for t in db.rows("SELECT * FROM tournaments WHERE status!='merged' ORDER BY created_at DESC, id DESC"):
-            c = db.row("SELECT COUNT(*) AS total, SUM(status='completed') AS done FROM matches WHERE tournament_id=?",
-                       (t["id"],))
-            table = ratings.standings(completed_matches("AND tournament_id=?", (t["id"],)))
-            leader = table[0]["model"] if table else None
+            c = counts.get(t["id"]) or {"total": 0, "done": 0}
             t.pop("settings", None)
-            cohort = [names.get(m["model_id"], {}).get("name", m["model_id"]) for m in bench.placement_members(t["id"])]
-            out.append({**t, "newcomers": cohort, "total": c["total"], "done": c["done"] or 0,
-                        "leader": names.get(leader, {}).get("name") if leader else None,
+            out.append({**t, "newcomers": cohorts.get(t["id"], []), "total": c["total"], "done": c["done"] or 0,
+                        "leader": names.get(leader.get(t["id"]), {}).get("name"),
                         "focus_name": names.get(t["focus_model"], {}).get("name") if t["focus_model"] else None})
         return jsonify(out)
 
@@ -520,7 +541,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
         t["settings"] = json.loads(t["settings"] or "{}")
         table = ratings.standings(completed_matches("AND tournament_id=?", (tid,)))
         for r in table:
-            r["name"] = names.get(r["model"], {}).get("name", r["model"])
+            r["name"] = name_of(names, r["model"])
         links = placement_links(tid) if t["kind"] == "placement" else {}
         matches = [with_links(m, names, links) for m in db.rows(
             "SELECT * FROM matches WHERE tournament_id=? ORDER BY seq", (tid,))]
@@ -530,7 +551,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
             progress, left = bench.placement_progress(tid), bench.member_top_ups(t)
             for mem in bench.placement_members(tid):
                 mid = mem["model_id"]
-                members.append({"model": mid, "name": names.get(mid, {}).get("name", mid),
+                members.append({"model": mid, "name": name_of(names, mid),
                                 "enabled": bool(names.get(mid, {}).get("enabled", True)),
                                 "adaptive": bool(mem["adaptive"]), "top_ups_possible": left.get(mid, 0),
                                 **{k: progress.get(mid, {}).get(k, 0) for k in (
@@ -587,12 +608,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
             return jsonify({"error": "archived conditions require a fresh competitor ID and placement"}), 400
         if m is None or m["status"] not in ("error", "cancelled"):
             return jsonify({"error": "only errored or cancelled matches can be requeued"}), 400
-        db.execute("DELETE FROM events WHERE match_id=?", (match_id,))
-        delete_checkpoint(match_id)   # a fresh game, not a resume
-        db.execute("UPDATE matches SET status='queued', started_at=NULL, finished_at=NULL, error=NULL, seed=NULL "
-                   "WHERE id=?", (match_id,))
-        db.execute("UPDATE tournaments SET status='queued', finished_at=NULL WHERE id=(SELECT tournament_id FROM "
-                   "matches WHERE id=?) AND status='completed'", (match_id,))
+        repairs.requeue_fresh([match_id])   # a fresh game, not a resume
         bench.wake()
         return jsonify({"ok": True})
 

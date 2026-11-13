@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from bench import db, ratings, render
+from bench import db, ratings, render, repairs, storage
 from bench.match import MatchRunner
 from bench.session import GameSession, fallback_action
 from bench.tools import SeatTools
@@ -387,7 +387,8 @@ def test_output_truncations_aggregate_on_leaderboard():
 
 
 def test_scheduler_round_robin_placement_and_retire(bench_env):
-    from bench.scheduler import Bench, load_frames
+    from bench.scheduler import Bench
+    from bench.storage import load_frames
     b = Bench()
     assert sorted(b.sync_models(force=True)) == ["random-baseline", "random-two", "scripted-baseline"]
     rr = db.rows("SELECT * FROM tournaments")
@@ -635,7 +636,8 @@ def test_internal_errors_are_not_blamed_on_the_model(monkeypatch):
 def test_replays_and_match_archive(bench_env):
     import zlib
     from bench.web import create_app
-    from bench.scheduler import get_bench, timeline_path
+    from bench.scheduler import get_bench
+    from bench.storage import timeline_path
     app = create_app(start_scheduler=False)
     b = get_bench()
     played = []
@@ -756,8 +758,8 @@ def test_scheduler_resumes_interrupted_match(bench_env, monkeypatch):
     assert b.play(m).get("infra_error")
     monkeypatch.setattr(sch, "save_checkpoint", real_save)
     row = db.row("SELECT * FROM matches WHERE id=?", (m["id"],))
-    assert row["status"] == "queued" and row["started_at"] and os.path.exists(sch.checkpoint_path(m["id"]))
-    cp = sch.load_checkpoint(m["id"])
+    assert row["status"] == "queued" and row["started_at"] and os.path.exists(storage.checkpoint_path(m["id"]))
+    cp = storage.load_checkpoint(m["id"])
     assert cp["key"] == saved[3] and cp["seed"] == row["seed"]
     kept_events = db.get_events(m["id"], limit=100000)
     assert kept_events
@@ -773,7 +775,7 @@ def test_scheduler_resumes_interrupted_match(bench_env, monkeypatch):
     done = db.decode_match(db.row("SELECT * FROM matches WHERE id=?", (m["id"],)))
     assert done["status"] == "completed" and done["seed"] == row["seed"]
     assert [r["checkpoint"] for r in done["meta"]["resumes"]] == [saved[3]]
-    assert not os.path.exists(sch.checkpoint_path(m["id"]))
+    assert not os.path.exists(storage.checkpoint_path(m["id"]))
     events = db.get_events(m["id"], limit=100000)
     ids = {e["id"] for e in events}
     assert all(e["id"] in ids for e in kept_events if e["id"] <= cp["last_event_id"])   # history up to the checkpoint
@@ -932,7 +934,7 @@ def test_cut_off_reply_keeps_its_streamed_thinking(monkeypatch):
 
     d = SeatDriver(s, s.home, Streamer(), "A", DriverLimits(last_chance_seconds=0), opponent_name="B")
     monkeypatch.setattr(d, "_intro", lambda dec: "situation")
-    monkeypatch.setattr(s.home, "force_episode", lambda key: None)
+    monkeypatch.setattr(s.home, "force_episode", lambda key, cause=None: None)
     anyio.run(d.play_episode, None, [], s.home.decision)
     cut = [p for k, p in events if k == "thought"]
     assert len(cut) == 1 and cut[0]["text"] == "Let me weigh the blitz on A5" and cut[0]["cut"] is True
@@ -1356,7 +1358,7 @@ def test_current_protocol_filter_defaults_missing_to_legacy():
 
 def test_leaderboard_and_placement_use_current_protocol_only(bench_env):
     from bench import version
-    from bench.scheduler import Bench, get_bench
+    from bench.scheduler import get_bench
     from bench.web import create_app
     app = create_app(start_scheduler=False)
     b = get_bench()
@@ -1562,7 +1564,7 @@ def test_turn_clock_pauses_while_a_tool_call_waits_on_the_opponent(monkeypatch):
     d = SeatDriver(s, s.home, QuickLLM(), "A", DriverLimits(turn_time_limit=1.0), opponent_name="B")
     monkeypatch.setattr(d, "_intro", lambda dec: "situation")
     forced = []
-    monkeypatch.setattr(s.home, "force_episode", lambda key: forced.append(key))
+    monkeypatch.setattr(s.home, "force_episode", lambda key, cause=None: forced.append(key))
     anyio.run(d.play_episode, WaitingClient(), [], s.home.decision)
     assert WaitingClient.calls == 4          # 1.6s of waiting on the opponent inside a 1s turn
     assert not forced and d.usage["budget_exhausted"] == 0
@@ -1909,7 +1911,7 @@ def test_games_a_content_filter_put_on_default_actions_are_requeued_on_startup(b
     for m in (done, fine):
         db.execute("UPDATE matches SET status='completed', home_score=1, away_score=0, winner='home', "
                    "finished_at=1, frames=5, admissible=0 WHERE id=?", (m["id"],))
-        sch.save_frames(m["id"], [b"x"])
+        storage.save_frames(m["id"], [b"x"])
     db.execute("UPDATE matches SET status='running', started_at=1 WHERE id=?", (live["id"],))
     filtered = {"text": "provider content filter returned an empty reply (0 tokens, Azure)"}
     for m in (done, live, fine):
@@ -1923,7 +1925,7 @@ def test_games_a_content_filter_put_on_default_actions_are_requeued_on_startup(b
     for m in (done, live):
         row = db.row("SELECT * FROM matches WHERE id=?", (m["id"],))
         assert row["status"] == "queued" and row["started_at"] is None and not db.get_events(m["id"], limit=10)
-    assert not os.path.exists(sch.frames_path(done["id"]))
+    assert not os.path.exists(storage.frames_path(done["id"]))
     assert db.row("SELECT status FROM matches WHERE id=?", (fine["id"],))["status"] == "completed"
 
 
@@ -1936,7 +1938,7 @@ def test_games_played_past_the_key_limit_are_requeued_on_startup(bench_env, monk
     for m in (bad, good):
         db.execute("UPDATE matches SET status='completed', home_score=1, away_score=0, winner='home', "
                    "finished_at=1, frames=5, admissible=0 WHERE id=?", (m["id"],))
-        sch.save_frames(m["id"], [b"x"])
+        storage.save_frames(m["id"], [b"x"])
     db.execute("UPDATE tournaments SET status='completed', finished_at=1")
     db.add_event(bad["id"], "away", "error", {"text": 'OpenRouter HTTP 403: {"error":{"message":"Key limit exceeded"'})
     db.add_event(good["id"], "away", "error", {"text": "OpenRouter HTTP 403: flagged by moderation"})
@@ -1945,7 +1947,7 @@ def test_games_played_past_the_key_limit_are_requeued_on_startup(bench_env, monk
     sch.Bench()
     row = db.row("SELECT * FROM matches WHERE id=?", (bad["id"],))
     assert row["status"] == "queued" and row["home_score"] is None and row["frames"] == 0
-    assert not db.get_events(bad["id"], limit=10) and not os.path.exists(sch.frames_path(bad["id"]))
+    assert not db.get_events(bad["id"], limit=10) and not os.path.exists(storage.frames_path(bad["id"]))
     assert db.row("SELECT status FROM tournaments WHERE id=?", (bad["tournament_id"],))["status"] == "queued"
     assert db.row("SELECT status FROM matches WHERE id=?", (good["id"],))["status"] == "completed"
 
@@ -1957,7 +1959,7 @@ def test_games_played_on_a_far_too_slow_host_are_requeued_once(bench_env, monkey
     b = sch.Bench()
     b.sync_models(force=True)
     old, replayed, other = db.rows("SELECT * FROM matches WHERE status='queued' ORDER BY seq LIMIT 3")
-    monkeypatch.setattr(sch, "SLOW_HOST_REPLAYS", (old["id"], replayed["id"]))
+    monkeypatch.setattr(repairs, "SLOW_HOST_REPLAYS", (old["id"], replayed["id"]))
     for m, stats in ((old, {"deadline_cutoffs": 32}), (replayed, {"slow_host_skips": 1}), (other, {})):
         db.execute("UPDATE matches SET status='completed', home_score=1, away_score=0, winner='home', finished_at=1, "
                    "frames=5, home_stats=?, away_stats=? WHERE id=?", (json.dumps({}), json.dumps(stats), m["id"]))
@@ -1965,3 +1967,48 @@ def test_games_played_on_a_far_too_slow_host_are_requeued_once(bench_env, monkey
     sch.Bench()
     status = {m["id"]: db.row("SELECT status FROM matches WHERE id=?", (m["id"],))["status"] for m in (old, replayed, other)}
     assert status == {old["id"]: "queued", replayed["id"]: "completed", other["id"]: "completed"}
+
+
+def test_a_frame_shows_only_the_latest_reports_of_the_game():
+    import zlib
+    runner = MatchRunner("t-frames", RANDOM, dict(RANDOM, name="Random two"), {"max_tool_calls_per_turn": 200}, seed=3)
+    assert runner.run()["error"] is None
+    game = runner.session.game
+    assert len(game.state.reports) > 60
+    frame = json.loads(zlib.decompress(runner.session.frames[-1]))
+    assert frame["state"]["reports"] == [r.to_json() for r in game.state.reports[-60:]]
+    # everything else is the engine's own picture of the game
+    full = game.to_json()
+    for key in set(full["state"]) - {"reports", "clocks"}:
+        assert frame["state"][key] == full["state"][key], key
+
+
+def test_a_replay_saved_after_someone_looked_is_served(bench_env):
+    from bench.scheduler import Bench
+    Bench()
+    assert storage.load_frames("early-bird") == []      # a spectator opens the page before kick-off
+    storage.save_frames("early-bird", [b"one", b"two"])
+    assert storage.load_frames("early-bird") == [b"one", b"two"]
+    storage.delete_match_files("early-bird")
+    assert storage.load_frames("early-bird") == []
+
+
+def test_admin_requeue_starts_the_game_afresh(bench_env, monkeypatch):
+    from bench.scheduler import get_bench
+    from bench.web import create_app
+    monkeypatch.setenv("ADMIN_TOKEN", "secret")
+    client = create_app(start_scheduler=False).test_client()
+    b = get_bench()
+    m = b.next_match()
+    storage.save_frames(m["id"], [b"x"])
+    db.add_event(m["id"], None, "error", {"text": "Match failed: boom"})
+    db.execute("UPDATE matches SET status='error', error='boom', started_at=1, finished_at=2, seed=7, home_score=1 "
+               "WHERE id=?", (m["id"],))
+    assert client.post(f"/api/admin/requeue/{m['id']}").status_code == 403
+    assert client.post(f"/api/admin/requeue/{m['id']}", headers={"Authorization": "Bearer secret"}).status_code == 200
+    row = db.row("SELECT * FROM matches WHERE id=?", (m["id"],))
+    assert row["status"] == "queued" and row["error"] is None and row["seed"] is None and row["home_score"] is None
+    assert row["started_at"] is None and not db.get_events(m["id"]) and storage.load_frames(m["id"]) == []
+    # only errored or cancelled games can be requeued
+    assert client.post(f"/api/admin/requeue/{m['id']}", headers={"Authorization": "Bearer secret"}).status_code == 400
+

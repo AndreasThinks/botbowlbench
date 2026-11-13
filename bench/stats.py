@@ -3,6 +3,8 @@ import copy
 
 from botbowl.core.table import OutcomeType, Skill
 
+from bench.tools import ACTION_TOOLS, INFO_TOOLS
+
 # outcome -> (stat name, attributed to: "player" team of report.player, "opp" team of report.opp_player, "team")
 _OUTCOME_STATS = {
     OutcomeType.TOUCHDOWN: ("touchdowns", "player"),
@@ -154,7 +156,7 @@ def side_stats(session, side: str, driver) -> dict:
     s["rerolls_available"] = team.state.rerolls_start * max(1, min(2, game.state.half)) + s.get("extra_rerolls", 0)
     s["rerolls_spent_share"] = round(s.get("rerolls_used", 0) / s["rerolls_available"], 3) \
         if s["rerolls_available"] else None
-    s.update({k: v for k, v in driver.usage.items()})
+    s.update(driver.usage)
     s["cost"] = round(s.get("cost", 0.0), 6)
     # Tripwire record (bench.health): why the default policy played, and the tool choice the game ended on (a
     # provider that refuses "required" drops the client to "auto")
@@ -178,8 +180,8 @@ def side_stats(session, side: str, driver) -> dict:
     s["turnover_causes"] = turnover_causes(game, team)
     s.update(decision_quality(session.action_log.get(side, [])))
     # monitoring rate (cf. CivBench's PMR): share of non-infrastructure calls spent looking rather than acting
-    info = sum(tool_use.get(t, 0) for t in ("get_state", "get_legal_actions", "get_player"))
-    acting = sum(tool_use.get(t, 0) for t in ("move", "block", "blitz", "pass_ball", "handoff", "foul", "take_action"))
+    info = sum(tool_use.get(t, 0) for t in INFO_TOOLS)
+    acting = sum(tool_use.get(t, 0) for t in ACTION_TOOLS)
     s["monitoring_rate"] = round(info / (info + acting), 3) if info + acting else 0.0
     s["cache_hit_rate"] = round(s.get("cached_tokens", 0) / s["prompt_tokens"], 3) if s.get("prompt_tokens") else None
     s["model_unavailable"] = bool(getattr(driver, "unavailable", False))

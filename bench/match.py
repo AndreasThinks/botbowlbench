@@ -5,22 +5,27 @@ import time
 from typing import Callable, Optional
 
 from bench import health, model_info, version
-from bench.transcript import Transcript
 from bench.driver import DriverLimits, SeatDriver
 from bench.llm import BotbowlAgentPolicy, OpenRouterLLM, RandomPolicy, ScriptedPolicy
 from bench.session import GameSession
 from bench.stats import side_stats
+from bench.transcript import Transcript
+
+# Per-model keys that default to a shared setting (model key -> settings key): the same output ceiling, thinking
+# setting, tool_choice and host routing for everyone, unless a model sets its own value (or null).
+SHARED_SETTINGS = {"max_tokens": "max_output_tokens",
+                   **{k: k for k in ("reasoning_max_tokens", "reasoning_enabled", "stream", "tool_choice",
+                                     "last_chance_max_tokens", "provider_sort", "provider_max_price_factor",
+                                     "provider_min_throughput")}}
 
 
 def make_llm(model_cfg: dict, seat, api_key: Optional[str]):
     provider = model_cfg.get("provider", "openrouter")
-    if provider == "random":
-        return RandomPolicy(seat, seed=model_cfg.get("seed"), delay=float(model_cfg.get("delay", 0)))
-    if provider == "scripted":
-        return ScriptedPolicy(seat, seed=model_cfg.get("seed"), delay=float(model_cfg.get("delay", 0)))
-    if provider == "botbowl":
-        return BotbowlAgentPolicy(seat, model_cfg["bot"], module=model_cfg.get("module"), seed=model_cfg.get("seed"),
-                                  delay=float(model_cfg.get("delay", 0)))
+    if provider in ("random", "scripted", "botbowl"):
+        baseline = {"seed": model_cfg.get("seed"), "delay": float(model_cfg.get("delay", 0))}
+        if provider == "botbowl":
+            return BotbowlAgentPolicy(seat, model_cfg["bot"], module=model_cfg.get("module"), **baseline)
+        return (RandomPolicy if provider == "random" else ScriptedPolicy)(seat, **baseline)
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set")
     llm = OpenRouterLLM(model_cfg["model"], api_key,
@@ -75,17 +80,19 @@ def describe_checkpoint(key: Optional[str], names: dict) -> str:
 
 
 def limits_for(model_cfg: dict, settings: dict) -> DriverLimits:
+    def own_or_shared(key, default=None):
+        return model_cfg.get(key, settings.get(key, default))
+
     # truncation streak defaults to the same cap as illegal moves unless set explicitly
     max_illegal = int(settings.get("max_illegal_streak", 3))
-    max_trunc = int(settings.get("max_truncation_streak", max_illegal))
     return DriverLimits(
-        max_tool_calls_per_turn=int(model_cfg.get("max_tool_calls_per_turn", settings.get("max_tool_calls_per_turn", 40))),
-        turn_time_limit=float(model_cfg.get("turn_time_limit", settings.get("turn_time_limit", 300))),
-        last_chance_seconds=float(model_cfg.get("last_chance_seconds", settings.get("last_chance_seconds", 0)) or 0),
-        reply_time_limit=float(model_cfg.get("reply_time_limit", settings.get("reply_time_limit", 0)) or 0),
+        max_tool_calls_per_turn=int(own_or_shared("max_tool_calls_per_turn", 40)),
+        turn_time_limit=float(own_or_shared("turn_time_limit", 300)),
+        last_chance_seconds=float(own_or_shared("last_chance_seconds", 0) or 0),
+        reply_time_limit=float(own_or_shared("reply_time_limit", 0) or 0),
         max_illegal_streak=max_illegal,
-        max_truncation_streak=max_trunc,
-        budget_usd=model_cfg.get("budget_usd_per_game", settings.get("budget_usd_per_game")),
+        max_truncation_streak=int(settings.get("max_truncation_streak", max_illegal)),
+        budget_usd=own_or_shared("budget_usd_per_game"),
     )
 
 
@@ -124,15 +131,8 @@ class MatchRunner:
             seat = self.session.seat(side)
             cfg = dict(cfg)
             cfg.setdefault("seed", self.seed + i)   # baselines are reproducible from the match seed
-            # the same output ceiling, thinking setting and tool_choice for everyone; a model's own value (or null) wins
-            for key, setting in (("max_tokens", "max_output_tokens"), ("reasoning_max_tokens", "reasoning_max_tokens"),
-                                 ("reasoning_enabled", "reasoning_enabled"), ("stream", "stream"),
-                                 ("tool_choice", "tool_choice"), ("last_chance_max_tokens", "last_chance_max_tokens"),
-                                 ("provider_sort", "provider_sort"),
-                                 ("provider_max_price_factor", "provider_max_price_factor"),
-                                 ("provider_min_throughput", "provider_min_throughput")):
-                if key not in cfg:
-                    cfg[key] = settings.get(setting)
+            for key, setting in SHARED_SETTINGS.items():
+                cfg.setdefault(key, settings.get(setting))
             llm = make_llm(cfg, seat, api_key)
             opp = away_cfg if side == "home" else home_cfg
             self.drivers[side] = SeatDriver(self.session, seat, llm, cfg["name"], limits_for(cfg, settings),
@@ -249,12 +249,7 @@ class MatchRunner:
             "messages": list(self.session.messages),
             "reflections": list(self.session.reflections),
         }
-        winner = "draw"
-        if home_score > away_score:
-            winner = "home"
-        elif away_score > home_score:
-            winner = "away"
-        result["winner"] = winner
+        result["winner"] = "home" if home_score > away_score else "away" if away_score > home_score else "draw"
         # admissibility (cf. CivBench): natural conclusion under the pinned protocol with complete logs
         reasons = []
         if self.session.error:
