@@ -58,6 +58,11 @@ def models_path() -> str:
     return os.environ.get("MODELS_CONFIG") or os.path.join(os.path.dirname(os.path.dirname(__file__)), "models.yaml")
 
 
+def is_llm(model_cfg: dict) -> bool:
+    """A model served through OpenRouter, as opposed to an offline baseline (random, scripted, a botbowl bot)."""
+    return model_cfg.get("provider", "openrouter") == "openrouter"
+
+
 def slugify(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 

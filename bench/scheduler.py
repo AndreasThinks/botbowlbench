@@ -14,144 +14,18 @@ after the other in a background thread.
   the others and starts none involving it until an admin releases the hold. Unlike enabled: false, nothing is cancelled.
 * Admins can also queue a fresh full round robin from the web API or CLI.
 """
-import itertools
 import json
 import os
-import pickle
-import struct
 import threading
 import time
 import traceback
 import uuid
-import zlib
 from typing import Dict, List, Optional
 
-from bench import config, db, health, ratings, version
-from bench.match import CHECKPOINT_VERSION, MatchRunner
-from bench.session import timeline_point
-from bench.transcript import transcript_path
-
-
-# ---- frame storage (for replays) ------------------------------------------------------------------
-def frames_path(match_id: str) -> str:
-    d = os.path.join(config.data_dir(), "frames")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, f"{match_id}.frames")
-
-
-def save_frames(match_id: str, frames: List[bytes], timeline: Optional[List[dict]] = None):
-    tmp = frames_path(match_id) + ".tmp"
-    with open(tmp, "wb") as f:
-        for fr in frames:
-            f.write(struct.pack("<I", len(fr)))
-            f.write(fr)
-    os.replace(tmp, frames_path(match_id))
-    if timeline is not None and len(timeline) == len(frames):
-        _write_timeline(match_id, timeline)
-
-
-def timeline_path(match_id: str) -> str:
-    return frames_path(match_id)[:-len(".frames")] + ".timeline.json"
-
-
-def _write_timeline(match_id: str, timeline: List[dict]):
-    tmp = timeline_path(match_id) + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(timeline, f, separators=(",", ":"))
-    os.replace(tmp, timeline_path(match_id))
-
-
-def load_timeline(match_id: str) -> List[dict]:
-    """Per-frame index for the replay scrubber. Rebuilt (once) from the frames for games recorded before
-    timelines existed; those frames have no timestamps (ts=None)."""
-    path = timeline_path(match_id)
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    frames = load_frames(match_id)
-    if not frames:
-        return []
-    timeline = []
-    for blob in frames:
-        data = json.loads(frame_json(blob))
-        timeline.append(timeline_point(data, (data.get("bench") or {}).get("ts")))
-    _write_timeline(match_id, timeline)
-    return timeline
-
-
-_frame_cache: Dict[str, List[bytes]] = {}
-
-
-def load_frames(match_id: str) -> List[bytes]:
-    if match_id in _frame_cache:
-        return _frame_cache[match_id]
-    path = frames_path(match_id)
-    frames = []
-    if os.path.exists(path):
-        with open(path, "rb") as f:
-            data = f.read()
-        i = 0
-        while i + 4 <= len(data):
-            (n,) = struct.unpack_from("<I", data, i)
-            frames.append(data[i + 4:i + 4 + n])
-            i += 4 + n
-    if len(_frame_cache) > 8:
-        _frame_cache.pop(next(iter(_frame_cache)))
-    _frame_cache[match_id] = frames
-    return frames
-
-
-def frame_json(blob: bytes) -> str:
-    return zlib.decompress(blob).decode("utf-8")
-
-
-# ---- checkpoints (resume a game interrupted by a restart/redeploy) ----------------------------------
-def checkpoint_path(match_id: str) -> str:
-    d = os.path.join(config.data_dir(), "checkpoints")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, f"{match_id}.ckpt")
-
-
-def save_checkpoint(match_id: str, state: dict):
-    row = db.row("SELECT MAX(id) AS n FROM events WHERE match_id=?", (match_id,))
-    state["last_event_id"] = (row and row["n"]) or 0
-    tmp = checkpoint_path(match_id) + ".tmp"
-    with open(tmp, "wb") as f:
-        pickle.dump(state, f, protocol=pickle.HIGHEST_PROTOCOL)
-    os.replace(tmp, checkpoint_path(match_id))
-
-
-def load_checkpoint(match_id: str) -> Optional[dict]:
-    """The match's checkpoint, or None if there is none or it can't be resumed under the current protocol
-    (a game must be played under one set of rules and prompts; otherwise it restarts from kick-off)."""
-    path = checkpoint_path(match_id)
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, "rb") as f:
-            cp = pickle.load(f)
-    except Exception as e:
-        print(f"checkpoint {match_id}: unreadable ({type(e).__name__}: {e}), restarting the game")
-        return None
-    current = (CHECKPOINT_VERSION, version.PROTOCOL_VERSION, version.prompt_fingerprint())
-    saved = (cp.get("version"), cp.get("protocol_version"), cp.get("prompt_fingerprint"))
-    if saved != current:
-        print(f"checkpoint {match_id}: made under {saved}, now {current}; restarting the game")
-        return None
-    return cp
-
-
-def delete_checkpoint(match_id: str):
-    for path in (checkpoint_path(match_id), checkpoint_path(match_id) + ".tmp"):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-
-
-# games a seat played entirely on a host far below the minimum speed (see _replay_key_limit_matches)
-SLOW_HOST_REPLAYS = ("f52d7abe-aeb9-4724-9192-19135a01ca55",   # Claude Haiku 5.5 1-0 DeepSeek V4.1 Flash
-                     "d8c2fe72-f6aa-4366-ad60-08c96e324b90")   # DeepSeek V3.2 1-0 DeepSeek V4.1 Flash
+from bench import config, db, health, ratings, repairs, version
+from bench.match import MatchRunner
+from bench.storage import (checkpoint_path, delete_checkpoint, frame_json, load_checkpoint, load_frames,
+                           prune_checkpoints, save_checkpoint, save_frames)
 
 
 class Bench:
@@ -179,57 +53,8 @@ class Bench:
         """Matches interrupted by a restart/redeploy go back to the front of the queue; :meth:`play` resumes them
         from their last checkpoint (the start of the latest team turn)."""
         db.execute("UPDATE matches SET status='queued' WHERE status='running'")
-        self._replay_key_limit_matches()
-        queued = {r["id"] for r in db.rows("SELECT id FROM matches WHERE status='queued'")}
-        for name in os.listdir(os.path.dirname(checkpoint_path("x"))):
-            if name.split(".")[0] not in queued:
-                delete_checkpoint(name.split(".")[0])
-
-    @staticmethod
-    def _replay_key_limit_matches():
-        """Before a 403 "Key limit exceeded" counted as an infra error, hitting the OpenRouter key's spending limit
-        marked both models unavailable and the game was played out on default actions. Those games say nothing
-        about the models: put them back in the queue as fresh games. A no-op once they have been replayed."""
-        rows = db.rows("SELECT DISTINCT m.id FROM matches m JOIN events e ON e.match_id=m.id "
-                       "WHERE m.status='completed' AND e.kind='error' AND e.payload LIKE '%Key limit exceeded%'")
-        Bench._requeue_fresh([r["id"] for r in rows])
-        if rows:
-            print(f"requeued {len(rows)} games played after the OpenRouter key limit was hit", flush=True)
-        # Likewise games where one host's content filter answered every retry with an empty reply until the model
-        # was marked unavailable (Opus 5.5 pinned to Azure, before filtering hosts were skipped). An interrupted
-        # game (queued again after a restart) starts over too, rather than resuming with the model unavailable.
-        rows = db.rows("SELECT DISTINCT m.id FROM matches m JOIN events e ON e.match_id=m.id "
-                       "JOIN events u ON u.match_id=m.id AND u.side=e.side "
-                       "WHERE m.status IN ('completed', 'queued') AND e.kind='error' "
-                       "AND e.payload LIKE '%provider content filter returned an empty reply%' "
-                       "AND u.kind='system' AND u.payload LIKE '%Model unavailable%'")
-        Bench._requeue_fresh([r["id"] for r in rows])
-        if rows:
-            print(f"requeued {len(rows)} games a provider content filter put on default actions", flush=True)
-        # And games where a seat was stuck for the whole game on a host answering at ~20 tokens/s, before such
-        # hosts were skipped (DeepSeek V4.1 Flash on OpenInference: 32 deadline cutoffs a game). Found by checking
-        # every game's transcript for 2026-10-14; a replayed game records slow_host_skips, so this runs once.
-        rows = [r for r in db.rows("SELECT id, home_stats, away_stats FROM matches WHERE status='completed' AND id IN "
-                                   f"({','.join('?' * len(SLOW_HOST_REPLAYS))})", tuple(SLOW_HOST_REPLAYS))
-                if "slow_host_skips" not in (r["home_stats"] or "") + (r["away_stats"] or "")]
-        Bench._requeue_fresh([r["id"] for r in rows])
-        if rows:
-            print(f"requeued {len(rows)} games played on a host far below the minimum speed", flush=True)
-
-    @staticmethod
-    def _requeue_fresh(ids):
-        """Put games back in the queue as if they had never been played."""
-        for mid in ids:
-            db.execute("DELETE FROM events WHERE match_id=?", (mid,))
-            delete_checkpoint(mid)
-            for path in (frames_path(mid), timeline_path(mid), transcript_path(mid), transcript_path(mid) + ".partial"):
-                if os.path.exists(path):
-                    os.remove(path)
-            db.execute("UPDATE matches SET status='queued', started_at=NULL, finished_at=NULL, error=NULL, seed=NULL, "
-                       "home_score=NULL, away_score=NULL, winner=NULL, home_stats=NULL, away_stats=NULL, "
-                       "duration=NULL, frames=0, meta=NULL, admissible=NULL WHERE id=?", (mid,))
-            db.execute("UPDATE tournaments SET status='queued', finished_at=NULL WHERE id=(SELECT tournament_id FROM "
-                       "matches WHERE id=?) AND status='completed'", (mid,))
+        repairs.replay_spoiled_games()
+        prune_checkpoints(keep={r["id"] for r in db.rows("SELECT id FROM matches WHERE status='queued'")})
 
     def start(self):
         self.thread = threading.Thread(target=self._loop, name="scheduler", daemon=True)
@@ -291,12 +116,11 @@ class Bench:
         for mid in known:
             if mid not in self.models:
                 db.execute("UPDATE models SET enabled=0 WHERE id=?", (mid,))
-        enabled_ids = [r["id"] for r in db.rows("SELECT id FROM models WHERE enabled=1 ORDER BY added_at, id")]
+        enabled_ids = self._enabled_ids()
         # cancel queued matches involving disabled models
-        db.execute(f"UPDATE matches SET status='cancelled' WHERE status='queued' AND "
-                   f"(home_model NOT IN ({','.join('?' * len(enabled_ids)) or 'NULL'}) OR "
-                   f"away_model NOT IN ({','.join('?' * len(enabled_ids)) or 'NULL'}))",
-                   tuple(enabled_ids) * 2)
+        marks = ",".join("?" * len(enabled_ids)) or "NULL"
+        db.execute("UPDATE matches SET status='cancelled' WHERE status='queued' AND "
+                   f"(home_model NOT IN ({marks}) OR away_model NOT IN ({marks}))", tuple(enabled_ids) * 2)
         if first_run:
             if len(enabled_ids) >= 2:
                 self.create_round_robin(enabled_ids, name="Opening tournament")
@@ -310,15 +134,19 @@ class Bench:
         self._finish_tournaments()
         return added
 
+    @staticmethod
+    def _enabled_ids() -> List[str]:
+        return [r["id"] for r in db.rows("SELECT id FROM models WHERE enabled=1 ORDER BY added_at, id")]
+
     # ---- tournament creation -------------------------------------------------------------------------
+    def _two_legs(self) -> bool:
+        return int(self.settings.get("legs", 2)) >= 2
+
     def _pairings(self, pairs):
-        legs = int(self.settings.get("legs", 2))
-        out = []
-        for a, b in pairs:
-            out.append((a, b))
-            if legs >= 2:
-                out.append((b, a))
-        return out
+        """Each pairing, followed at once by its return leg when games are played home and away."""
+        if not self._two_legs():
+            return list(pairs)
+        return [fixture for a, b in pairs for fixture in ((a, b), (b, a))]
 
     def _create(self, kind: str, name: str, fixtures, focus: Optional[str] = None, extra: Optional[dict] = None) -> int:
         with db.transaction() as c:
@@ -347,15 +175,13 @@ class Bench:
 
     def create_round_robin(self, model_ids: Optional[List[str]] = None, name: Optional[str] = None) -> int:
         if model_ids is None:
-            model_ids = [r["id"] for r in db.rows("SELECT id FROM models WHERE enabled=1 ORDER BY added_at, id")]
+            model_ids = self._enabled_ids()
         if len(model_ids) < 2:
             raise ValueError("Need at least two enabled models for a tournament")
-        # interleave fixtures so no model plays many games in a row
-        pairs = list(itertools.combinations(model_ids, 2))
-        first_legs = self._round_robin_order(model_ids) if len(model_ids) > 2 else pairs
-        fixtures = [(a, b) for a, b in first_legs]
-        if int(self.settings.get("legs", 2)) >= 2:
-            fixtures += [(b, a) for a, b in first_legs]
+        # interleave fixtures so no model plays many games in a row; all first legs, then all return legs
+        fixtures = self._round_robin_order(model_ids)
+        if self._two_legs():
+            fixtures += [(b, a) for a, b in fixtures]
         count = db.row("SELECT COUNT(*) AS n FROM tournaments WHERE kind='round_robin'")["n"]
         return self._create("round_robin", name or f"Round robin #{count + 1}", fixtures)
 
@@ -409,13 +235,19 @@ class Bench:
         with db.transaction() as c:
             tid, ids = self._insert_tournament(c, "placement", f"Placement: {name}", fixtures, focus=model_id)
             c.execute("INSERT INTO placement_members(tournament_id, model_id, joined_at, adaptive, extra_games, "
-                      "target_range) VALUES(?,?,?,?,?,?)",
-                      (tid, model_id, time.time(), 1, int(self.settings.get("placement_extra_games", 6)),
-                       float(self.settings.get("placement_target_range", 300))))
+                      "target_range) VALUES(?,?,?,?,?,?)", (tid, model_id, time.time(), 1, *self._top_up_rule()))
             for mid in ids:
                 c.execute("INSERT INTO placement_fixtures(match_id, model_id, role) VALUES(?,?,'anchor')", (mid, model_id))
         self.wake()
         return tid
+
+    def _top_up_rule(self, member: Optional[dict] = None) -> tuple:
+        """(most top-up games, rating range to stop at) for a newcomer: what was frozen when it joined, else (new
+        newcomers, and placements made before cohorts) the live settings."""
+        member = member or {}
+        extra, target = member.get("extra_games"), member.get("target_range")
+        return (int(self.settings.get("placement_extra_games", 6) if extra is None else extra),
+                float(self.settings.get("placement_target_range", 300) if target is None else target))
 
     # ---- placement cohorts -------------------------------------------------------------------------------
     @staticmethod
@@ -500,9 +332,9 @@ class Bench:
         # budgets of placements made before cohorts followed the live settings: freeze them with the merge
         for mem in members:
             if mem["adaptive"] and mem["extra_games"] is None:
-                c.execute("UPDATE placement_members SET extra_games=?, target_range=? WHERE tournament_id=? AND model_id=?",
-                          (int(self.settings.get("placement_extra_games", 6)),
-                           float(self.settings.get("placement_target_range", 300)), mem["tournament_id"], mem["model_id"]))
+                c.execute("UPDATE placement_members SET extra_games=?, target_range=? "
+                          "WHERE tournament_id=? AND model_id=?",
+                          (*self._top_up_rule(), mem["tournament_id"], mem["model_id"]))
         queued = {r["id"]: dict(r) for r in c.execute(
             f"SELECT * FROM matches WHERE tournament_id IN ({marks}) AND status='queued'", ids).fetchall()}
         # one surviving game per directed fixture; the cohort's own games win so their ids and order are kept
@@ -578,10 +410,6 @@ class Bench:
                 p["active"] += r["n"]
         return out
 
-    def _member_budget(self, member: dict) -> int:
-        extra = member["extra_games"] if member["extra_games"] is not None else self.settings.get("placement_extra_games", 6)
-        return int(extra)
-
     def member_top_ups(self, t: dict) -> Dict[str, int]:
         """How many top-up games each newcomer of a placement may still add. They aren't scheduled yet: the opponents
         are picked once its queued games are done, and they are skipped if its rating is already settled."""
@@ -589,12 +417,13 @@ class Bench:
             return {}
         progress = self.placement_progress(t["id"])
         out = {}
+        enabled = set(self._enabled_ids())
         for mem in self.placement_members(t["id"]):
-            if not mem["adaptive"] or not db.row("SELECT 1 AS ok FROM models WHERE id=? AND enabled=1", (mem["model_id"],)):
+            if not mem["adaptive"] or mem["model_id"] not in enabled:
                 continue
-            used = progress.get(mem["model_id"], {}).get("top_up_scheduled", 0)
-            if self._member_budget(mem) - used > 0:
-                out[mem["model_id"]] = self._member_budget(mem) - used
+            left = self._top_up_rule(mem)[0] - progress.get(mem["model_id"], {}).get("top_up_scheduled", 0)
+            if left > 0:
+                out[mem["model_id"]] = left
         return out
 
     def possible_top_ups(self, t: dict) -> int:
@@ -609,7 +438,7 @@ class Bench:
         if not left:
             return False
         progress = self.placement_progress(t["id"])
-        enabled = [r["id"] for r in db.rows("SELECT id FROM models WHERE enabled=1")]
+        enabled = self._enabled_ids()
         rated = None
         wanted: Dict[str, list] = {}
         for mem in self.placement_members(t["id"]):
@@ -618,8 +447,7 @@ class Bench:
                 continue
             rated = rated if rated is not None else self._current_ratings()
             me = rated.get(focus)
-            target = mem["target_range"] if mem["target_range"] is not None else self.settings.get("placement_target_range", 300)
-            if me is None or me["hi"] - me["lo"] <= float(target):
+            if me is None or me["hi"] - me["lo"] <= self._top_up_rule(mem)[1]:
                 continue
             games = {}
             for r in db.rows("SELECT home_model, away_model, meta FROM matches WHERE status='completed' AND "
@@ -704,18 +532,21 @@ class Bench:
         self.wake()
         return n > 0
 
+    @staticmethod
+    def _completed_games(model_id: str) -> List[dict]:
+        return [db.decode_match(m) for m in db.rows(
+            "SELECT * FROM matches WHERE status='completed' AND (home_model=? OR away_model=?)",
+            (model_id, model_id))]
+
     def condition_health(self, model_id: str, matches: Optional[List[dict]] = None,
                          holds: Optional[Dict[str, dict]] = None) -> dict:
         """The Tripwire signals of one condition from its completed games (any protocol: they describe the route,
         not the rating)."""
         if matches is None:
-            matches = [db.decode_match(m) for m in db.rows(
-                "SELECT * FROM matches WHERE status='completed' AND (home_model=? OR away_model=?)",
-                (model_id, model_id))]
+            matches = self._completed_games(model_id)
         holds = self.held_models() if holds is None else holds
         return health.condition_health(health.games_for(model_id, matches), model_id=model_id,
-                                       llm=self._model_cfg(model_id).get("provider", "openrouter") == "openrouter",
-                                       hold=holds.get(model_id))
+                                       llm=config.is_llm(self._model_cfg(model_id)), hold=holds.get(model_id))
 
     def check_health_holds(self, model_ids: List[str]) -> List[str]:
         """After a game: hold any of these LLM conditions whose S signal fires on instrumented games finished since
@@ -723,12 +554,10 @@ class Bench:
         placed = []
         held = self.held_models()
         for mid in dict.fromkeys(model_ids):
-            if mid in held or self._model_cfg(mid).get("provider", "openrouter") != "openrouter":
+            if mid in held or not config.is_llm(self._model_cfg(mid)):
                 continue
             last = db.row("SELECT MAX(released_at) AS t FROM health_holds WHERE model_id=?", (mid,))["t"]
-            matches = [db.decode_match(m) for m in db.rows(
-                "SELECT * FROM matches WHERE status='completed' AND (home_model=? OR away_model=?)", (mid, mid))]
-            evidence = health.s_hold_evidence(health.games_for(mid, matches), since=last)
+            evidence = health.s_hold_evidence(health.games_for(mid, self._completed_games(mid)), since=last)
             if evidence and self.place_hold(mid, signal="S", placed_by="auto", evidence=evidence):
                 print(f"health hold on {mid}: provider-caused substituted play in {len(evidence['games'])} of the "
                       f"latest {len(evidence['window'])} games", flush=True)
@@ -794,11 +623,7 @@ class Bench:
             self._wake.clear()
 
     def _needs_key(self, m) -> bool:
-        for mid in (m["home_model"], m["away_model"]):
-            cfg = self._model_cfg(mid)
-            if cfg.get("provider", "openrouter") == "openrouter":
-                return True
-        return False
+        return any(config.is_llm(self._model_cfg(mid)) for mid in (m["home_model"], m["away_model"]))
 
     def _model_cfg(self, model_id: str) -> dict:
         if model_id in self.models:
@@ -872,7 +697,7 @@ class Bench:
         the seed of the interrupted attempt, if any)."""
         match_id = m["id"]
         kwargs = dict(api_key=os.environ.get("OPENROUTER_API_KEY"),
-                      event_sink=lambda mid, side, kind, payload: db.add_event(mid, side, kind, payload),
+                      event_sink=db.add_event,
                       transcript=True, restarted=restarted,
                       checkpoint_sink=lambda state: save_checkpoint(match_id, state))
         cp = load_checkpoint(match_id)

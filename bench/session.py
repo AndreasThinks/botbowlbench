@@ -13,7 +13,6 @@ import random
 import threading
 import time
 import traceback
-import uuid
 import zlib
 from collections import Counter
 from dataclasses import dataclass
@@ -24,6 +23,9 @@ from botbowl.core.load import load_config, load_rule_set, load_team_by_filename
 from botbowl.core.model import Action, Agent
 from botbowl.core.procedure import Block, Reroll, Setup
 from botbowl.core.table import ActionType, OutcomeType
+
+from bench import render
+from bench.transcript import NullTranscript
 
 
 @dataclass
@@ -264,7 +266,6 @@ class GameSession:
         self.time_capped = False
         self.harness_errors: List[str] = []
         self.seed = seed
-        from bench.transcript import NullTranscript
         self.transcript = NullTranscript()
         self.frames: List[bytes] = []
         self.timeline: List[dict] = []   # one point per frame: time, half, turns, score, side to move
@@ -272,8 +273,6 @@ class GameSession:
         self.snapshot_seq = 0
         self.log_cursor = 0   # game reports already sent to the spectator play log
         self.log_point = None  # timeline point of the previous snapshot: the turn those reports belong to
-        self.started_at = time.time()
-        self.ended_at = None
         self.checkpoint_hook: Optional[Callable[[str], None]] = None   # called at the start of every team turn
         self.last_checkpoint_key: Optional[str] = None   # "<side>:<episode key>" (both teams have a turn-1-1)
         self.resumed = False
@@ -321,7 +320,6 @@ class GameSession:
             self.error = f"{type(e).__name__}: {e}"
             traceback.print_exc()
         finally:
-            self.ended_at = time.time()
             self._snapshot()
             self.finished = True
             for seat in (self.home, self.away):
@@ -411,23 +409,22 @@ class GameSession:
 
     def _snapshot(self, scorer=None):
         try:
-            data = self.game.to_json()
+            reports = self.game.state.reports
+            # the board only shows the latest reports: don't serialise the whole game's worth on every frame
+            data = self.game.to_json(ignore_reports=True)
+            data["state"]["reports"] = [r.to_json() for r in reports[-60:]]
             if scorer is not None:
                 key = "home_team" if scorer == self.game.state.home_team else "away_team"
                 data["state"][key]["state"]["score"] += 1
-            reports = data["state"]["reports"]
-            if len(reports) > 60:
-                data["state"]["reports"] = reports[-60:]
             now = time.time()
-            from bench.render import events_since, log_lines
-            reports = self.game.state.reports
             # every line since the previous frame (so a long run keeps all its dice), and at least the last 6
-            new = len(events_since(self.game, self.log_cursor, limit=1000))
-            log = events_since(self.game, max(0, min(self.log_cursor, len(reports) - 40)), limit=1000)[-min(60, max(6, new)):]
+            new = render.report_lines(self.game, self.log_cursor)
+            older = render.report_lines(self.game, max(0, min(self.log_cursor, len(reports) - 40)), self.log_cursor)
+            log = [text for _, text in older + new][-min(60, max(6, len(new))):]
             data["bench"] = {"match_id": self.match_id, "finished": self.finished, "ts": round(now, 3), "log": log}
             js = json.dumps(data)
             point = timeline_point(data, now)
-            lines = log_lines(self.game, self.log_cursor)
+            lines = render.spectator_lines(new)
             self.log_cursor = len(reports)
         except Exception:
             traceback.print_exc()
@@ -470,9 +467,6 @@ class GameSession:
         return "Message delivered to your opponent."
 
     # ---- research records ------------------------------------------------------------------------
-    def current_turn_key(self, seat: Seat) -> str:
-        return f"{self.game.state.half}-{seat.team.state.turn}" if seat.team else "-"
-
     def record_reflection(self, seat: Seat, plan: str, prediction: str, trigger: str):
         rec = {"side": seat.side, "half": self.game.state.half, "turn": seat.team.state.turn,
                "plan": plan.strip()[:1500], "prediction": prediction.strip()[:1500], "trigger": trigger,
@@ -524,14 +518,13 @@ class GameSession:
 
     def harness_error(self, text: str):
         """Bugs in the bench itself: logged, never blamed on the model, and they make the game inadmissible."""
-        import traceback as tb
         self.harness_errors.append(text)
         self.log_event(None, "error", {"text": f"harness error: {text}"})
-        self.transcript.write("harness_error", None, text=text, traceback=tb.format_exc()[-4000:])
+        self.transcript.write("harness_error", None, text=text, traceback=traceback.format_exc()[-4000:])
 
     def unread_messages(self, seat: Seat) -> List[str]:
         opp_side = self.opponent(seat).side
-        msgs = [m for m in self.messages[seat.msg_cursor:]]
+        msgs = self.messages[seat.msg_cursor:]
         seat.msg_cursor = len(self.messages)
         return [m["text"] for m in msgs if m["side"] == opp_side]
 
@@ -542,9 +535,6 @@ class GameSession:
                 self.event_sink(self.match_id, side, kind, payload)
             except Exception:
                 traceback.print_exc()
-
-    def new_id(self) -> str:
-        return str(uuid.uuid4())
 
 
 class _GamePickler(pickle.Pickler):
