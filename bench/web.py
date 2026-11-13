@@ -19,6 +19,7 @@ from bench.storage import frame_json, load_frames, load_timeline
 from bench.transcript import transcript_path
 
 BOTBOWL_WEB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "botbowl", "web")
+BENCH_STATIC = os.path.join(os.path.dirname(__file__), "static")
 
 
 def create_app(start_scheduler: bool = True) -> Flask:
@@ -240,12 +241,12 @@ def create_app(start_scheduler: bool = True) -> Flask:
 
     @app.route("/bench-static/<path:path>")
     def bench_static(path):
-        return send_from_directory(os.path.join(os.path.dirname(__file__), "static"), path)
+        return send_from_directory(BENCH_STATIC, path)
 
     @app.route("/favicon.ico")
     def favicon():
         # browsers and crawlers ask for /favicon.ico regardless of the <link> tags
-        return send_from_directory(os.path.join(os.path.dirname(__file__), "static"), "favicon-32.png", mimetype="image/png")
+        return send_from_directory(BENCH_STATIC, "favicon-32.png", mimetype="image/png")
 
     @app.route("/health")
     def health():
@@ -418,10 +419,14 @@ def create_app(start_scheduler: bool = True) -> Flask:
     @app.route("/steps/<match_id>/<int:from_idx>/<int:num_steps>")
     def api_replay_steps(match_id, from_idx, num_steps):
         frames = load_frames(match_id)
-        num_steps = min(num_steps, 50)
-        return jsonify({i: json.loads(frame_json(frames[i])) for i in range(from_idx, min(len(frames), from_idx + num_steps))})
+        last = min(len(frames), from_idx + min(num_steps, 50))
+        return jsonify({i: json.loads(frame_json(frames[i])) for i in range(from_idx, last)})
 
     # ---- API: rankings ------------------------------------------------------------------------------
+    NO_GAMES = {"played": 0, "wins": 0, "draws": 0, "losses": 0, "td_for": 0, "td_against": 0, "td_diff": 0,
+                "style": {}, "sums": {}, "avg_cost": 0, "avg_tokens": 0, "win_rate": 0, "avg_latency": 0,
+                "cas_per_game": 0}
+
     def rating_range(r):
         return {"lo": r["lo"], "hi": r["hi"]} if r else None
 
@@ -443,9 +448,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
                          "elo_ci": rating_range(elo.get(mid)),
                          "history": elo.get(mid, {}).get("history", []),
                          "health": tripwire.compact(hl[mid]),
-                         **(a or {"played": 0, "wins": 0, "draws": 0, "losses": 0, "td_for": 0, "td_against": 0, "td_diff": 0,
-                                  "style": {}, "sums": {}, "avg_cost": 0, "avg_tokens": 0, "win_rate": 0,
-                                  "avg_latency": 0, "cas_per_game": 0})})
+                         **(a or NO_GAMES)})
         rows.sort(key=lambda r: (-r["elo"], -r["played"], r["name"]))
         return jsonify({"models": rows, "matches": ranked["matches"],
                         "protocol_version": version.PROTOCOL_VERSION})

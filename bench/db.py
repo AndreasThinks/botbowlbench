@@ -148,7 +148,8 @@ def backfill_placements():
     """Placements made before cohorts have no member or fixture rows: derive them (focus model, games before
     settings.placement_base are anchors, later ones top-ups). Idempotent: only touches placements without members."""
     with transaction() as c:
-        todo = c.execute("SELECT * FROM tournaments WHERE kind='placement' AND status!='merged' AND focus_model IS NOT NULL AND id NOT IN "
+        todo = c.execute("SELECT * FROM tournaments WHERE kind='placement' AND status!='merged' "
+                         "AND focus_model IS NOT NULL AND id NOT IN "
                          "(SELECT tournament_id FROM placement_members)").fetchall()
         for t in todo:
             if not c.execute("SELECT 1 FROM models WHERE id=?", (t["focus_model"],)).fetchone():

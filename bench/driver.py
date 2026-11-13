@@ -46,8 +46,9 @@ def system_prompt(display_name: str, limits: DriverLimits, side: str, opponent_n
     you = "H (home)" if side == "home" else "A (away)"
     reply_rule = ""
     if limits.reply_time_limit > 0:
-        reply_rule = (f"- One reply may run for at most {int(limits.reply_time_limit)} seconds. A reply still thinking then is "
-                      "stopped: you get back the end of\n  your thinking so far and one short reply (little thinking) to act on it.\n")
+        reply_rule = (f"- One reply may run for at most {int(limits.reply_time_limit)} seconds. A reply still thinking "
+                      "then is stopped: you get back the end of\n  your thinking so far and one short reply (little "
+                      "thinking) to act on it.\n")
     return f"""You are {display_name}, the coach of a Blood Bowl team in an AI benchmark tournament. Your opponent is \
 {opponent_name}, another AI model. You control the {you} players. You act ONLY by calling the provided tools (an MCP server).
 
@@ -66,7 +67,7 @@ last game action, or running out of budget, ends your turn automatically.
   update_notes at any time). Every write replaces the whole notebook, so carry over each lesson that still applies.
   You see the board at every decision, so there is no need to copy positions into it.
 {reply_rule}- You may talk to your opponent with send_message (max 2 per turn). Spectators can read the chat.
-- Always answer with a tool call. Keep any text you write very short."""
+- Always answer with a tool call. Keep any text you write very short."""  # noqa: E501 (the prompt's own line breaks)
 
 
 class SeatDriver:
@@ -313,7 +314,7 @@ class SeatDriver:
         illegal_streak = 0
         truncation_streak = 0
         hurry = False   # set once a reply ran into the last-chance reserve: short replies only from then on
-        short = False   # set after reply_time_limit stopped a reply: the next reply only is short, to act on its thinking
+        short = False   # set after reply_time_limit stopped a reply: the next reply only is short, to act on it
         while not self._episode_over(key):
             reason = cause = None
             if calls >= self.limits.max_tool_calls_per_turn:
@@ -347,9 +348,10 @@ class SeatDriver:
                 self.consecutive_llm_errors = 0
             except LLMError as e:
                 def cut_off(**how):
-                    self.session.transcript.write("llm_cutoff", self.seat.side, episode=key, error=str(e)[:2000],
+                    self.session.transcript.write("llm_cutoff", self.seat.side, episode=key, error=error,
                                                   waited=round(time.time() - t0, 1), **how)
 
+                error = str(e)[:2000]
                 if e.deadline and reply_cut is not None:
                     # One reply ran past reply_time_limit: stop it, hand its thinking back and give the model one
                     # short reply (last-chance settings) to act on it; normal settings again after that. Without

@@ -542,8 +542,8 @@ class OpenRouterLLM:
                 err = None
             except ValueError as e:
                 args, err = {}, f"could not parse arguments: {e}"
-            resp.tool_calls.append(ToolCall(id=tc.get("id") or f"call_{i}", name=fn.get("name", ""),
-                                            arguments=args, raw_arguments=raw if isinstance(raw, str) else json.dumps(raw),
+            resp.tool_calls.append(ToolCall(id=tc.get("id") or f"call_{i}", name=fn.get("name", ""), arguments=args,
+                                            raw_arguments=raw if isinstance(raw, str) else json.dumps(raw),
                                             parse_error=err))
         usage = data.get("usage") or {}
         resp.prompt_tokens = int(usage.get("prompt_tokens") or 0)

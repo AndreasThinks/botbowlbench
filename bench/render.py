@@ -152,9 +152,10 @@ def scoreboard(game, team) -> str:
             whose += " (kick-off Blitz!)"
         if turn.quick_snap:
             whose += " (Quick Snap)"
+    used = "yes" if team.state.reroll_used else "no"
     return (f"Score: you {team.state.score} - {opp.state.score} opponent | Half {game.state.half} | "
             f"Your turn #{team.state.turn}/{game.config.rounds}, opponent turn #{opp.state.turn} | {whose}\n"
-            f"Team rerolls left: you {team.state.rerolls} (used this turn: {'yes' if team.state.reroll_used else 'no'}), "
+            f"Team rerolls left: you {team.state.rerolls} (used this turn: {used}), "
             f"opponent {opp.state.rerolls} | Weather: {game.state.weather.name.replace('_', ' ').title()}")
 
 

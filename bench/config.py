@@ -13,10 +13,10 @@ DEFAULT_SETTINGS = {
     "max_illegal_streak": 3,
     "max_truncation_streak": 3,       # finish_reason=length with no tool call; unset = same as the illegal cap
     "max_output_tokens": 16384,       # default max_tokens per reply for every model; per-model max_tokens overrides
-    "reasoning_max_tokens": None,     # optional thinking budget (reasoning.max_tokens) per reply; per-model value overrides
+    "reasoning_max_tokens": None,     # optional thinking budget (reasoning.max_tokens) per reply; a model's own wins
     "reasoning_enabled": True,        # with no budget: thinking on at each model's own default effort
     "tool_choice": "required",        # every reply must be a tool call; falls back to auto where a provider rejects it
-    "stream": True,                   # stream replies so spectators watch the thinking arrive (models see the same request)
+    "stream": True,                   # stream replies so spectators watch the thinking arrive (same request otherwise)
     "last_chance_seconds": 45,        # held back from each turn for one short "act now" call if a reply runs long
     "reply_time_limit": 120,          # one reply still running after this long is stopped and its thinking handed back
     "provider_sort": "throughput",    # OpenRouter host order for every model: fastest recent throughput first
@@ -26,7 +26,7 @@ DEFAULT_SETTINGS = {
     "max_messages_per_turn": 2,
     "max_message_len": 280,
     "decision_timeout": 900,          # hard safety net per decision, seconds
-    "max_game_minutes": 180,          # wall-clock cap per game; afterwards default actions finish it. Above 32 turns x 300s
+    "max_game_minutes": 180,          # wall-clock cap per game, then default actions finish it. Above 32 turns x 300s
     "budget_usd_per_game": None,      # per model per game; None = unlimited (cost is still tracked)
     "legs": 2,                        # 2 = every pairing is played home and away
     "pause_between_matches": 5,       # seconds

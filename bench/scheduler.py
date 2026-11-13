@@ -236,8 +236,8 @@ class Bench:
             tid, ids = self._insert_tournament(c, "placement", f"Placement: {name}", fixtures, focus=model_id)
             c.execute("INSERT INTO placement_members(tournament_id, model_id, joined_at, adaptive, extra_games, "
                       "target_range) VALUES(?,?,?,?,?,?)", (tid, model_id, time.time(), 1, *self._top_up_rule()))
-            for mid in ids:
-                c.execute("INSERT INTO placement_fixtures(match_id, model_id, role) VALUES(?,?,'anchor')", (mid, model_id))
+            c.executemany("INSERT INTO placement_fixtures(match_id, model_id, role) VALUES(?,?,'anchor')",
+                          [(mid, model_id) for mid in ids])
         self.wake()
         return tid
 
@@ -377,7 +377,8 @@ class Bench:
             c.execute("UPDATE matches SET seq=?, tournament_id=? WHERE id=?", (len(order), target["id"], r["id"]))
         c.execute("UPDATE OR IGNORE placement_members SET tournament_id=? WHERE tournament_id!=? AND "
                   f"tournament_id IN ({marks})", [target["id"], target["id"]] + ids)
-        c.execute(f"DELETE FROM placement_members WHERE tournament_id IN ({marks}) AND tournament_id!=?", ids + [target["id"]])
+        c.execute(f"DELETE FROM placement_members WHERE tournament_id IN ({marks}) AND tournament_id!=?",
+                  ids + [target["id"]])
         for t in sources:
             c.execute("UPDATE tournaments SET status='merged', finished_at=?, settings=? WHERE id=?",
                       (time.time(), json.dumps({**self._tournament_settings(t), "merged_into": target["id"]}), t["id"]))
@@ -470,8 +471,8 @@ class Bench:
         with self._lock, db.transaction() as c:
             queued = {(r["home_model"], r["away_model"]): r["id"] for r in c.execute(
                 "SELECT id, home_model, away_model FROM matches WHERE tournament_id=? AND status='queued'", (t["id"],))}
-            seq = (c.execute("SELECT MAX(seq) AS last FROM matches WHERE tournament_id=?", (t["id"],)).fetchone()["last"]
-                   or 0) + 1
+            last = c.execute("SELECT MAX(seq) AS last FROM matches WHERE tournament_id=?", (t["id"],)).fetchone()
+            seq = (last["last"] or 0) + 1
             for i in range(max(len(v) for v in wanted.values())):
                 for focus, fixtures in wanted.items():
                     if i >= len(fixtures):
@@ -489,10 +490,11 @@ class Bench:
             for t in db.rows("SELECT * FROM tournaments WHERE status IN ('queued','running')"):
                 if t["kind"] == "placement":
                     self._top_up(t)
-                left = db.row("SELECT COUNT(*) AS n FROM matches WHERE tournament_id=? AND status IN ('queued','running')",
-                              (t["id"],))["n"]
+                left = db.row("SELECT COUNT(*) AS n FROM matches WHERE tournament_id=? "
+                              "AND status IN ('queued','running')", (t["id"],))["n"]
                 if left == 0:
-                    db.execute("UPDATE tournaments SET status='completed', finished_at=? WHERE id=?", (time.time(), t["id"]))
+                    db.execute("UPDATE tournaments SET status='completed', finished_at=? WHERE id=?",
+                               (time.time(), t["id"]))
 
     # ---- Tripwire health holds ---------------------------------------------------------------------------
     @staticmethod

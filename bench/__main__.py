@@ -41,7 +41,8 @@ def cmd_models(args):
     from bench import config
     cfg = config.load_models_file()
     for m in cfg["models"]:
-        print(f"{m['id']:<28} {m['provider']:<10} {m.get('model') or '':<40} {'enabled' if m['enabled'] else 'disabled'}")
+        state = "enabled" if m["enabled"] else "disabled"
+        print(f"{m['id']:<28} {m['provider']:<10} {m.get('model') or '':<40} {state}")
 
 
 def cmd_play(args):
