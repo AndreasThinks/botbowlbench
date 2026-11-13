@@ -11,7 +11,7 @@ DEFAULT_SETTINGS = {
     "max_tool_calls_per_turn": 40,
     "turn_time_limit": 300,           # seconds of wall time per team turn
     "max_illegal_streak": 3,
-    "max_truncation_streak": 3,
+    "max_truncation_streak": 3,       # finish_reason=length with no tool call; unset = same as the illegal cap
     "max_output_tokens": 16384,       # default max_tokens per reply for every model; per-model max_tokens overrides
     "reasoning_max_tokens": None,     # optional thinking budget (reasoning.max_tokens) per reply; per-model value overrides
     "reasoning_enabled": True,        # with no budget: thinking on at each model's own default effort
@@ -22,7 +22,7 @@ DEFAULT_SETTINGS = {
     "provider_sort": "throughput",    # OpenRouter host order for every model: fastest recent throughput first
     "provider_min_throughput": 50,    # ...preferring hosts at least this fast (tokens/s; slower ones go last)
     "provider_max_price_factor": 3,   # ...but never a host dearer than this times the model's listed price
-    "last_chance_max_tokens": 2048,   # output ceiling for that last-chance call  # finish_reason=length with no tool call; defaults same as illegal cap
+    "last_chance_max_tokens": 2048,   # output ceiling for that last-chance call
     "max_messages_per_turn": 2,
     "max_message_len": 280,
     "decision_timeout": 900,          # hard safety net per decision, seconds

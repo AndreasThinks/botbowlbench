@@ -6,6 +6,7 @@ Chat-completion backends used by the driver.
   legal moves through the very same MCP tools. Useful as a benchmark floor and for testing.
 """
 import asyncio
+import importlib
 import json
 import os
 import random
@@ -17,7 +18,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
+import botbowl
+from botbowl.core.pathfinding import get_all_paths
+from botbowl.core.table import ActionType
+
+from bench import render
 from bench.health import clean_host
+from bench.session import fallback_action
 
 OPENROUTER_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1") + "/chat/completions"
 
@@ -49,6 +56,11 @@ class LLMResponse:
     raw_message: Dict[str, Any] = field(default_factory=dict)
     filtered_retries: int = 0     # empty content-filter replies retried before this one (see is_empty_filtered)
     slow_host: str = ""           # the host this reply came from, if its speed just got it skipped (see _note_speed)
+
+    @property
+    def truncated(self) -> bool:
+        """Cut off at the output length limit (finish_reason=length)."""
+        return (self.finish_reason or "").lower() == "length"
 
 
 def is_account_limit(body: str) -> bool:
@@ -231,13 +243,17 @@ class OpenRouterLLM:
     async def aclose(self):
         await self.client.aclose()
 
+    @staticmethod
+    def _api(path: str) -> str:
+        return OPENROUTER_URL.rsplit("/chat/completions", 1)[0] + path
+
     async def _lowest_effort(self) -> Optional[str]:
         """The lowest reasoning effort OpenRouter lists for this model (``none`` unless reasoning is mandatory),
         or None when it lists none (or the lookup fails). Looked up once per model per process."""
         if self.model not in _LOWEST_EFFORT:
             lowest = None
             try:
-                r = await self.client.get(OPENROUTER_URL.rsplit("/chat/completions", 1)[0] + "/models", timeout=5)
+                r = await self.client.get(self._api("/models"), timeout=5)
                 info = next((m.get("reasoning") or {} for m in r.json().get("data", []) if m.get("id") == self.model),
                             {})
                 offered = set(info.get("supported_efforts") or [])
@@ -254,7 +270,7 @@ class OpenRouterLLM:
         process; falls back to the lower-cased name."""
         if not _PROVIDER_SLUGS:
             try:
-                r = await self.client.get(OPENROUTER_URL.rsplit("/chat/completions", 1)[0] + "/providers", timeout=5)
+                r = await self.client.get(self._api("/providers"), timeout=5)
                 _PROVIDER_SLUGS.update({p["name"]: p["slug"] for p in r.json().get("data", [])
                                         if p.get("name") and p.get("slug")})
             except Exception:
@@ -292,9 +308,7 @@ class OpenRouterLLM:
         prefs["ignore"] = list(dict.fromkeys(list(prefs.get("ignore") or []) + self.skipped_hosts))
         body["provider"] = prefs
 
-    async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None,
-                   hurry: bool = False) -> LLMResponse:
-        """``hurry``: the turn is nearly out of time; ask for a short reply with minimal thinking."""
+    async def _request_body(self, messages: List[dict], tools: List[dict], hurry: bool) -> dict:
         body = {
             "model": self.model,
             "messages": with_cache_breakpoints(messages) if self.prompt_cache else messages,
@@ -330,6 +344,12 @@ class OpenRouterLLM:
                 body["reasoning"] = {"effort": lowest_effort}
             elif "reasoning" in body:
                 body["reasoning"] = {"max_tokens": max(1024, body["max_tokens"] // 2)}
+        return body
+
+    async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None,
+                   hurry: bool = False) -> LLMResponse:
+        """``hurry``: the turn is nearly out of time; ask for a short reply with minimal thinking."""
+        body = await self._request_body(messages, tools, hurry)
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "HTTP-Referer": os.environ.get("PUBLIC_URL", "https://github.com/andreasthinks/botbowlbench"),
@@ -555,6 +575,9 @@ TAUNTS = [
 class RandomPolicy:
     """A pseudo-LLM that plays uniformly random legal moves via take_action / end_turn."""
 
+    PLAN = "Keep activating players and look for chances to score."
+    PREDICTION = "The opponent will try to block my players and advance the ball."
+
     def __init__(self, seat, message_rate: float = 0.03, seed: Optional[int] = None, delay: float = 0.0):
         self.seat = seat
         self.delay = delay  # seconds per "call", so baseline games are watchable
@@ -565,9 +588,6 @@ class RandomPolicy:
     async def aclose(self):
         pass
 
-    PLAN = "Keep activating players and look for chances to score."
-    PREDICTION = "The opponent will try to block my players and advance the ball."
-
     def _reflection_args(self) -> dict:
         return {"plan": self.PLAN, "prediction": self.PREDICTION, "notes": "unchanged"}
 
@@ -576,50 +596,55 @@ class RandomPolicy:
         return LLMResponse(tool_calls=[tc], raw_message={"role": "assistant", "content": "", "tool_calls": [
             {"id": tc.id, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]})
 
-    def _forced_reflection(self, tools) -> Optional[LLMResponse]:
+    def _play(self, action) -> LLMResponse:
+        """The tool call that plays a botbowl Action."""
+        if action.action_type == ActionType.END_TURN:
+            return self._single("end_turn", self._reflection_args())
+        args = {"action_type": action.action_type.name}
+        if action.player is not None:
+            args["player_id"] = render.pid(action.player)
+        if action.position is not None:
+            args["x"], args["y"] = action.position.x, action.position.y
+        return self._single("take_action", args)
+
+    async def _begin(self, tools: List[dict]) -> Optional[LLMResponse]:
+        """Start one "call". Returns the reply at once when only a reflection is asked for (after a turnover)."""
+        self._n += 1
+        if self.delay:
+            await asyncio.sleep(self.delay)
         if len(tools) == 1 and tools[0]["function"]["name"] == "reflect":
             return self._single("reflect", self._reflection_args())
         return None
 
+    def _idle(self) -> bool:
+        return self.seat.session.finished or not self.seat.is_pending()
+
     async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None,
                    hurry: bool = False) -> LLMResponse:
-        from botbowl.core.table import ActionType
-        from bench import render
-        self._n += 1
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        forced = self._forced_reflection(tools)
+        forced = await self._begin(tools)
         if forced is not None:
             return forced
+        if self._idle():
+            return self._single("get_legal_actions", {})
+        if self.rng.random() < self.message_rate:
+            return self._single("send_message", {"text": self.rng.choice(TAUNTS)})
         game = self.seat.session.game
-        resp = LLMResponse(raw_message={"role": "assistant", "content": ""})
-        if self.seat.session.finished or not self.seat.is_pending():
-            resp.tool_calls.append(ToolCall(id=f"r{self._n}", name="get_legal_actions", arguments={}))
-        elif self.rng.random() < self.message_rate:
-            resp.tool_calls.append(ToolCall(id=f"r{self._n}", name="send_message",
-                                            arguments={"text": self.rng.choice(TAUNTS)}))
-        else:
-            choices = [a for a in game.state.available_actions if a.action_type != ActionType.PLACE_PLAYER]
-            # bias towards ending the turn sometimes so games don't drag
-            a = self.rng.choice(choices)
-            args = {"action_type": a.action_type.name}
-            if a.action_type == ActionType.END_TURN:
-                return self._single("end_turn", self._reflection_args())
-            if a.action_type == ActionType.END_SETUP and not game.is_setup_legal(self.seat.team):
-                for c in choices:
-                    if c.action_type.name.startswith("SETUP_FORMATION_"):
-                        args = {"action_type": c.action_type.name}
-                        break
-            elif a.players:
-                args["player_id"] = render.pid(self.rng.choice(a.players))
-            elif a.positions:
-                pos = self.rng.choice(a.positions)
-                args["x"], args["y"] = pos.x, pos.y
-            resp.tool_calls.append(ToolCall(id=f"r{self._n}", name="take_action", arguments=args))
-        tc = resp.tool_calls[0]
-        resp.raw_message["tool_calls"] = [{"id": tc.id, "type": "function",
-                                           "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}}]
-        return resp
+        choices = [a for a in game.state.available_actions if a.action_type != ActionType.PLACE_PLAYER]
+        a = self.rng.choice(choices)
+        args = {"action_type": a.action_type.name}
+        if a.action_type == ActionType.END_TURN:
+            return self._single("end_turn", self._reflection_args())
+        if a.action_type == ActionType.END_SETUP and not game.is_setup_legal(self.seat.team):
+            for c in choices:
+                if c.action_type.name.startswith("SETUP_FORMATION_"):
+                    args = {"action_type": c.action_type.name}
+                    break
+        elif a.players:
+            args["player_id"] = render.pid(self.rng.choice(a.players))
+        elif a.positions:
+            pos = self.rng.choice(a.positions)
+            args["x"], args["y"] = pos.x, pos.y
+        return self._single("take_action", args)
 
 
 class ScriptedPolicy(RandomPolicy):
@@ -631,48 +656,22 @@ class ScriptedPolicy(RandomPolicy):
 
     async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None,
                    hurry: bool = False) -> LLMResponse:
-        from botbowl.core.table import ActionType
-        from bench import render
-        from bench.session import fallback_action
-        self._n += 1
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        forced = self._forced_reflection(tools)
+        forced = await self._begin(tools)
         if forced is not None:
             return forced
-        game = self.seat.session.game
-        team = self.seat.team
-        call = ("get_legal_actions", {})
-        if not self.seat.session.finished and self.seat.is_pending():
-            types = {a.action_type: a for a in game.state.available_actions}
-            if ActionType.START_MOVE in types or ActionType.START_BLOCK in types or ActionType.END_TURN in types \
-                    and len(types) == 1:
-                call = self._turn_call(game, team, types)
-            else:
-                for name in self.BLOCK_PREF:
-                    if ActionType[name] in types:
-                        call = ("take_action", {"action_type": name})
-                        break
-                else:
-                    a = fallback_action(game, team)
-                    if a.action_type == ActionType.END_TURN:
-                        return self._single("end_turn", self._reflection_args())
-                    args = {"action_type": a.action_type.name}
-                    if a.player is not None:
-                        args["player_id"] = render.pid(a.player)
-                    if a.position is not None:
-                        args["x"], args["y"] = a.position.x, a.position.y
-                    call = ("take_action", args)
-        name, args = call
-        tc = ToolCall(id=f"s{self._n}", name=name, arguments=args)
-        resp = LLMResponse(tool_calls=[tc], raw_message={"role": "assistant", "content": "", "tool_calls": [
-            {"id": tc.id, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]})
-        return resp
+        if self._idle():
+            return self._single("get_legal_actions", {})
+        game, team = self.seat.session.game, self.seat.team
+        types = {a.action_type: a for a in game.state.available_actions}
+        if ActionType.START_MOVE in types or ActionType.START_BLOCK in types or ActionType.END_TURN in types \
+                and len(types) == 1:
+            return self._single(*self._turn_call(game, team, types))
+        for name in self.BLOCK_PREF:
+            if ActionType[name] in types:
+                return self._single("take_action", {"action_type": name})
+        return self._play(fallback_action(game, team))
 
     def _turn_call(self, game, team, types):
-        from botbowl.core.table import ActionType
-        from botbowl.core.pathfinding import get_all_paths
-        from bench import render
         if self._n % 25 == 0:
             return ("send_message", {"text": self.rng.choice(TAUNTS)})
         # 1) blocks with the dice in our favour
@@ -727,8 +726,6 @@ class BotbowlAgentPolicy(RandomPolicy):
     def __init__(self, seat, bot: str, module: Optional[str] = None, seed: Optional[int] = None,
                  delay: float = 0.0):
         super().__init__(seat, message_rate=0.0, seed=seed, delay=delay)
-        import importlib
-        import botbowl
         if module:
             importlib.import_module(module)
         self.agent = botbowl.make_bot(bot)
@@ -736,19 +733,12 @@ class BotbowlAgentPolicy(RandomPolicy):
 
     async def chat(self, messages: List[dict], tools: List[dict], deadline: Optional[float] = None,
                    hurry: bool = False) -> LLMResponse:
-        from botbowl.core.table import ActionType
-        from bench import render
-        from bench.session import fallback_action
-        self._n += 1
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        forced = self._forced_reflection(tools)
+        forced = await self._begin(tools)
         if forced is not None:
             return forced
-        if self.seat.session.finished or not self.seat.is_pending():
+        if self._idle():
             return self._single("get_legal_actions", {})
-        game = self.seat.session.game
-        team = self.seat.team
+        game, team = self.seat.session.game, self.seat.team
         if not self._started:
             self.agent.new_game(game, team)
             self._started = True
@@ -763,11 +753,4 @@ class BotbowlAgentPolicy(RandomPolicy):
             random.setstate(state)
         if action is None or not game._is_action_allowed(action):
             action = fallback_action(game, team)
-        if action.action_type == ActionType.END_TURN:
-            return self._single("end_turn", self._reflection_args())
-        args = {"action_type": action.action_type.name}
-        if action.player is not None:
-            args["player_id"] = render.pid(action.player)
-        if action.position is not None:
-            args["x"], args["y"] = action.position.x, action.position.y
-        return self._single("take_action", args)
+        return self._play(action)

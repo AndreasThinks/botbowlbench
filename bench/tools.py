@@ -12,11 +12,11 @@ import anyio
 from mcp.server.mcpserver import MCPServer
 
 from botbowl.core.model import Action, Square
-from botbowl.core.table import ActionType
 from botbowl.core.pathfinding import get_all_paths
+from botbowl.core.table import ActionType, OutcomeType, Skill
 
 from bench import render
-from bench.session import NOTES_MAX_CHARS, GameSession, Seat, fallback_action
+from bench.session import NOTES_MAX_CHARS, GameSession, Seat
 
 RULES_PRIMER = """\
 BLOOD BOWL QUICK RULES (5-a-side variant, 8 turns per half, 2 halves)
@@ -58,6 +58,8 @@ def _choice(game, action_type: ActionType):
 
 
 INTERNAL_ERROR = "INTERNAL ERROR"
+INFO_TOOLS = ("get_state", "get_legal_actions", "get_player")                               # look, don't touch
+ACTION_TOOLS = ("move", "block", "blitz", "pass_ball", "handoff", "foul", "take_action")    # play the game
 NOTES_UNCHANGED = ("unchanged", "same", "no change", "no changes")
 
 _RECORDED = {ActionType.MOVE, ActionType.BLOCK, ActionType.PASS, ActionType.HANDOFF, ActionType.FOUL}
@@ -78,7 +80,6 @@ def _roll_prob(targets) -> float:
 def block_success(dice, attacker) -> float:
     """Chance a block does NOT knock the attacker down (a turnover), ignoring re-rolls.
     Each die: Attacker Down 1/6, Both Down 1/6 (harmless to an attacker with Block)."""
-    from botbowl.core.table import Skill
     if not dice:
         return 1.0
     has_block = attacker is not None and attacker.has_skill(Skill.BLOCK)
@@ -213,7 +214,6 @@ class SeatTools:
     def _mark_outcome(self, reports_before: int, turn_id):
         """Attribute a turnover / touchdown to the last logged action of the turn. Turnovers usually happen
         on a follow-up decision (choosing the block die, declining a re-roll), not the logged action itself."""
-        from botbowl.core.table import OutcomeType
         new = self.game.state.reports[reports_before:]
         turnover = any(r.outcome_type == OutcomeType.TURNOVER and r.team == self.team for r in new)
         touchdown = any(r.outcome_type == OutcomeType.TOUCHDOWN and r.player is not None
@@ -333,6 +333,13 @@ class SeatTools:
             return None
         return step
 
+    def _move_first(self, x, y) -> list:
+        """The optional move before a blitz, pass or hand-off: no step at all unless a square is given."""
+        if x is None or y is None:
+            return []
+        square = _square(self.game, x, y)
+        return [self._at(ActionType.MOVE, lambda: square, "Move")]
+
     # ---- info tools --------------------------------------------------------------------------
     def get_state(self) -> str:
         if self.session.finished:
@@ -348,12 +355,9 @@ class SeatTools:
         return err or render.legal_actions_text(self.game, self.team)
 
     def get_player(self, player_id: str) -> str:
-        try:
-            p = render.find_player(self.game, player_id)
-            if p is None:
-                raise ValueError(f"Unknown player '{player_id}'.")
-        except ValueError as e:
-            return str(e)
+        p = render.find_player(self.game, player_id)
+        if p is None:
+            return f"Unknown player '{player_id}'."
         lines = [render.player_line(self.game, p)]
         if p.team == self.team and p.position is not None and p.state.up is not None and not p.state.used \
                 and self.seat.is_pending():
@@ -405,12 +409,8 @@ class SeatTools:
             t = self._player(target_id, own=False)
         except ValueError as e:
             return self._illegal(str(e))
-        steps = [self._start(p, ActionType.START_BLITZ)]
-        if via_x is not None and via_y is not None:
-            via = _square(self.game, via_x, via_y)
-            steps.append(self._at(ActionType.MOVE, lambda: via, "Move"))
-        steps.append(self._at(ActionType.BLOCK, lambda: t.position, f"Blitz on {target_id}"))
-        return self._run(steps)
+        return self._run([self._start(p, ActionType.START_BLITZ), *self._move_first(via_x, via_y),
+                          self._at(ActionType.BLOCK, lambda: t.position, f"Blitz on {target_id}")])
 
     def pass_ball(self, player_id: str, target_x: int, target_y: int,
                   move_to_x: Optional[int] = None, move_to_y: Optional[int] = None) -> str:
@@ -418,13 +418,9 @@ class SeatTools:
             p = self._player(player_id)
         except ValueError as e:
             return self._illegal(str(e))
-        steps = [self._start(p, ActionType.START_PASS)]
-        if move_to_x is not None and move_to_y is not None:
-            dest = _square(self.game, move_to_x, move_to_y)
-            steps.append(self._at(ActionType.MOVE, lambda: dest, "Move"))
         target = _square(self.game, target_x, target_y)
-        steps.append(self._at(ActionType.PASS, lambda: target, "Pass"))
-        return self._run(steps)
+        return self._run([self._start(p, ActionType.START_PASS), *self._move_first(move_to_x, move_to_y),
+                          self._at(ActionType.PASS, lambda: target, "Pass")])
 
     def handoff(self, player_id: str, target_id: str,
                 move_to_x: Optional[int] = None, move_to_y: Optional[int] = None) -> str:
@@ -433,12 +429,8 @@ class SeatTools:
             t = self._player(target_id)
         except ValueError as e:
             return self._illegal(str(e))
-        steps = [self._start(p, ActionType.START_HANDOFF)]
-        if move_to_x is not None and move_to_y is not None:
-            dest = _square(self.game, move_to_x, move_to_y)
-            steps.append(self._at(ActionType.MOVE, lambda: dest, "Move"))
-        steps.append(self._at(ActionType.HANDOFF, lambda: t.position, f"Hand-off to {target_id}"))
-        return self._run(steps)
+        return self._run([self._start(p, ActionType.START_HANDOFF), *self._move_first(move_to_x, move_to_y),
+                          self._at(ActionType.HANDOFF, lambda: t.position, f"Hand-off to {target_id}")])
 
     def foul(self, player_id: str, target_id: str) -> str:
         try:
@@ -506,13 +498,6 @@ class SeatTools:
                 raise ValueError("Setup is not legal yet: use a SETUP_FORMATION_* action first.")
             return Action(at, player=player, position=pos)
         return self._run([step])
-
-    # ---- driver helpers ----------------------------------------------------------------------
-    def force_fallback(self):
-        """Submit the fallback action for the pending decision (used by the driver)."""
-        if self.seat.is_pending() and not self.session.finished:
-            self.seat.counters["forced_actions"] += 1
-            self.seat.submit(fallback_action(self.game, self.team))
 
 
 TOOL_DOCS = {

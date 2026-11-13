@@ -15,7 +15,8 @@ SUM_KEYS = ["touchdowns", "blocks", "blitzes", "fouls", "passes", "handoffs", "c
             "tool_calls", "llm_calls", "prompt_tokens", "completion_tokens", "cost", "forced_actions",
             "budget_exhausted", "turns", "latency", "rerolls_used", "dodges", "failed_dodges", "gfis", "failed_gfis",
             "cached_tokens", "reasoning_tokens", "reflections", "risky_actions", "long_shots",
-            "no_tool_replies", "output_truncations", "llm_errors", "http_timeouts", "uncertain_spend_calls", "content_filter_retries", "slow_host_skips", "deadline_cutoffs",
+            "no_tool_replies", "output_truncations", "llm_errors", "http_timeouts", "uncertain_spend_calls",
+            "content_filter_retries", "slow_host_skips", "deadline_cutoffs",
             "last_chance_calls", "thinking_cuts", "reroll_offers", "reroll_taken", "block_reroll_offers",
             "block_reroll_taken", "apothecary_offers", "apothecary_taken", "skill_offers", "skill_taken",
             "notes_updates", "notes_shown"]
@@ -53,28 +54,39 @@ def _fit(n: int, W, N, x0=None):
     return x, cov
 
 
+class _Results:
+    """The win and game counts of a growing set of matches, in the form :func:`_fit` takes."""
+
+    def __init__(self, matches: List[dict]):
+        import numpy as np
+        self.ids = sorted({m["home_model"] for m in matches} | {m["away_model"] for m in matches})
+        self.ix = {k: i for i, k in enumerate(self.ids)}
+        self.W, self.N = np.zeros((len(self.ids),) * 2), np.zeros((len(self.ids),) * 2)
+
+    def add(self, m: dict) -> tuple:
+        """Count one match; returns the indices of its two models."""
+        h, a = self.ix[m["home_model"]], self.ix[m["away_model"]]
+        s = 1.0 if m["winner"] == "home" else (0.0 if m["winner"] == "away" else 0.5)
+        self.W[h, a] += s
+        self.W[a, h] += 1.0 - s
+        self.N[h, a] += 1
+        self.N[a, h] += 1
+        return h, a
+
+    def fit(self, x0=None):
+        return _fit(len(self.ids), self.W, self.N, x0)
+
+
 def fit_ratings(matches: Iterable[dict]) -> Dict[str, dict]:
     """Rating, standard error and 95% interval (all in Elo points) for every model that has played."""
-    import numpy as np
     matches = list(matches)
-    ids = sorted({m["home_model"] for m in matches} | {m["away_model"] for m in matches})
-    if not ids:
+    res = _Results(matches)
+    if not res.ids:
         return {}
-    ix = {k: i for i, k in enumerate(ids)}
-    W, N = np.zeros((len(ids), len(ids))), np.zeros((len(ids), len(ids)))
     for m in matches:
-        h, a = ix[m["home_model"]], ix[m["away_model"]]
-        s = _score(m)
-        W[h, a] += s
-        W[a, h] += 1.0 - s
-        N[h, a] += 1
-        N[a, h] += 1
-    x, cov = _fit(len(ids), W, N)
-    return {k: _rating(x[i], cov[i, i]) for k, i in ix.items()}
-
-
-def _score(m: dict) -> float:
-    return 1.0 if m["winner"] == "home" else (0.0 if m["winner"] == "away" else 0.5)
+        res.add(m)
+    x, cov = res.fit()
+    return {k: _rating(x[i], cov[i, i]) for k, i in res.ix.items()}
 
 
 def _rating(x: float, var: float) -> dict:
@@ -86,31 +98,22 @@ def compute_elo(matches: Iterable[dict], max_points: int = 300) -> Dict[str, dic
     """The current fit plus a history: the fit is redone as games accumulate (matches must be completed and in
     chronological order), and each model gets a point after each of its games. Long histories are sampled down to
     about max_points refits, each covering a run of games."""
-    import numpy as np
     matches = list(matches)
-    ids = sorted({m["home_model"] for m in matches} | {m["away_model"] for m in matches})
-    if not ids:
+    res = _Results(matches)
+    if not res.ids:
         return {}
-    ix = {k: i for i, k in enumerate(ids)}
-    W, N = np.zeros((len(ids), len(ids))), np.zeros((len(ids), len(ids)))
     history = defaultdict(list)
     step = max(1, math.ceil(len(matches) / max_points))
     x, cov, touched = None, None, set()
     for n, m in enumerate(matches, 1):
-        h, a = ix[m["home_model"]], ix[m["away_model"]]
-        s = _score(m)
-        W[h, a] += s
-        W[a, h] += 1.0 - s
-        N[h, a] += 1
-        N[a, h] += 1
-        touched.update((h, a))
+        touched.update(res.add(m))
         if n % step and n != len(matches):
             continue
-        x, cov = _fit(len(ids), W, N, x)
+        x, cov = res.fit(x)
         for i in sorted(touched):
-            history[ids[i]].append({"t": m["finished_at"], "elo": round(START_ELO + x[i] / _C, 1)})
+            history[res.ids[i]].append({"t": m["finished_at"], "elo": round(START_ELO + x[i] / _C, 1)})
         touched = set()
-    return {k: {**_rating(x[i], cov[i, i]), "history": history[k]} for k, i in ix.items()}
+    return {k: {**_rating(x[i], cov[i, i]), "history": history[k]} for k, i in res.ix.items()}
 
 
 def aggregate(matches: Iterable[dict]) -> Dict[str, dict]:
@@ -167,11 +170,8 @@ def aggregate(matches: Iterable[dict]) -> Dict[str, dict]:
 
 def standings(matches: List[dict]) -> List[dict]:
     """Tournament table: 3 points for a win, 1 for a draw; ties broken by TD difference then TDs scored."""
-    agg = aggregate(matches)
-    table = []
-    for model, a in agg.items():
-        table.append({"model": model, **{k: a[k] for k in ("played", "wins", "draws", "losses", "td_for",
-                                                           "td_against", "points")},
-                      "td_diff": a["td_for"] - a["td_against"], "cas": a["sums"].get("casualties_inflicted", 0)})
+    table = [{"model": model, **{k: a[k] for k in ("played", "wins", "draws", "losses", "td_for", "td_against",
+                                                    "points", "td_diff")},
+              "cas": a["sums"].get("casualties_inflicted", 0)} for model, a in aggregate(matches).items()]
     table.sort(key=lambda r: (-r["points"], -r["td_diff"], -r["td_for"], r["model"]))
     return table

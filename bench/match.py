@@ -5,22 +5,27 @@ import time
 from typing import Callable, Optional
 
 from bench import health, model_info, version
-from bench.transcript import Transcript
 from bench.driver import DriverLimits, SeatDriver
 from bench.llm import BotbowlAgentPolicy, OpenRouterLLM, RandomPolicy, ScriptedPolicy
 from bench.session import GameSession
 from bench.stats import side_stats
+from bench.transcript import Transcript
+
+# Per-model keys that default to a shared setting (model key -> settings key): the same output ceiling, thinking
+# setting, tool_choice and host routing for everyone, unless a model sets its own value (or null).
+SHARED_SETTINGS = {"max_tokens": "max_output_tokens",
+                   **{k: k for k in ("reasoning_max_tokens", "reasoning_enabled", "stream", "tool_choice",
+                                     "last_chance_max_tokens", "provider_sort", "provider_max_price_factor",
+                                     "provider_min_throughput")}}
 
 
 def make_llm(model_cfg: dict, seat, api_key: Optional[str]):
     provider = model_cfg.get("provider", "openrouter")
-    if provider == "random":
-        return RandomPolicy(seat, seed=model_cfg.get("seed"), delay=float(model_cfg.get("delay", 0)))
-    if provider == "scripted":
-        return ScriptedPolicy(seat, seed=model_cfg.get("seed"), delay=float(model_cfg.get("delay", 0)))
-    if provider == "botbowl":
-        return BotbowlAgentPolicy(seat, model_cfg["bot"], module=model_cfg.get("module"), seed=model_cfg.get("seed"),
-                                  delay=float(model_cfg.get("delay", 0)))
+    if provider in ("random", "scripted", "botbowl"):
+        baseline = {"seed": model_cfg.get("seed"), "delay": float(model_cfg.get("delay", 0))}
+        if provider == "botbowl":
+            return BotbowlAgentPolicy(seat, model_cfg["bot"], module=model_cfg.get("module"), **baseline)
+        return (RandomPolicy if provider == "random" else ScriptedPolicy)(seat, **baseline)
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set")
     llm = OpenRouterLLM(model_cfg["model"], api_key,
@@ -124,15 +129,8 @@ class MatchRunner:
             seat = self.session.seat(side)
             cfg = dict(cfg)
             cfg.setdefault("seed", self.seed + i)   # baselines are reproducible from the match seed
-            # the same output ceiling, thinking setting and tool_choice for everyone; a model's own value (or null) wins
-            for key, setting in (("max_tokens", "max_output_tokens"), ("reasoning_max_tokens", "reasoning_max_tokens"),
-                                 ("reasoning_enabled", "reasoning_enabled"), ("stream", "stream"),
-                                 ("tool_choice", "tool_choice"), ("last_chance_max_tokens", "last_chance_max_tokens"),
-                                 ("provider_sort", "provider_sort"),
-                                 ("provider_max_price_factor", "provider_max_price_factor"),
-                                 ("provider_min_throughput", "provider_min_throughput")):
-                if key not in cfg:
-                    cfg[key] = settings.get(setting)
+            for key, setting in SHARED_SETTINGS.items():
+                cfg.setdefault(key, settings.get(setting))
             llm = make_llm(cfg, seat, api_key)
             opp = away_cfg if side == "home" else home_cfg
             self.drivers[side] = SeatDriver(self.session, seat, llm, cfg["name"], limits_for(cfg, settings),
@@ -249,12 +247,7 @@ class MatchRunner:
             "messages": list(self.session.messages),
             "reflections": list(self.session.reflections),
         }
-        winner = "draw"
-        if home_score > away_score:
-            winner = "home"
-        elif away_score > home_score:
-            winner = "away"
-        result["winner"] = winner
+        result["winner"] = "home" if home_score > away_score else "away" if away_score > home_score else "draw"
         # admissibility (cf. CivBench): natural conclusion under the pinned protocol with complete logs
         reasons = []
         if self.session.error:
