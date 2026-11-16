@@ -1,8 +1,8 @@
 """What a competitor is, for its profile page: a short description and, for LLMs, its OpenRouter listing.
 
 LLM descriptions come from OpenRouter's public model list (no API key needed), cached in memory and on disk
-for a day so a page view never waits on more than one fetch. A ``description`` in models.yaml wins; the
-offline baselines fall back to the short blurbs below.
+for a day; a stale list is refreshed in the background, so a page view never waits on a fetch. A
+``description`` in models.yaml wins; the offline baselines fall back to the short blurbs below.
 """
 import json
 import os
@@ -33,6 +33,7 @@ _lock = threading.Lock()
 _catalog: Optional[Dict[str, dict]] = None
 _fetched_at = 0.0
 _failed_at = 0.0
+_refreshing = False
 
 
 def _cache_path() -> str:
@@ -60,25 +61,54 @@ def _fetch() -> Dict[str, dict]:
     return out
 
 
-def catalog() -> Dict[str, dict]:
-    """OpenRouter's models by id; {} when it can't be reached and nothing is cached."""
-    global _catalog, _fetched_at, _failed_at
-    with _lock:
+def _load_disk():
+    """Fill the in-memory catalog from the disk cache, once. Call with _lock held."""
+    global _catalog, _fetched_at
+    if _catalog is None:
+        try:
+            with open(_cache_path(), encoding="utf-8") as f:
+                cached = json.load(f)
+            _catalog, _fetched_at = cached["models"], cached["fetched_at"]
+        except (OSError, ValueError, KeyError):
+            pass
+
+
+def refresh():
+    """Fetch the catalog from OpenRouter now and store it; on failure keep what we have and back off."""
+    global _catalog, _fetched_at, _failed_at, _refreshing
+    try:
+        fresh = _fetch()
         now = time.time()
-        if _catalog is None:
-            try:
-                with open(_cache_path(), encoding="utf-8") as f:
-                    cached = json.load(f)
-                _catalog, _fetched_at = cached["models"], cached["fetched_at"]
-            except (OSError, ValueError, KeyError):
-                pass
-        if now - _fetched_at > CACHE_SECONDS and now - _failed_at > RETRY_SECONDS:
-            try:
-                _catalog, _fetched_at = _fetch(), now
-                with open(_cache_path(), "w", encoding="utf-8") as f:
-                    json.dump({"fetched_at": now, "models": _catalog}, f)
-            except (httpx.HTTPError, OSError, ValueError):
-                _failed_at = now
+        with _lock:
+            _catalog, _fetched_at = fresh, now
+        with open(_cache_path(), "w", encoding="utf-8") as f:
+            json.dump({"fetched_at": now, "models": fresh}, f)
+    except (httpx.HTTPError, OSError, ValueError):
+        with _lock:
+            _failed_at = time.time()
+    finally:
+        with _lock:
+            _refreshing = False
+
+
+def catalog() -> Dict[str, dict]:
+    """OpenRouter's models by id; {} when it can't be reached and nothing is cached. A stale catalog is returned
+    as it is while a background thread fetches the new one, so a page view never waits on OpenRouter; only the
+    very first call, with nothing cached anywhere, fetches inline."""
+    global _refreshing
+    with _lock:
+        _load_disk()
+        now = time.time()
+        stale = now - _fetched_at > CACHE_SECONDS and now - _failed_at > RETRY_SECONDS
+        if not stale or _refreshing:
+            return _catalog or {}
+        _refreshing = True
+        have = _catalog is not None
+    if have:
+        threading.Thread(target=refresh, daemon=True, name="openrouter-catalog").start()
+    else:
+        refresh()
+    with _lock:
         return _catalog or {}
 
 
