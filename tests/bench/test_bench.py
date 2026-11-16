@@ -542,13 +542,35 @@ def test_model_about(bench_env, monkeypatch):
     monkeypatch.setattr(model_info, "_fetched_at", 0.0)
     assert "openai/gpt-5-mini" in model_info.catalog() and len(fetches) == 1
 
+    def settle():
+        for t in threading.enumerate():
+            if t.name == "openrouter-catalog":
+                t.join(5)
+
+    # a stale catalog is served at once while the refresh runs in the background
+    gate = threading.Event()
+
+    def slow():
+        gate.wait(5)
+        return fetch()
+    monkeypatch.setattr(model_info, "_fetch", slow)
+    monkeypatch.setattr(model_info, "_fetched_at", 0.0)
+    t0 = time.time()
+    assert "openai/gpt-5-mini" in model_info.catalog() and time.time() - t0 < 1
+    assert "openai/gpt-5-mini" in model_info.catalog()  # one refresh at a time
+    gate.set()
+    settle()
+    assert len(fetches) == 2 and model_info._fetched_at > 0
+
     def down():
         fetches.append(1)
         raise model_info.httpx.ConnectError("down")
     monkeypatch.setattr(model_info, "_fetch", down)
     monkeypatch.setattr(model_info, "_fetched_at", 0.0)
-    assert "openai/gpt-5-mini" in model_info.catalog() and len(fetches) == 2
-    assert "openai/gpt-5-mini" in model_info.catalog() and len(fetches) == 2  # no retry storm
+    assert "openai/gpt-5-mini" in model_info.catalog()
+    settle()
+    assert len(fetches) == 3
+    assert "openai/gpt-5-mini" in model_info.catalog() and len(fetches) == 3  # no retry storm
 
 
 def test_reasoning_passthrough_and_cache_breakpoints(fake_openrouter):
@@ -2033,3 +2055,12 @@ def test_admin_requeue_starts_the_game_afresh(bench_env, monkeypatch):
     # only errored or cancelled games can be requeued
     assert client.post(f"/api/admin/requeue/{m['id']}", headers={"Authorization": "Bearer secret"}).status_code == 400
 
+
+
+def test_model_page_events_use_index(bench_env):
+    """The model page's latest messages/plans read through the kind index, not a scan of every event."""
+    plan = " ".join(r["detail"] for r in db.rows(
+        "EXPLAIN QUERY PLAN SELECT e.payload FROM events e JOIN matches m ON m.id=e.match_id WHERE e.kind=? AND "
+        "((e.side='home' AND m.home_model=?) OR (e.side='away' AND m.away_model=?)) ORDER BY e.id DESC LIMIT 25",
+        ("message", "x", "x")))
+    assert "idx_events_kind" in plan and "SCAN e" not in plan

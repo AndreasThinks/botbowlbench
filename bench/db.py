@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS events (
     payload TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_match ON events(match_id, id);
+-- a model's latest events of one kind (its messages and plans on the model page) without scanning every event
+CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, match_id, side);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 -- Newcomers of a placement (one, or several in a cohort) and which games count for whom. A game shared by two
 -- newcomers has a row for each. extra_games / target_range are frozen when the newcomer joins (NULL = read the live
