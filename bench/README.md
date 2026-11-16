@@ -56,7 +56,14 @@ models:
     model: vendor/model-id    # any OpenRouter model that supports tool calling
     # optional: temperature, max_tokens, budget_usd_per_game, max_tool_calls_per_turn, turn_time_limit,
     #           prompt_cache, extra: {reasoning: {effort: low}}
+    # a model whose request differs from the shared settings (tool_choice, reasoning, host routing, output ceiling)
+    # must say why, in plain words; the file is refused without it:
+    # tool_choice: auto
+    # setup_reason: Its hosts do not support required tool choice.
 ```
+
+The `setup_reason` is shown on the leaderboard chip ("auto tools", "pinned host"...), in the "Request setup" line on
+the model's page and in the About page's list of exceptions (all three read `config.request_setup`).
 
 The scheduler notices the new id and queues its placement. Setting `enabled: false` (or deleting the entry) retires a
 model: its queued games are cancelled but its history stays. Renaming creates a *new* competitor.
@@ -214,8 +221,10 @@ their frames on first view.
   conversation, its next call acts in seconds. Cuts are counted in `thinking_cuts` (and `uncertain_spend_calls`).
   Models whose providers hide their thinking get the note without it. `reply_time_limit: null` turns this off.
 * **Tool calls are required:** requests send `tool_choice: required` (setting `tool_choice`), so a reply must be a
-  tool call rather than prose. If a provider rejects it (for example Anthropic with extended thinking), the request is
-  re-sent with `auto` and that model stays on `auto` for the rest of the game.
+  tool call rather than prose. If a provider rejects it, the request is re-sent with `auto` and that model stays on
+  `auto` for the rest of the game (shown in its Condition health card). Models that need `auto` from the first
+  request (Claude, whose thinking is silently dropped when a tool call is forced) declare `tool_choice: auto` with a
+  `setup_reason` in `models.yaml`; nothing is set per model in code.
 * **Thinking (`PROTOCOL_VERSION` 1.5):** every model is sent `reasoning: {enabled: true}` (setting
   `reasoning_enabled`), so it thinks at its own default effort as listed by OpenRouter (Opus 5.5 high, GPT-6 Luna
   medium...), and models where thinking is optional (DeepSeek V3.2, Gemini 2.5 Flash Lite, Haiku 5.5) have it

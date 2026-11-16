@@ -33,7 +33,8 @@ const BBRank = (() => {
       lede: "Who drives the tools cleanly: the share of model replies that came back as a valid tool call.",
       how: "Clean calls = 1 − (invalid tool calls + replies with no tool call + replies cut off at the output length limit) ÷ model calls. " +
         "Provider errors, HTTP timeouts and content-filter retries are the host's fault, not the model's, and are left out. " +
-        "Harness moves: actions the harness had to make for the model (time limit, call budget or too many invalid calls).",
+        "Harness moves: actions the harness had to make for the model (time limit, call budget or too many invalid calls). " +
+        "Most models must answer with a tool call, so a reply with none is close to impossible for them; models marked \"auto tools\" may answer in prose and can lose points that way. Compare the two groups with that in mind.",
       value: (m) => { const c = S(m, "llm_calls"); return c ? 1 - (S(m, "invalid_tool_calls") + S(m, "no_tool_replies") + S(m, "output_truncations")) / c : null; },
       fmt: (v) => (v * 100).toFixed(1) + "%",
       strip: (m) => [["invalid", fmt.num(perGame(m, "invalid_tool_calls"), 1) + "/g"], ["cut off", fmt.num(perGame(m, "output_truncations"), 1) + "/g"],

@@ -614,9 +614,12 @@ models:
     model: fake/model
   - name: Claude Test
     model: anthropic/claude-test
+    tool_choice: auto
+    setup_reason: Thinking is dropped when a tool call is forced.
   - name: Reasoner (reasoning)
     model: fake/reasoner
     tool_choice: auto
+    setup_reason: Reasoning came back only with automatic tool choice.
     extra:
       reasoning:
         effort: high
@@ -889,8 +892,9 @@ def test_about_keeps_live_data_exceptions_and_board(seeded_app):
     assert 'id="ab-health-live"' in html and 'href="/api/health"' in html
     assert html.count('id="exceptions"') == 1 and '<a href="#exceptions">Exceptions</a>' in html
     exc = text.split('id="exceptions"')[1].split("<!-- 07 -->")[0]
-    assert '<a href="/models/claude-test">Claude Test</a>: automatic tool choice, set in code' in exc
-    assert '<a href="/models/reasoner-reasoning">Reasoner (reasoning)</a>: tool_choice: auto; reasoning effort high' in exc
+    assert '<a href="/models/claude-test">Claude Test</a>: tool choice auto. <span class="ab-exc-why"><b>Why:</b> Thinking is dropped' in exc
+    assert '<a href="/models/reasoner-reasoning">Reasoner (reasoning)</a>: tool choice auto; reasoning on, effort high.' in exc
+    assert "set in code" not in exc
     assert "unless a line says otherwise they request reasoning exactly as the house default does" in exc
     # the illustrative Tripwire board, with the real thresholds
     board = html.split('id="ab-board"')[1].split("</section>")[0]
@@ -928,3 +932,28 @@ def test_about_is_the_only_page_loading_its_assets(seeded_app):
     for url in ("/", "/leaderboard", "/matches", "/data"):
         html = seeded_app.get(url).get_data(as_text=True)
         assert "about.css" not in html and "about.js" not in html, url
+
+
+def test_request_setup_reaches_the_leaderboard_model_page_and_health_card(llm_bench, monkeypatch):
+    from bench import model_info
+    from bench.web import create_app
+    monkeypatch.setattr(model_info, "catalog", lambda: {})
+    moved = record([reply(host="HostA", **GOOD)] * 40)
+    moved["tool_choice"]["effective"] = "auto"                       # a host refused "required" in this game
+    _insert_game("fb0", "fake-llm", "random-baseline", 400, home_health=moved)
+    _insert_game("fb1", "fake-llm", "random-baseline", 401, home_health=record([reply(host="HostA", **GOOD)] * 40))
+    c = create_app(start_scheduler=False).test_client()
+    lb = {m["id"]: m for m in c.get("/api/leaderboard").get_json()["models"]}
+    assert lb["fake-llm"]["setup"] == {"default": True, "chips": [], "reason": None}
+    assert lb["claude-test"]["setup"]["chips"] == ["auto tools"] and "Thinking is dropped" in lb["claude-test"]["setup"]["reason"]
+    assert lb["reasoner-reasoning"]["setup"]["chips"] == ["auto tools", "effort high"]
+    assert lb["random-baseline"]["setup"] is None
+    d = c.get("/api/models/claude-test").get_json()
+    part = {p["key"]: p for p in d["setup"]["parts"]}
+    assert part["tool_choice"] == {"key": "tool_choice", "label": "Tool choice", "value": "auto", "differs": True,
+                                   "house": "required"}
+    assert part["reasoning"]["differs"] is False and d["setup"]["reason"]
+    tc = c.get("/api/models/fake-llm").get_json()["health"]["tool_choice"]
+    assert tc == {"games": 2, "fell_back": 1, "requested": "required", "effective": "auto"}
+    for page, needle in (("/leaderboard", "BBHealth.setupChips(m)"), ("/models/claude-test", "BBHealth.setupLine(d.setup)")):
+        assert needle in c.get(page).get_data(as_text=True)

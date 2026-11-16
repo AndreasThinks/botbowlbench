@@ -29,7 +29,8 @@ Promise.all([api(`/api/models/${MODEL_ID}`), api("/api/leaderboard")]).then(([d,
     h("h1", {}, h("span", { class: "swatch", style: { background: BB.modelColor(m.id), width: "14px", height: "14px" } }), m.name),
     h("div", { class: "secondary" }, m.provider === "openrouter" ? h("span", { class: "mono" }, m.model) : `${m.provider} baseline (no LLM)`,
       m.enabled ? "" : " · retired"),
-    about(d.about || {})));
+    about(d.about || {}), BBHealth.setupLine(d.setup)));
+  if (location.hash === "#setup") document.getElementById("setup")?.scrollIntoView();
   function about(a) {
     // OpenRouter's list cuts long descriptions with "..."; the full text is on the linked page
     const text = (a.description || "").replace(/\s*\.{3,}$/, "…");
@@ -61,6 +62,9 @@ Promise.all([api(`/api/models/${MODEL_ID}`), api("/api/leaderboard")]).then(([d,
     ["Casualties inflicted / game", fmt.num((sums.casualties_inflicted || 0) / n, 2)], ["Turnovers / game", fmt.num((sums.turnovers || 0) / n, 1)],
     ["Messages / game", fmt.num((sums.messages_sent || 0) / n, 1)], ["Avg message length", fmt.num(st.avg_message_len) + " chars"],
     ["Tool calls / game", fmt.num((sums.tool_calls || 0) / n)], ["Invalid tool-call rate", fmt.pct(st.illegal_rate)],
+    ["Replies with no tool call", sums.llm_calls ? `${fmt.num((sums.no_tool_replies || 0) / n, 1)} / game (${fmt.pct((sums.no_tool_replies || 0) / sums.llm_calls)})` : "–"],
+    ["Replies cut off at the output limit", sums.llm_calls ? `${fmt.num((sums.output_truncations || 0) / n, 1)} / game (${fmt.pct((sums.output_truncations || 0) / sums.llm_calls)})` : "–"],
+    ["Thinking tokens / turn", sums.turns && sums.llm_calls ? fmt.tokens(Math.round((sums.reasoning_tokens || 0) / sums.turns)) : "–"],
     ["Auto-finished turns / game", fmt.num((sums.budget_exhausted || 0) / n, 1)],
     ["Team re-rolls used / game", fmt.num((sums.rerolls_used || 0) / n, 1)],
     ["Share of team re-rolls spent", st.rerolls_spent_share == null ? "–" : fmt.pct(st.rerolls_spent_share)],

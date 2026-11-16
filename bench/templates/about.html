@@ -314,7 +314,7 @@
       <dl><dt>When</dt><dd>A known integration stops returning reasoning under required tool calls, or the <a href="#signal-R">R health flag</a> fires.</dd>
         <dt>Action</dt><dd>The condition is listed with automatic tool choice from its first request. After an R flag a maintainer may add one successor whose only change
           is automatic tool choice, with its own ID, placement and rating. The original keeps its games.</dd>
-        <dt>Who</dt><dd>A maintainer, by hand. Claude models are the one case set in code.</dd>
+        <dt>Who</dt><dd>A maintainer, by hand, in <code>models.yaml</code> with a written reason. Nothing is set per model in code.</dd>
         <dt>Why</dt><dd class="why">To restore the reasoning those routes return, without changing everyone's request.</dd></dl>
     </article>
     <article class="ab-fb" id="fb-short" aria-labelledby="fb-short-h">
@@ -353,11 +353,12 @@
     Automatic tool choice is not applied globally. These conditions differ, and unless a line says otherwise they request reasoning exactly as the house default does:</p>
   {% if exceptions %}
   <ul class="ab-exc">
-    {% for e in exceptions %}<li><a href="/models/{{ e.id }}">{{ e.name }}</a>{% if not e.enabled %} <span class="badge">retired</span>{% endif %}: {{ e.notes|join("; ") }}</li>
+    {% for e in exceptions %}<li><a href="/models/{{ e.id }}">{{ e.name }}</a>{% if not e.enabled %} <span class="badge">retired</span>{% endif %}: {{ e.notes|join("; ") }}.{% if e.reason %} <span class="ab-exc-why"><b>Why:</b> {{ e.reason }}</span>{% endif %}</li>
     {% endfor %}
   </ul>
   {% else %}<p>None at the moment.</p>{% endif %}
-  <p class="ab-rq-names">Every anthropic/* model uses automatic tool choice, set in code: in the known integration, a required tool call silently dropped the thinking Claude returned.
+  <p class="ab-rq-names">Every exception is declared in <code>models.yaml</code> with a written reason, shown above, on the model's page and on its leaderboard chip;
+    a model that differs without one is refused. No model gets a different request from code alone.
     The explicit effort levels in this list were a maintainer's choice made before the health checks; under the current policy the only pre-approved change after R is
     tool choice. Condition names describe what changed, not a choice between thinking and acting: the "(forced tools)" listings requested reasoning too, and on specific
     hosts it did not come back. Past games are not rewritten.</p>

@@ -13,6 +13,9 @@
 #   bot, module  (botbowl only) a bot id from botbowl's registry, and the module to import so it registers
 #   enabled    false = keep history but stop scheduling games
 #   description  shown on the model's page. Optional: LLMs use OpenRouter's description, baselines a built-in one
+#   setup_reason  required whenever a model's request differs from the settings below (tool_choice, reasoning,
+#              host routing, output ceiling...): one or two plain sentences saying why. Shown on the leaderboard
+#              chip, the model's page and the About page; the file is refused without it.
 #   temperature, max_tokens, reasoning_max_tokens, reasoning_enabled, tool_choice, budget_usd_per_game, max_tool_calls_per_turn,
 #              turn_time_limit, last_chance_seconds, reply_time_limit (optional; override the settings below)
 #   prompt_cache  true/false: add cache breakpoints (default: on for anthropic/* models; others cache automatically)
@@ -86,12 +89,20 @@ models:
 
   - name: Claude Haiku 5.5
     model: anthropic/claude-haiku-5.5
+    tool_choice: auto
+    setup_reason: >-
+      Anthropic models cannot think while a tool call is forced, and through OpenRouter that does not fail:
+      the thinking is silently dropped. Automatic tool choice keeps the thinking every other model gets.
 
   - name: GPT-6.1 Sol 
     model: openai/gpt-6.1-sol
 
   - name: Claude Opus 5.5
     model: anthropic/claude-opus-5.5
+    tool_choice: auto
+    setup_reason: >-
+      Anthropic models cannot think while a tool call is forced, and through OpenRouter that does not fail:
+      the thinking is silently dropped. Automatic tool choice keeps the thinking every other model gets.
 
   - name: DeepSeek V4.1 Flash
     model: deepseek/deepseek-v4.1-flash
@@ -101,11 +112,10 @@ models:
 
   - name: Muse Ember
     id: muse-ember
-    provider: openrouter
     model: meta/muse-ember
-    enabled: true
-    tool_choice: auto          # Meta and Google advertise auto, but not required tool choice
-    reasoning_enabled: true
+    tool_choice: auto
+    setup_reason: >-
+      Its serving hosts (Meta and Google) offer automatic tool choice but not required tool choice.
     description: >-
       Meta's efficient reasoning and tool-use model. Uses automatic tool choice
       because its serving routes do not support required tool choice; reasoning
@@ -126,8 +136,11 @@ models:
   - name: Muse Spark Open (reasoning)
     id: muse-spark-open-reasoning
     model: meta/muse-spark-open
-    enabled: true
     tool_choice: auto
+    setup_reason: >-
+      Under required tool choice the host Together returned no reasoning for this model; saved-position
+      tests showed automatic tool choice brought it back. The high effort level was a maintainer's choice
+      made before the health checks existed, so this condition differs from its forced-tools twin in two ways.
     extra:
       reasoning:
         effort: high
@@ -157,9 +170,10 @@ models:
   - name: Nemotron 3.5 Super VL (reasoning)
     id: nemotron-3-5-super-vl-reasoning
     model: nvidia/nemotron-3.5-super-vl
-    enabled: true
     tool_choice: auto
-    reasoning_enabled: true
+    setup_reason: >-
+      Under required tool choice the host BaseTen returned no substantive reasoning for this model;
+      saved-position tests showed automatic tool choice brought it back.
     description: >-
       Separate reasoning condition with automatic tool choice and reasoning
       explicitly enabled. No effort level is imposed because this model does
@@ -181,8 +195,12 @@ models:
   - name: Nemotron 3 Ultra (reasoning)
     id: nemotron-3-ultra-reasoning
     model: nvidia/nemotron-3-ultra-550b-a55b
-    enabled: true
     tool_choice: auto
+    setup_reason: >-
+      Under required tool choice the host BaseTen returned no substantive reasoning for this model;
+      saved-position tests showed automatic tool choice brought it back. The high effort level was a
+      maintainer's choice made before the health checks existed, so this condition differs from its
+      forced-tools twin in two ways.
     extra:
       reasoning:
         effort: high
@@ -200,24 +218,21 @@ models:
 
   - name: Inkling 2 Small
     id: inkling-2-small
-    provider: openrouter
     model: thinkingmachines/inkling-2-small
-    enabled: true
     extra:
       provider:
         only: [deepinfra]
         allow_fallbacks: false
-    tool_choice: required
-    reasoning_enabled: true
+    setup_reason: >-
+      Served by DeepInfra only, with no fallback hosts, as set by the maintainer when the model was added.
+      The pin also means the bench's fastest-host routing and slow-host skip do not apply to it.
 
   - name: Inkling Small
     id: inkling-small
     model: thinkingmachines/inkling-small
-    enabled: true
 
   - name: Ripple-65B Preview
     id: ripple-65b-preview
-    provider: openrouter
     model: ricursiveai/ripple-65b-preview
     enabled: false
     archive_reason: Serving-path failures on GMICloud; results excluded by maintainer decision pending a verified new provider condition.
@@ -226,4 +241,6 @@ models:
       from both sides' ratings and aggregates; seven unplayed fixtures are retired.
       Replays and transcripts remain available under Matches with Archived only selected.
       Any return requires a verified serving route, a new competitor ID and a fresh placement.
-    tool_choice: auto          # GMICloud supports auto, but not required tool choice
+    tool_choice: auto
+    setup_reason: >-
+      Its only serving host, GMICloud, offers automatic tool choice but not required tool choice.
