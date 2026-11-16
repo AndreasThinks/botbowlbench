@@ -224,8 +224,12 @@ models:
         only: [deepinfra]
         allow_fallbacks: false
     setup_reason: >-
-      Served by DeepInfra only, with no fallback hosts, as set by the maintainer when the model was added.
-      The pin also means the bench's fastest-host routing and slow-host skip do not apply to it.
+      DeepInfra is the route verified against the bench, not just one that advertises support: on 13 November
+      a narrow test through it, with the real tools, required tool calls and reasoning on, returned readable
+      reasoning and a setup call the engine accepted. Fallback hosts are off so the model cannot be switched
+      to an untested route mid-placement; the free Thinking Machines route returned a regional HTTP 403 and
+      lists explicit tool choice as unsupported. The pin is not a claim that DeepInfra is reliable over a
+      full match, and it means the bench's fastest-host routing and slow-host skip do not apply here.
 
   - name: Inkling Small
     id: inkling-small
