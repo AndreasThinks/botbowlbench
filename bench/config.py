@@ -67,6 +67,66 @@ def slugify(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 
 
+def _setup_parts(m: dict, settings: dict) -> List[dict]:
+    """What one LLM condition's ordinary request asks for, as (key, label, value, chip) rows in plain words."""
+    def own(key, setting=None):
+        return m[key] if key in m else settings.get(setting or key)
+    extra = m.get("extra") or {}
+    tc = own("tool_choice") or "auto"
+    reasoning = extra.get("reasoning")
+    if isinstance(reasoning, dict):
+        if reasoning.get("enabled") is False or reasoning.get("effort") == "none" or reasoning.get("max_tokens") == 0:
+            think = "not requested"
+        elif reasoning.get("effort"):
+            think = f"on, effort {reasoning['effort']}"
+        elif reasoning.get("max_tokens"):
+            think = f"on, budget of {int(reasoning['max_tokens']):,} tokens"
+        else:
+            think = "on, own setting"
+    elif own("reasoning_max_tokens") is not None:
+        think = f"on, budget of {int(own('reasoning_max_tokens')):,} tokens"
+    else:
+        think = "on, at the model's own default effort" if own("reasoning_enabled") else "not requested"
+    routing = extra.get("provider")
+    if isinstance(routing, dict):
+        only = routing.get("only") or routing.get("order")
+        route = (f"{', '.join(map(str, only))} only" if only and routing.get("allow_fallbacks") is False
+                 else f"{', '.join(map(str, only))} first" if only else "own host routing")
+    else:
+        route = "fastest host" if own("provider_sort") == "throughput" else (
+            f"sorted by {own('provider_sort')}" if own("provider_sort") else "OpenRouter's default")
+    ceiling = own("max_tokens", "max_output_tokens")
+    parts = [{"key": "tool_choice", "label": "Tool choice", "value": str(tc), "chip": f"{tc} tools"},
+             {"key": "reasoning", "label": "Reasoning", "value": think,
+              "chip": think[4:] if think.startswith("on, effort ") else "own reasoning"},
+             {"key": "routing", "label": "Routing", "value": route, "chip": "pinned host"},
+             {"key": "output", "label": "Output ceiling", "chip": "own output cap",
+              "value": f"{int(ceiling):,} tokens" if ceiling else "provider default"}]
+    other = sorted([k for k in ("temperature", "turn_time_limit", "last_chance_seconds", "reply_time_limit")
+                    if k in m and m[k] != settings.get(k)] + [f"extra.{k}" for k in extra if k not in ("reasoning", "provider")])
+    parts.append({"key": "other", "label": "Other", "chip": "own settings",
+                  "value": ", ".join(f"{k}: {m[k]}" if k in m else k for k in other) or "house default"})
+    return parts
+
+
+def request_setup(m: dict, settings: dict) -> dict:
+    """How one condition's ordinary request compares with the house request every other model gets. One summary
+    for the leaderboard chips, the model page and the About page: ``parts`` in plain words (``differs`` marks the
+    ones that are not the house default), ``chips`` for the differing parts and the condition's written
+    ``reason`` (models.yaml ``setup_reason``, required whenever anything differs). None for a baseline."""
+    if not is_llm(m):
+        return None
+    house = {p["key"]: p["value"] for p in _setup_parts({}, settings)}
+    parts = [{**p, "differs": p["value"] != house[p["key"]], "house": house[p["key"]]}
+             for p in _setup_parts(m, settings)]
+    parts = [p for p in parts if p["key"] != "other" or p["differs"]]
+    chips = [p.pop("chip") for p in parts if p["differs"]]
+    for p in parts:
+        p.pop("chip", None)
+    return {"default": not chips, "parts": parts, "chips": chips,
+            "reason": str(m.get("setup_reason") or "").strip() or None}
+
+
 def load_models_file(path: str = None) -> Dict:
     path = path or models_path()
     with open(path, encoding="utf-8") as f:
@@ -88,6 +148,9 @@ def load_models_file(path: str = None) -> Dict:
         if m["provider"] == "botbowl" and not m.get("bot"):
             raise ValueError(f"Model '{m['name']}' needs a botbowl 'bot' id")
         m["id"] = m.get("id") or slugify(m["name"])
+        if is_llm(m) and not request_setup(m, settings)["default"] and not str(m.get("setup_reason") or "").strip():
+            raise ValueError(f"Model '{m['name']}' differs from the house request "
+                             f"({', '.join(request_setup(m, settings)['chips'])}) and needs a 'setup_reason'")
         if m["id"] in seen:
             raise ValueError(f"Duplicate model id '{m['id']}' in {path}")
         seen.add(m["id"])

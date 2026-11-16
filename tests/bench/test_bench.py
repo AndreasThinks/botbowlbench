@@ -1764,10 +1764,31 @@ def test_last_chance_note_hands_back_the_cut_thinking(monkeypatch):
     assert lc and all("I will blitz H2 with A1." in p for p in lc)
 
 
-def test_claude_models_keep_auto_tool_choice_so_they_can_think():
+def test_tool_choice_exceptions_are_declared_in_models_yaml_not_in_code(tmp_path):
+    from bench import config
     from bench.llm import OpenRouterLLM
-    assert OpenRouterLLM("anthropic/claude-haiku-5.5", "k", tool_choice="required").tool_choice == "auto"
-    assert OpenRouterLLM("openai/gpt-5-mini", "k", tool_choice="required").tool_choice == "required"
+    # no per-vendor rule in the client: what the condition declares is what is sent
+    assert OpenRouterLLM("anthropic/claude-haiku-5.5", "k", tool_choice="required").tool_choice == "required"
+    cfg = config.load_models_file()
+    by = {m["id"]: m for m in cfg["models"]}
+    for mid in ("claude-haiku-5-5", "claude-opus-5-5"):
+        setup = config.request_setup(by[mid], cfg["settings"])
+        assert by[mid]["tool_choice"] == "auto" and setup["chips"] == ["auto tools"] and "silently dropped" in setup["reason"]
+    # every shipped exception carries its reason; default conditions carry none and no chips
+    for m in cfg["models"]:
+        setup = config.request_setup(m, cfg["settings"])
+        assert setup is None or setup["default"] or setup["reason"], m["name"]
+    assert config.request_setup(by["gpt-5-mini"], cfg["settings"])["default"] is True
+    assert config.request_setup(by["inkling-2-small"], cfg["settings"])["chips"] == ["pinned host"]
+    assert config.request_setup(by["nemotron-3-ultra-reasoning"], cfg["settings"])["chips"] == ["auto tools", "effort high"]
+    assert config.request_setup(by["scripted-baseline"], cfg["settings"]) is None
+    # a condition that differs without a reason is refused; with one it loads
+    f = tmp_path / "m.yaml"
+    f.write_text("models:\n  - name: X\n    model: v/x\n    tool_choice: auto\n")
+    with pytest.raises(ValueError, match="setup_reason"):
+        config.load_models_file(str(f))
+    f.write_text("models:\n  - name: X\n    model: v/x\n    tool_choice: auto\n    setup_reason: Host has no required.\n")
+    assert config.load_models_file(str(f))["models"][0]["setup_reason"] == "Host has no required."
 
 
 def test_deepseek_tool_call_markup_in_content_is_recovered():

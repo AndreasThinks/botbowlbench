@@ -370,6 +370,12 @@ def condition_health(games: List[dict], *, llm: bool = True, model_id: Optional[
         return out
     signals = {"R": _r_signal(full, legacy), "P": _rate_signal("P", "no_tool", full),
                "L": _rate_signal("L", "truncated", full), "S": _s_signal(full)}
+    # games that asked for one tool choice and ended on another (a host refused "required": bench.llm drops to auto)
+    asked = [g for g in full if (g["health"].get("tool_choice") or {}).get("requested")]
+    moved = [g for g in asked if g["health"]["tool_choice"].get("effective") != g["health"]["tool_choice"]["requested"]]
+    out["tool_choice"] = {"games": len(asked), "fell_back": len(moved),
+                          "requested": asked[-1]["health"]["tool_choice"]["requested"] if asked else None,
+                          "effective": moved[-1]["health"]["tool_choice"].get("effective") if moved else None}
     flags = [k for k in "RPLS" if signals[k]["state"] == "flagged"]
     if flags:
         status = "flagged"

@@ -208,10 +208,8 @@ class OpenRouterLLM:
         # Haiku 5.5: medium...) and switches it on for hybrid models where it is optional (DeepSeek V3.2, Gemini).
         self.reasoning_enabled = reasoning_enabled and "reasoning" not in self.extra
         # "required" makes every reply a tool call. Some providers reject it; the first such rejection drops this
-        # client back to "auto" for the rest of the game. Anthropic can't think while a tool call is forced, and
-        # through OpenRouter that doesn't fail: thinking is silently dropped. So Claude models always use "auto".
-        if tool_choice == "required" and model.startswith("anthropic/"):
-            tool_choice = "auto"
+        # client back to "auto" for the rest of the game. Where a provider silently drops thinking instead (Anthropic
+        # through OpenRouter), the condition declares tool_choice: auto in models.yaml with its setup_reason.
         self.tool_choice = tool_choice
         self.hurry_max_tokens = hurry_max_tokens
         self.timeout = timeout

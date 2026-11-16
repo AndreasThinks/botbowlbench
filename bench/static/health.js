@@ -30,6 +30,31 @@ const BBHealth = (() => {
     return out;
   }
 
+  // chips for a condition whose request differs from the house request ("auto tools", "pinned host"...): the
+  // written reason is the hover/tap text, and the chip opens the setup line on the model page
+  function setupChips(model) {
+    const st = model.setup;
+    if (!st || st.default) return [];
+    return st.chips.map((c) => {
+      const label = `Differs from the house request: ${c}. ${st.reason || ""}`.trim();
+      return h("a", { class: "hflag hsetup", href: `/models/${model.id}#setup`, title: label, "aria-label": label }, c);
+    });
+  }
+
+  // the "Request setup" block on a model page: every part in plain words, the differing ones marked, then the reason
+  function setupLine(st) {
+    if (!st) return null;
+    const parts = st.parts.flatMap((p, i) => [i ? " · " : "", h("span", { class: p.differs ? "sdiff" : "" },
+      `${p.label}: `, h("b", {}, p.value), p.differs ? h("span", { class: "muted" }, ` (house: ${p.house})`) : null)]);
+    return h("div", { class: "setup", id: "setup", tabindex: "-1" },
+      h("div", { class: "setup-k" }, "Request setup ",
+        h("span", { class: st.default ? "badge" : "badge sbadge" }, st.default ? "house default" : "differs from the house default")),
+      h("div", { class: "setup-v" }, ...parts),
+      st.default ? null : h("p", { class: "setup-why" }, h("b", {}, "Why: "), st.reason || "No reason recorded."),
+      h("p", { class: "muted setup-more" }, st.default ? "The same request every model gets. " : "Everything else is the same request every model gets. ",
+        h("a", { href: "/about#exceptions" }, "House request and exceptions")));
+  }
+
   function stateTag(state) {
     return h("span", { class: `hstate s-${state}` }, STATE[state] || state);
   }
@@ -112,6 +137,12 @@ const BBHealth = (() => {
       });
       parts.push(h("div", { class: "hsigs" }, ...rows));
     }
+    const tc = hl.tool_choice;
+    if (tc && tc.fell_back) {
+      parts.push(h("p", { class: "hnote htc" }, h("b", {}, "Tool choice fell back. "),
+        `Asked for ${tc.requested}; ${tc.fell_back} of ${plural(tc.games, "measured game")} ended on ${tc.effective || "another setting"} after a host refused it. `,
+        "The same request was sent again with that one change, and the seat kept it for the rest of the game."));
+    }
     // H: always shown, measured or not
     if (hl.hosts.length) {
       parts.push(h("h3", { class: "hsub" }, "H · Host mix"), h("p", { class: "muted hnote" },
@@ -131,5 +162,5 @@ const BBHealth = (() => {
     el.replaceChildren(...parts);
   }
 
-  return { chips, card, SHORT, NAME };
+  return { chips, setupChips, setupLine, card, SHORT, NAME };
 })();

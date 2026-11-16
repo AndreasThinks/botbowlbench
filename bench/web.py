@@ -155,32 +155,20 @@ def create_app(start_scheduler: bool = True) -> Flask:
             _health_cache.update(key=key, data=data)
         return _health_cache["data"]
 
+    def setup_of(model_id):
+        """The request setup of one condition against the house request (config.request_setup); None for a baseline."""
+        return config.request_setup(bench.models.get(model_id) or bench._model_cfg(model_id), bench.settings)
+
     def inference_exceptions():
-        """Rated LLM conditions whose request differs from the house default, for the About page."""
-        s = bench.settings
+        """LLM conditions whose request differs from the house default, with their written reason, for the About
+        page."""
         out = []
         for m in bench.models.values():
-            if not config.is_llm(m):
-                continue
-            notes = []
-            tc = m.get("tool_choice")
-            if (m.get("model") or "").startswith("anthropic/") and (tc or s.get("tool_choice")) == "required":
-                notes.append("automatic tool choice, set in code for every anthropic/* model")
-            elif tc and tc != s.get("tool_choice"):
-                notes.append(f"tool_choice: {tc}")
-            reasoning = (m.get("extra") or {}).get("reasoning")
-            if isinstance(reasoning, dict) and reasoning.get("effort"):
-                notes.append(f"reasoning effort {reasoning['effort']}")
-            elif isinstance(reasoning, dict):
-                notes.append("own reasoning setting")
-            for k, setting, label in (("reasoning_max_tokens", "reasoning_max_tokens", "thinking budget"),
-                                      ("max_tokens", "max_output_tokens", "output ceiling")):
-                if m.get(k) is not None and m.get(k) != s.get(setting):
-                    notes.append(f"{label} {m[k]}")
-            if "provider" in (m.get("extra") or {}):
-                notes.append("own provider routing")
-            if notes:
-                out.append({"id": m["id"], "name": m["name"], "enabled": bool(m.get("enabled", True)), "notes": notes})
+            setup = config.request_setup(m, bench.settings)
+            if setup and not setup["default"]:
+                out.append({"id": m["id"], "name": m["name"], "enabled": bool(m.get("enabled", True)),
+                            "notes": [f"{p['label'].lower()} {p['value']}" for p in setup["parts"] if p["differs"]],
+                            "reason": setup["reason"]})
         return out
 
     def require_admin():
@@ -448,6 +436,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
                          "elo_ci": rating_range(elo.get(mid)),
                          "history": elo.get(mid, {}).get("history", []),
                          "health": tripwire.compact(hl[mid]),
+                         "setup": (lambda st: st and {k: st[k] for k in ("default", "chips", "reason")})(setup_of(mid)),
                          **(a or NO_GAMES)})
         rows.sort(key=lambda r: (-r["elo"], -r["played"], r["name"]))
         return jsonify({"models": rows, "matches": ranked["matches"],
@@ -509,7 +498,7 @@ def create_app(start_scheduler: bool = True) -> Flask:
         h["text"] = tripwire.SIGNALS
         h["fallback_causes"] = tripwire.FALLBACK_CAUSES
         return jsonify({"model": info, "about": model_info.about(cfg), "elo": elo, "elo_ci": rating_range(fit),
-                        "stats": agg, "health": h,
+                        "stats": agg, "health": h, "setup": config.request_setup(cfg, bench.settings),
                         "reflections": refl, "head_to_head": sorted(h2h.values(), key=lambda r: r["name"]),
                         "recent": recent, "messages": msgs})
 
