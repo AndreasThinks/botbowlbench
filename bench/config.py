@@ -103,7 +103,8 @@ def _setup_parts(m: dict, settings: dict) -> List[dict]:
              {"key": "output", "label": "Output ceiling", "chip": "own output cap",
               "value": f"{int(ceiling):,} tokens" if ceiling else "provider default"}]
     other = sorted([k for k in ("temperature", "turn_time_limit", "last_chance_seconds", "reply_time_limit")
-                    if k in m and m[k] != settings.get(k)] + [f"extra.{k}" for k in extra if k not in ("reasoning", "provider")])
+                    if k in m and m[k] != settings.get(k)]
+                   + [f"extra.{k}" for k in extra if k not in ("reasoning", "provider")])
     parts.append({"key": "other", "label": "Other", "chip": "own settings",
                   "value": ", ".join(f"{k}: {m[k]}" if k in m else k for k in other) or "house default"})
     return parts
