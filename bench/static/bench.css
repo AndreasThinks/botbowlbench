@@ -1,12 +1,15 @@
 /* BotBowl Bench - site styles. Tokens first; light + dark.
-   Look: an evals results page. Plex Sans for prose, Plex Mono for numbers and labels,
-   hairline rules instead of boxes, one orange accent; team colours stay blue (home) / red (away). */
+   Look: a coach's playbook. The logo is a play diagram (orange O runs a route past an X), and the
+   pages pick that up: graph paper behind everything, dashed route lines after page titles, an orange
+   x before section labels. Plex Mono for titles, numbers and labels, Plex Sans for prose, ink rules
+   instead of boxes, one orange accent; team colours stay blue (home) / red (away). */
 :root {
   color-scheme: light;
-  --bg: #ffffff;
-  --surface-1: #ffffff;
-  --surface-2: #f5f5f4;
-  --border: #e7e5e4;
+  --bg: #fbfaf7;              /* playbook paper */
+  --surface-1: #fbfaf7;
+  --surface-2: #f1efe9;
+  --border: #e2dfd6;
+  --paper: #efece3;           /* graph-paper lines behind every page */
   --ink: #111111;             /* strong hairlines, active nav, primary buttons */
   --ink-text: #ffffff;        /* text on --ink */
   --text-primary: #111111;
@@ -14,7 +17,7 @@
   --text-muted: #8a8580;
   --accent: #ff5a1f;          /* orange: rank 1, live, brand mark */
   --accent-ink: #ffffff;
-  --accent-soft: #fff4ee;
+  --accent-soft: #fff1ea;
   --home: #2563eb;            /* matches the board: home = blue */
   --away: #dc2626;            /* away = red */
   --home-soft: #eff4ff;
@@ -24,7 +27,7 @@
   --critical: #dc2626;
   --ball: #f5b700;            /* ball halo and flight on the pitch (same in both themes: the pitch is always green) */
   --bar: #111111;
-  --grid: #efedeb;
+  --grid: #ebe8df;
   --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
   --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
   --radius: 0px;
@@ -35,13 +38,13 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #0f0f0e; --surface-1: #0f0f0e; --surface-2: #1c1c1a; --border: #2c2b29;
-    --ink: #ededeb; --ink-text: #0f0f0e;
+    --bg: #101110; --surface-1: #101110; --surface-2: #1b1c1a; --border: #2b2c29; --paper: #1b1c1a;
+    --ink: #ededeb; --ink-text: #101110;
     --text-primary: #f5f5f4; --text-secondary: #c3c0ba; --text-muted: #8f8b85;
     --accent: #ff6a33; --accent-ink: #0f0f0e; --accent-soft: #2a1810;
     --home: #5b8def; --away: #f05252; --home-soft: #172340; --away-soft: #3a1717;
     --good: #3fb950; --warning: #d4a72c; --critical: #f05252;
-    --bar: #ededeb; --grid: #242422;
+    --bar: #ededeb; --grid: #232421;
     --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
     --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
     --shadow: none;
@@ -49,13 +52,13 @@
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0f0f0e; --surface-1: #0f0f0e; --surface-2: #1c1c1a; --border: #2c2b29;
-  --ink: #ededeb; --ink-text: #0f0f0e;
+  --bg: #101110; --surface-1: #101110; --surface-2: #1b1c1a; --border: #2b2c29; --paper: #1b1c1a;
+  --ink: #ededeb; --ink-text: #101110;
   --text-primary: #f5f5f4; --text-secondary: #c3c0ba; --text-muted: #8f8b85;
   --accent: #ff6a33; --accent-ink: #0f0f0e; --accent-soft: #2a1810;
   --home: #5b8def; --away: #f05252; --home-soft: #172340; --away-soft: #3a1717;
   --good: #3fb950; --warning: #d4a72c; --critical: #f05252;
-  --bar: #ededeb; --grid: #242422;
+  --bar: #ededeb; --grid: #232421;
   --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
   --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
   --shadow: none;
@@ -65,13 +68,20 @@
 [hidden] { display: none !important; }
 html, body { margin: 0; }
 body {
-  background: var(--bg); color: var(--text-primary);
+  background-color: var(--bg); color: var(--text-primary);
+  background-image: linear-gradient(var(--paper) 1px, transparent 1px), linear-gradient(90deg, var(--paper) 1px, transparent 1px);
+  background-size: 28px 28px; background-position: -1px -1px;
   font: 15px/1.55 var(--sans);
 }
 a { color: inherit; text-decoration-color: var(--text-muted); text-underline-offset: 2px; }
 a:hover { text-decoration-color: currentColor; }
 h1, h2, h3 { line-height: 1.2; margin: 0 0 .5em; }
-h1 { font-size: 2rem; font-weight: 600; letter-spacing: -.02em; }
+h1 { font-family: var(--mono); font-size: 1.9rem; font-weight: 600; letter-spacing: -.03em; }
+/* page titles end in a dashed route line, like a run drawn on a play diagram */
+main h1 { display: flex; align-items: center; gap: 12px; }
+main h1::after { content: ""; flex: 1; min-width: 24px; border-top: 2px dashed var(--ink); margin-left: 6px; }
+main .ab-hero h1, main .wl-strip h1 { display: block; }
+main .ab-hero h1::after, main .wl-strip h1::after { content: none; }
 h2 { font-family: var(--mono); font-size: .8rem; font-weight: 500; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); }
 h3 { font-size: 1rem; }
 .muted { color: var(--text-muted); } .secondary { color: var(--text-secondary); }
@@ -79,14 +89,17 @@ h3 { font-size: 1rem; }
 .num { font-family: var(--mono); font-weight: 500; font-variant-numeric: tabular-nums; text-align: right; }
 
 /* header */
-.topbar { background: var(--surface-1); border-bottom: 1px solid var(--ink); position: sticky; top: 0; z-index: 10; }
-.topbar-inner { max-width: 1280px; margin: 0 auto; padding: 0 16px; display: flex; align-items: center; gap: 20px; height: 56px; }
-.brand { font-family: var(--mono); font-weight: 600; font-size: .95rem; text-decoration: none; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
-.brand-mark { width: 14px; height: 14px; background: var(--accent); display: block; font-size: 0; }
+.topbar { background: var(--surface-1); border-bottom: 2px solid var(--ink); position: sticky; top: 0; z-index: 10; }
+.topbar-inner { max-width: 1280px; margin: 0 auto; padding: 0 16px; display: flex; align-items: center; gap: 20px; height: 60px; }
+.brand { font-family: var(--mono); font-weight: 600; font-size: 1rem; letter-spacing: -.01em; text-decoration: none; display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.brand-mark { width: 30px; height: 30px; display: block; flex: none; color: var(--ink); }
+.brand-mark .o { fill: var(--accent); }
+.brand-sub { font-weight: 400; color: var(--text-muted); }
 .nav { display: flex; gap: 4px; overflow-x: auto; }
 .nav a { font-family: var(--mono); font-size: .82rem; text-decoration: none; padding: 6px 10px; color: var(--text-secondary); white-space: nowrap; }
 .nav a:hover { background: var(--surface-2); color: var(--text-primary); }
-.nav a.active { background: var(--ink); color: var(--ink-text); }
+.nav a.active { color: var(--text-primary); font-weight: 600; box-shadow: inset 0 -3px 0 var(--accent); }
+.nav a.active:hover { background: none; }
 .status-pill { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: .85rem; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .theme-toggle { flex: none; width: 32px; height: 32px; display: grid; place-items: center; padding: 0; background: none; border: 1px solid var(--border); color: var(--text-secondary); cursor: pointer; }
 .theme-toggle:hover { background: var(--surface-2); color: var(--text-primary); }
@@ -108,8 +121,9 @@ h3 { font-size: 1rem; }
 main { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; }
 .grid { display: grid; gap: 32px; }
 .grid-2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
-.card { background: transparent; border-top: 1px solid var(--ink); padding: 14px 0 16px; min-width: 0; }
+.card { background: transparent; border-top: 2px solid var(--ink); padding: 14px 0 16px; min-width: 0; }
 .card h2 { display: flex; align-items: center; gap: 8px; }
+.card h2::before, main > h2::before { content: "×"; color: var(--accent); font-weight: 600; font-size: 1.1em; margin-right: 2px; }
 .section { margin-top: 24px; }
 .empty { color: var(--text-muted); padding: 12px 0; }
 
@@ -117,7 +131,7 @@ main { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: .92rem; }
 th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
-th { font-family: var(--mono); font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); font-weight: 500; border-bottom-color: var(--ink); }
+th { font-family: var(--mono); font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); font-weight: 500; border-bottom: 2px solid var(--ink); }
 td { border-bottom-color: var(--grid); }
 th.num, td.num { text-align: right; }
 tbody tr:hover { background: var(--accent-soft); }
@@ -308,7 +322,8 @@ table.alt tr.divider td { font: .72rem var(--mono); text-transform: uppercase; l
 
 /* stat tiles */
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
-.tile { border-left: 1px solid var(--ink); padding: 4px 12px; }
+.tile { border-left: 2px solid var(--ink); padding: 4px 12px; }
+.tile:first-child { border-left-color: var(--accent); }
 .tile .label { font-family: var(--mono); font-size: .72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
 .tile .value { font-family: var(--mono); font-size: 1.4rem; font-weight: 500; font-variant-numeric: tabular-nums; }
 
@@ -331,7 +346,10 @@ table.alt tr.divider td { font: .72rem var(--mono); text-transform: uppercase; l
 footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-muted); font-size: .82rem; }
 .footer-credit { display: block; margin-top: 6px; }
 @media (max-width: 640px) {
-  .topbar-inner { gap: 10px; }
+  /* two rows on a phone: logo and controls, then the nav on its own scrolling row */
+  .topbar-inner { gap: 10px; flex-wrap: wrap; height: auto; padding-top: 8px; row-gap: 4px; }
+  .nav { order: 3; width: 100%; flex: none; padding-bottom: 6px; }
+  h1 { font-size: 1.6rem; }
   .status-pill .txt { display: none; }
   .scoreboard .big { font-size: 1.6rem; }
   .scoreboard .team .name { font-size: .95rem; }
@@ -656,6 +674,7 @@ footer { max-width: 1280px; margin: 0 auto; padding: 16px; color: var(--text-mut
 .hp-plan.home b { color: var(--home); } .hp-plan.away b { color: var(--away); }
 .hp-cta { margin-top: auto; text-align: center; padding: 10px; font-size: .9rem; flex: none; text-decoration: none; }
 .hp-cta:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.hp-cta, .story-cta { box-shadow: 4px 4px 0 var(--accent); margin-right: 4px; margin-bottom: 4px; }
 .hp-cap { font-size: .76rem; text-align: center; flex: none; }
 
 /* tackle zones: the side not on the move marks the squares around its standing players */
