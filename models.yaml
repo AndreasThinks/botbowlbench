@@ -87,6 +87,10 @@ models:
   - name: Qwen 3.8 Flash
     model: qwen/qwen3.8-flash
 
+  - name: Qwen4 Max
+    id: qwen4-max
+    model: qwen/qwen4-max
+
   - name: Claude Haiku 5.5
     model: anthropic/claude-haiku-5.5
     tool_choice: auto
