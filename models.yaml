@@ -101,6 +101,11 @@ models:
   - name: GPT-6.1 Sol 
     model: openai/gpt-6.1-sol
 
+  - name: GPT-6.2 Sol
+    id: gpt-6-2-sol
+    model: openai/gpt-6.2-sol
+    enabled: true
+
   - name: Claude Opus 5.5
     model: anthropic/claude-opus-5.5
     tool_choice: auto
