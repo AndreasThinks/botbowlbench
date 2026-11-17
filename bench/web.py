@@ -593,13 +593,34 @@ def create_app(start_scheduler: bool = True) -> Flask:
     def api_admin_requeue(match_id):
         require_admin()
         m = db.row("SELECT status, meta FROM matches WHERE id=?", (match_id,))
-        if m and (json.loads(m.get("meta") or "{}")).get("archive"):
+        meta = json.loads(m.get("meta") or "{}") if m else {}
+        if meta.get("anchor_replacement"):
+            return jsonify({"error": "replaced anchors cannot be requeued"}), 400
+        if meta.get("archive"):
             return jsonify({"error": "archived conditions require a fresh competitor ID and placement"}), 400
         if m is None or m["status"] not in ("error", "cancelled"):
             return jsonify({"error": "only errored or cancelled matches can be requeued"}), 400
         repairs.requeue_fresh([match_id])   # a fresh game, not a resume
         bench.wake()
         return jsonify({"ok": True})
+
+    @app.route("/api/admin/placements/<int:tid>/replace-anchor", methods=["POST"])
+    def api_admin_replace_anchor(tid):
+        require_admin()
+        data = request.get_json(silent=True)
+        keys = ("model_id", "held_model_id", "replacement_model_id", "reason")
+        if not isinstance(data, dict) or any(not isinstance(data.get(k), str) or not data[k].strip() for k in keys):
+            return jsonify({"error": "Provide model_id, held_model_id, replacement_model_id and reason"}), 400
+        ids = data.get("match_ids")
+        if not isinstance(ids, list) or len(ids) != 2 or any(not isinstance(mid, str) or not mid for mid in ids) \
+                or ids[0] == ids[1]:
+            return jsonify({"error": "Provide two distinct match_ids"}), 400
+        try:
+            replacements = bench.replace_held_anchor(tid, data["model_id"], data["held_model_id"],
+                                                     data["replacement_model_id"], ids, data["reason"])
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 409
+        return jsonify({"replacements": replacements})
 
     @app.route("/api/admin/health-holds/<model_id>", methods=["POST"])
     def api_admin_place_hold(model_id):

@@ -92,6 +92,115 @@ def test_two_newcomers_in_separate_syncs_share_one_cohort(env):
     assert db.row("SELECT COUNT(*) n FROM matches WHERE tournament_id=?", (merged[0]["id"],))["n"] == 0
 
 
+@pytest.fixture
+def anchor_swap(env):
+    env.add("N1")
+    tid = placements()[0]["id"]
+    pair = queue(tid)[:2]
+    held = next(x for x in (pair[0]["home_model"], pair[0]["away_model"]) if x != "n1")
+    used = {v for m in queue(tid) for v in (m["home_model"], m["away_model"])}
+    replacement = next(x for x in env.b._enabled_ids() if x not in used)
+    complete(m["id"] for m in queue(tid)[2:])
+    db.execute("UPDATE tournaments SET status='running', started_at=? WHERE id=?", (time.time(), tid))
+    assert env.b.place_hold(held)
+    return tid, held, replacement, pair
+
+
+def test_admin_replaces_held_anchor_pair_without_changing_history(env, anchor_swap, monkeypatch):
+    from bench import scheduler
+    from bench.web import create_app
+    monkeypatch.setattr(scheduler, "_bench", env.b)
+    monkeypatch.setenv("ADMIN_TOKEN", "test-token")
+    client = create_app(start_scheduler=False).test_client()
+    tid, held, replacement, pair = anchor_swap
+    path = f"/api/admin/placements/{tid}/replace-anchor"
+    payload = {"model_id": "n1", "held_model_id": held, "replacement_model_id": replacement,
+               "match_ids": [m["id"] for m in pair], "reason": "Serving path unverified"}
+    auth = {"Authorization": "Bearer test-token"}
+    before = snapshot()
+    completed = db.rows("SELECT * FROM matches WHERE status='completed' ORDER BY id")
+    assert client.post(path, json=payload).status_code == 403
+    assert client.post(path, json=[], headers=auth).status_code == 400
+    assert snapshot() == before
+    r = client.post(path, json=payload, headers=auth)
+    assert r.status_code == 200, r.get_data(as_text=True)
+    progress = env.b.placement_progress(tid)["n1"]
+    assert (progress["anchor_done"], progress["anchor_total"], progress["cancelled"]) == (4, 6, 2)
+    assert db.rows("SELECT * FROM matches WHERE status='completed' ORDER BY id") == completed
+    assert env.b.held_models()[held]["status"] == "active"
+    assert db.row("SELECT enabled FROM models WHERE id=?", (held,))["enabled"] == 1
+    assert [(m["home_model"], m["away_model"]) for m in queue(tid)] == [("n1", replacement), (replacement, "n1")]
+    assert env.b.next_match()["id"] == queue(tid)[0]["id"]
+    for old, new in zip(pair, queue(tid)):
+        assert new["seq"] == old["seq"]
+        d = client.get(f"/api/matches/{old['id']}").get_json()
+        assert d["status"] == "cancelled"
+        assert d["meta"]["anchor_replacement"]["replacement_match_id"] == new["id"]
+        assert client.post(f"/api/admin/requeue/{old['id']}", headers=auth).status_code == 400
+    assert client.post(path, json=payload, headers=auth).status_code == 409
+    assert len(queue(tid)) == 2
+
+
+@pytest.mark.parametrize("reason", ["started", "history", "checkpoint", "shared", "replacement-held"])
+def test_anchor_swap_refuses_unsafe_pairs(env, anchor_swap, monkeypatch, reason):
+    tid, held, replacement, pair = anchor_swap
+    mid = pair[0]["id"]
+    if reason == "started":
+        db.execute("UPDATE matches SET started_at=? WHERE id=?", (time.time(), mid))
+    elif reason == "history":
+        db.add_event(mid, None, "system", {"text": "prior activity"})
+    elif reason == "checkpoint":
+        from bench import scheduler
+        cp = env.path.parent / "test-checkpoint"
+        cp.touch()
+        monkeypatch.setattr(scheduler, "checkpoint_path", lambda mid: str(cp))
+    elif reason == "shared":
+        db.execute("INSERT INTO placement_fixtures VALUES (?,?,'anchor')", (mid, held))
+    else:
+        env.b.place_hold(replacement)
+    before = snapshot()
+    with pytest.raises(ValueError):
+        env.b.replace_held_anchor(tid, "n1", held, replacement, [m["id"] for m in pair], "test")
+    assert snapshot() == before
+
+
+def test_anchor_swap_rolls_back_both_legs(env, anchor_swap):
+    tid, held, replacement, pair = anchor_swap
+    with db.conn() as c:
+        c.execute("CREATE TRIGGER fail_return_leg BEFORE INSERT ON matches "
+                  f"WHEN NEW.home_model='{replacement}' AND NEW.away_model='n1' "
+                  "BEGIN SELECT RAISE(ABORT, 'forced rollback'); END")
+    from sqlite3 import IntegrityError
+    before = db.rows("SELECT * FROM matches ORDER BY id")
+    with pytest.raises(IntegrityError, match="forced rollback"):
+        env.b.replace_held_anchor(tid, "n1", held, replacement, [m["id"] for m in pair], "test")
+    assert db.rows("SELECT * FROM matches ORDER BY id") == before
+    assert len(queue(tid)) == 2
+
+
+def test_held_models_are_excluded_from_new_anchors_and_top_ups(env):
+    assert env.b.place_hold("m0")
+    env.add("N1")
+    tid = placements()[0]["id"]
+    assert all("m0" not in (m["home_model"], m["away_model"]) for m in queue(tid))
+    for m in env.b._enabled_ids():
+        if m not in ("m5", "m0", "n1"):
+            env.b.place_hold(m)
+    complete(m["id"] for m in queue(tid))
+    env.b._finish_tournaments()
+    assert {(m["home_model"], m["away_model"]) for m in queue(tid)} == {("n1", "m5"), ("m5", "n1")}
+
+
+def test_newcomer_placement_waits_when_every_opponent_is_held(env):
+    for opponent in env.b._enabled_ids():
+        env.b.place_hold(opponent)
+    env.add("N1")
+    t, = placements()
+    assert t["status"] == "queued" and not queue(t["id"])
+    assert env.b.release_hold("m0")
+    assert {(m["home_model"], m["away_model"]) for m in queue(t["id"])} == {("n1", "m0"), ("m0", "n1")}
+
+
 def test_shared_directed_fixtures_are_played_once_and_count_for_both(env):
     env.settings = EVERYONE
     assert sorted(env.add("N1", "N2")) == ["n1", "n2"]
