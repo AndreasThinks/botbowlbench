@@ -50,6 +50,19 @@ One JSON object per game:
 
 `provider_fallback` is shown alongside admissibility, not folded into it: a game with provider-caused fallback can still be admissible. Condition health per model: `GET /api/health`, `GET /api/models/<id>` (see HEALTH.md).
 
+### Replaced placement anchors
+
+An administrator can use `POST /api/admin/placements/<id>/replace-anchor` with `model_id`,
+`held_model_id`, `replacement_model_id`, the two original `match_ids`, and a public `reason`.
+This replaces only a never-started, unshared home-and-away anchor pair in a running placement.
+The replacement must be enabled, unheld, and not already playing or played against the newcomer
+as checked by the scheduler. A successful request may start paid games immediately.
+
+The tournament API retains the original fixtures as `cancelled`. Inspect each original via
+`GET /api/matches/<id>` for `meta.anchor_replacement`, including its reason and replacement match ID.
+These originals cannot be requeued. The new legs occupy the original queue slots, and the completed
+games, model hold and top-up allowance are unchanged. This is a fixture change, not a rating edit.
+
 `resumes` lists restarts of the server during the game (normally empty). Each entry has `ts`, `checkpoint` (the
 turn the game continued from, e.g. `away:turn-2-5`, or null for a restart from kick-off), `git_sha` of the code that
 continued it, `dropped_records` and `restart_cost` (see the `resume` transcript record).

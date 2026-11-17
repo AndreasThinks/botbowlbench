@@ -210,6 +210,8 @@ class Bench:
     def placement_anchors(self, model_id: str, opponents: List[str]) -> List[str]:
         """The opponents a newcomer is placed against: settings.placement_anchors if given (names or ids), otherwise
         settings.placement_size models spread evenly from the top to the bottom of the current ratings."""
+        held = self.held_models()
+        opponents = [o for o in opponents if o not in held and o != model_id]
         listed = self.settings.get("placement_anchors")
         if listed:
             wanted = {config.slugify(str(a)) for a in listed} | {str(a) for a in listed}
@@ -227,19 +229,70 @@ class Bench:
             return ranked[:1]
         return [ranked[round(i * (len(ranked) - 1) / (size - 1))] for i in range(size)]
 
+    def _add_anchors(self, c, tid: int, model_id: str, opponents: List[str]):
+        fixtures = self._pairings([(model_id, o) for o in self.placement_anchors(model_id, opponents)])
+        ids = self._insert_matches(c, tid, fixtures, 0)
+        c.executemany("INSERT INTO placement_fixtures(match_id, model_id, role) VALUES(?,?,'anchor')",
+                      [(mid, model_id) for mid in ids])
+        return ids
+
     def create_placement(self, model_id: str, opponents: List[str]) -> int:
         """A standalone placement for a newcomer; :meth:`merge_placements` later folds it into a cohort with any
         other compatible, completely unstarted placement."""
         name = self.models.get(model_id, {}).get("name", model_id)
-        fixtures = self._pairings([(model_id, o) for o in self.placement_anchors(model_id, opponents)])
-        with db.transaction() as c:
-            tid, ids = self._insert_tournament(c, "placement", f"Placement: {name}", fixtures, focus=model_id)
+        with self._lock, db.transaction() as c:
+            tid, _ = self._insert_tournament(c, "placement", f"Placement: {name}", [], focus=model_id)
             c.execute("INSERT INTO placement_members(tournament_id, model_id, joined_at, adaptive, extra_games, "
                       "target_range) VALUES(?,?,?,?,?,?)", (tid, model_id, time.time(), 1, *self._top_up_rule()))
-            c.executemany("INSERT INTO placement_fixtures(match_id, model_id, role) VALUES(?,?,'anchor')",
-                          [(mid, model_id) for mid in ids])
+            if model_id not in self.held_models():
+                self._add_anchors(c, tid, model_id, opponents)
         self.wake()
         return tid
+
+    def replace_held_anchor(self, tid: int, model_id: str, held_model_id: str, replacement_model_id: str,
+                            match_ids: List[str], reason: str) -> List[dict]:
+        """Replace exactly one unplayed, unshared home/away anchor pair. Keep its old records and the hold."""
+        if len(match_ids) != 2 or len(set(match_ids)) != 2 or not reason.strip():
+            raise ValueError("Provide two distinct fixture IDs and a reason")
+        with self._lock, db.transaction() as c:
+            t = db.row("SELECT kind, status FROM tournaments WHERE id=?", (tid,))
+            if not t or t["kind"] != "placement" or t["status"] != "running":
+                raise ValueError("Replacement requires an active, started placement")
+            held, enabled = self.held_models(), set(self._enabled_ids())
+            playable = enabled - held.keys()
+            if held_model_id not in held or not {model_id, replacement_model_id} <= playable \
+                    or replacement_model_id == model_id:
+                raise ValueError("Old opponent must be held; newcomer and replacement must be distinct and playable")
+            pair = db.rows("SELECT * FROM matches WHERE tournament_id=? AND id IN (?,?) ORDER BY seq, id",
+                           (tid, *match_ids))
+            if {(m["home_model"], m["away_model"]) for m in pair} != {
+                    (model_id, held_model_id), (held_model_id, model_id)}:
+                raise ValueError("Fixture IDs must be the two opposite legs against the held opponent")
+            for m in pair:
+                mid = m["id"]
+                links = db.rows("SELECT model_id, role FROM placement_fixtures WHERE match_id=?", (mid,))
+                if links != [{"model_id": model_id, "role": "anchor"}] or m["status"] != "queued" \
+                        or m["started_at"] is not None or m["seed"] is not None \
+                        or db.row("SELECT 1 FROM events WHERE match_id=? LIMIT 1", (mid,)) \
+                        or os.path.exists(checkpoint_path(mid)):
+                    raise ValueError("Both legs must be unstarted, queued, and tied only to this placement member")
+            if db.row("SELECT 1 FROM matches WHERE (status='completed' OR (tournament_id=? AND status!='cancelled')) "
+                      "AND ((home_model=? AND away_model=?) OR (home_model=? AND away_model=?)) LIMIT 1",
+                      (tid, model_id, replacement_model_id, replacement_model_id, model_id)):
+                raise ValueError("The replacement is already an opponent in this placement or has played the newcomer")
+            replacements = []
+            for m in pair:
+                h, a = (replacement_model_id if m[k] == held_model_id else m[k] for k in ("home_model", "away_model"))
+                new, = self._insert_matches(c, tid, [(h, a)], m["seq"])
+                c.execute("INSERT INTO placement_fixtures(match_id, model_id, role) VALUES(?,?,'anchor')",
+                          (new, model_id))
+                audit = {"replacement_match_id": new, "replacement_model_id": replacement_model_id,
+                         "reason": reason.strip()[:500], "at": time.time()}
+                meta = {**json.loads(m["meta"] or "{}"), "anchor_replacement": audit}
+                c.execute("UPDATE matches SET status='cancelled', meta=? WHERE id=?", (json.dumps(meta), m["id"]))
+                replacements.append({"original_match_id": m["id"], "replacement_match_id": new})
+        self.wake()
+        return replacements
 
     def _top_up_rule(self, member: Optional[dict] = None) -> tuple:
         """(most top-up games, rating range to stop at) for a newcomer: what was frozen when it joined, else (new
@@ -439,12 +492,13 @@ class Bench:
         if not left:
             return False
         progress = self.placement_progress(t["id"])
-        enabled = self._enabled_ids()
+        held = self.held_models()
+        enabled = [o for o in self._enabled_ids() if o not in held]
         rated = None
         wanted: Dict[str, list] = {}
         for mem in self.placement_members(t["id"]):
             focus = mem["model_id"]
-            if focus not in left or progress.get(focus, {}).get("active"):
+            if focus in held or focus not in left or progress.get(focus, {}).get("active"):
                 continue
             rated = rated if rated is not None else self._current_ratings()
             me = rated.get(focus)
@@ -489,7 +543,18 @@ class Bench:
         with self._lock:
             for t in db.rows("SELECT * FROM tournaments WHERE status IN ('queued','running')"):
                 if t["kind"] == "placement":
+                    if t["status"] == "queued" and not db.row(
+                            "SELECT 1 FROM matches WHERE tournament_id=?", (t["id"],)):
+                        # A newcomer can join while every opponent is held. Keep its placement pending, not completed.
+                        focus, enabled = t["focus_model"], self._enabled_ids()
+                        if focus in enabled:
+                            if focus not in self.held_models():
+                                with db.transaction() as c:
+                                    self._add_anchors(c, t["id"], focus, enabled)
+                            continue
                     self._top_up(t)
+                    if self.held_models().keys() & self.member_top_ups(t).keys():
+                        continue  # held focus with pending adaptive work; reconsider when its hold is released
                 left = db.row("SELECT COUNT(*) AS n FROM matches WHERE tournament_id=? "
                               "AND status IN ('queued','running')", (t["id"],))["n"]
                 if left == 0:
@@ -531,6 +596,8 @@ class Bench:
             n = c.execute("UPDATE health_holds SET status='released', released_at=?, released_by=?, release_note=? "
                           "WHERE model_id=? AND status='active'",
                           (time.time(), released_by, (note or "")[:500], model_id)).rowcount
+        if n:
+            self._finish_tournaments()
         self.wake()
         return n > 0
 
