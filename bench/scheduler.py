@@ -259,9 +259,10 @@ class Bench:
             if not t or t["kind"] != "placement" or t["status"] != "running":
                 raise ValueError("Replacement requires an active, started placement")
             held, enabled = self.held_models(), set(self._enabled_ids())
-            if held_model_id not in held or any(m in held or m not in enabled for m in (model_id, replacement_model_id)) \
+            playable = enabled - held.keys()
+            if held_model_id not in held or not {model_id, replacement_model_id} <= playable \
                     or replacement_model_id == model_id:
-                raise ValueError("The old opponent must be held; the newcomer and replacement must be distinct and playable")
+                raise ValueError("Old opponent must be held; newcomer and replacement must be distinct and playable")
             pair = db.rows("SELECT * FROM matches WHERE tournament_id=? AND id IN (?,?) ORDER BY seq, id",
                            (tid, *match_ids))
             if {(m["home_model"], m["away_model"]) for m in pair} != {
@@ -274,7 +275,7 @@ class Bench:
                         or m["started_at"] is not None or m["seed"] is not None \
                         or db.row("SELECT 1 FROM events WHERE match_id=? LIMIT 1", (mid,)) \
                         or os.path.exists(checkpoint_path(mid)):
-                    raise ValueError("Both legs must be queued, never started, and attributed only to this placement member")
+                    raise ValueError("Both legs must be unstarted, queued, and tied only to this placement member")
             if db.row("SELECT 1 FROM matches WHERE (status='completed' OR (tournament_id=? AND status!='cancelled')) "
                       "AND ((home_model=? AND away_model=?) OR (home_model=? AND away_model=?)) LIMIT 1",
                       (tid, model_id, replacement_model_id, replacement_model_id, model_id)):
@@ -283,7 +284,8 @@ class Bench:
             for m in pair:
                 h, a = (replacement_model_id if m[k] == held_model_id else m[k] for k in ("home_model", "away_model"))
                 new, = self._insert_matches(c, tid, [(h, a)], m["seq"])
-                c.execute("INSERT INTO placement_fixtures(match_id, model_id, role) VALUES(?,?,'anchor')", (new, model_id))
+                c.execute("INSERT INTO placement_fixtures(match_id, model_id, role) VALUES(?,?,'anchor')",
+                          (new, model_id))
                 audit = {"replacement_match_id": new, "replacement_model_id": replacement_model_id,
                          "reason": reason.strip()[:500], "at": time.time()}
                 meta = {**json.loads(m["meta"] or "{}"), "anchor_replacement": audit}
@@ -541,7 +543,8 @@ class Bench:
         with self._lock:
             for t in db.rows("SELECT * FROM tournaments WHERE status IN ('queued','running')"):
                 if t["kind"] == "placement":
-                    if t["status"] == "queued" and not db.row("SELECT 1 FROM matches WHERE tournament_id=?", (t["id"],)):
+                    if t["status"] == "queued" and not db.row(
+                            "SELECT 1 FROM matches WHERE tournament_id=?", (t["id"],)):
                         # A newcomer can join while every opponent is held. Keep its placement pending, not completed.
                         focus, enabled = t["focus_model"], self._enabled_ids()
                         if focus in enabled:
