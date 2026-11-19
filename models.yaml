@@ -75,6 +75,11 @@ models:
   - name: Gemini 4 Argon
     model: google/gemini-4-argon
 
+  - name: Gemini 4 Neon
+    id: gemini-4-neon
+    model: google/gemini-4-neon
+    enabled: true
+
   - name: DeepSeek V3.2
     model: deepseek/deepseek-v3.2
 
