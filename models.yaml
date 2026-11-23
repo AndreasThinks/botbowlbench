@@ -230,6 +230,25 @@ models:
   - name: Liquid LFM2.5-24B-A2B
     model: liquid/lfm-2.5-24b-a2b
 
+  - name: Inkling 2 Mini
+    id: inkling-2-mini
+    provider: openrouter
+    model: thinkingmachines/inkling-2-mini
+    enabled: true
+    tool_choice: required
+    reasoning_enabled: true
+    extra:
+      provider:
+        only: [primeintellect/fp4]
+        allow_fallbacks: false
+    setup_reason: >-
+      Pinned to PrimeIntellect's standard FP4 route, where matched real-engine smoke
+      tests returned reasoning and accepted setup and block actions with required
+      tools. Other hosts and flex/priority tiers are excluded to preserve the tested
+      serving condition; fastest-host routing and slow-host switching do not apply.
+      This is not a full-game reliability claim: the bounded reroll tests returned
+      information calls without resolving the decision within three replies.
+
   - name: Inkling 2 Small
     id: inkling-2-small
     model: thinkingmachines/inkling-2-small
